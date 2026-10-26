@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 using Brush = System.Windows.Media.Brush;
@@ -234,7 +235,33 @@ public partial class MainWindow : Window
         if (sender is FrameworkElement element && element.DataContext is ForwardViewModel forward)
         {
             _vm.SelectForwardCommand.Execute(forward);
+            ScrollToServicesSection();
         }
+    }
+
+    /// <summary>The services and nodes section sits below the connection settings on the connect page.</summary>
+    private void ScrollToServicesSection()
+        => Dispatcher.BeginInvoke(() => ForwardPairingPanel.BringIntoView(), DispatcherPriority.Loaded);
+
+    private void OnConnectSegmentClick(object sender, RoutedEventArgs e)
+    {
+        if (ReferenceEquals(sender, ServicesSectionSegment))
+            ForwardPairingPanel.BringIntoView();
+        else
+            ConnectPanel.ScrollToTop();
+    }
+
+    /// <summary>
+    /// Keeps the section bar on the section being read. Services is active once it reaches the
+    /// lower half of the viewport, and at the bottom of the page.
+    /// </summary>
+    private void OnConnectPanelScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        var servicesTop = ForwardPairingPanel.TransformToAncestor(ConnectPanel).Transform(new System.Windows.Point(0, 0)).Y;
+        var atBottom = ConnectPanel.ScrollableHeight > 0 && ConnectPanel.VerticalOffset >= ConnectPanel.ScrollableHeight - 1;
+        var servicesActive = atBottom || servicesTop < ConnectPanel.ViewportHeight / 2;
+        ServicesSectionSegment.IsChecked = servicesActive;
+        ConnectSectionSegment.IsChecked = !servicesActive;
     }
 
 
@@ -1509,28 +1536,21 @@ public partial class MainWindow : Window
             _vm.NavigateToCommand.Execute("Proxy");
             return;
         }
-        var pairing = view == "Forwards";
         DashboardPanel.Visibility = view == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
-        ForwardPairingPanel.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
         PageTitleText.SetResourceReference(TextBlock.TextProperty, view switch
         {
-            "Forwards" => "NavForwards",
             "Proxy" => "NavProxy",
             "Native" => "NavNative",
             "Log" => "NavLog",
             "Settings" => "NavSettings",
             _ => "NavDashboard",
         });
-        // The start / stop button belongs to the overview pages; the connect page has its own controls.
-        CoreToggleButton.Visibility = view is "Dashboard" or "Forwards"
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        ProxyPanel.Visibility = view == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
+        // The start / stop button belongs to the dashboard; the connect page has its own controls.
+        CoreToggleButton.Visibility = view == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        ConnectPage.Visibility = view == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
         NativePanel.Visibility = view == "Native" ? Visibility.Visible : Visibility.Collapsed;
         LogPanel.Visibility = view == "Log" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = view == "Settings" ? Visibility.Visible : Visibility.Collapsed;
-        SidebarStartAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        SidebarStopAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
         ProxySavedNodesSidebar.Visibility = Visibility.Collapsed;
         if (ProxySidebarColumn is not null)
             ProxySidebarColumn.Width = new GridLength(0);

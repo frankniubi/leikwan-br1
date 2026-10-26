@@ -19,9 +19,10 @@ public sealed class RedesignLayoutTests
                 && node.Attribute("Tag") is not null)
             .Select(node => (string?)node.Attribute("CommandParameter"))
             .ToList();
-        foreach (var view in new[] { "Dashboard", "Forwards", "Proxy", "Native", "Settings" })
+        foreach (var view in new[] { "Dashboard", "Proxy", "Native", "Settings" })
             Assert.Contains(view, targets);
-        // The nodes live on the services page now, so the old Nodes item is gone.
+        // Services and nodes is part of the connect page now, so the old Services and Nodes items are gone.
+        Assert.DoesNotContain("Forwards", targets);
         Assert.DoesNotContain("Nodes", targets);
         // Native outbound is listed only while the plan assigns one.
         var native = Assert.Single(document.Descendants().Where(node => node.Name.LocalName == "Button"
@@ -30,14 +31,19 @@ public sealed class RedesignLayoutTests
     }
 
     [Fact]
-    public void DashboardHasFourAccountCardsAboveTheForwardControls()
+    public void DashboardHasThreeAccountCardsAboveTheForwardControls()
     {
         var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
         var dashboard = Named(document, "DashboardPanel");
-        foreach (var key in new[] { "DashPlan", "DashUsage", "DashRateLimit", "DashProvince", "DashForwardControls" })
+        foreach (var key in new[] { "DashUsage", "DashRateLimit", "DashProvince", "DashForwardControls" })
             Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource " + key + "}");
-        foreach (var binding in new[] { "PlanText", "SpeedLimitText", "ProvinceText" })
+        foreach (var binding in new[] { "SpeedLimitText", "ProvinceText" })
             Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{Binding " + binding + ", Converter={StaticResource ResourceText}}");
+        // The plan card is gone: the panel does not send a plan name.
+        Assert.DoesNotContain(dashboard.Descendants(), node => (string?)node.Attribute("Text") is "{DynamicResource DashPlan}" or "{Binding PlanText, Converter={StaticResource ResourceText}}");
+        // Each forward card names the target address and port it sends traffic to.
+        Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{Binding TargetAddress}");
+        Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{Binding TargetPort}");
         // Speed chart, mode radios and the current-service combo are not on the dashboard any more.
         Assert.DoesNotContain(document.Descendants(), node => (string?)node.Attribute(X + "Name") is "DashSpeedChart" or "DashModeHttp" or "DashServiceCombo");
         Assert.Equal("OnCoreToggle_Click", (string?)Named(document, "CoreToggleButton").Attribute("Click"));
@@ -45,6 +51,49 @@ public sealed class RedesignLayoutTests
         // The button reuses the paired-forward connect flow and the ordinary stop path.
         Assert.Contains("OnProxySelectedConnect_Click(sender, e)", code, StringComparison.Ordinal);
         Assert.Contains("await _vm.StopProxyAsync()", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ConnectPageStacksTheConnectionSettingsAboveServicesAndNodes()
+    {
+        var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
+        var page = Named(document, "ConnectPanel");
+        var connect = Named(document, "ProxyPanel");
+        var services = Named(document, "ForwardPairingPanel");
+        Assert.Contains(connect.Ancestors(), node => node == page);
+        Assert.Contains(services.Ancestors(), node => node == page);
+        var order = document.Descendants().ToList();
+        Assert.True(order.IndexOf(connect) < order.IndexOf(services));
+        // The connection settings are never folded away.
+        Assert.DoesNotContain(connect.Descendants(), node => node.Name.LocalName == "Expander");
+    }
+
+    [Fact]
+    public void ConnectPageHasAStickySectionBarAndNoNestedScrollViewer()
+    {
+        var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
+        var page = Named(document, "ConnectPage");
+        // The bar stays put while the page scrolls: it sits outside the ScrollViewer, not inside it.
+        var scroll = Named(document, "ConnectPanel");
+        Assert.Equal(scroll, Assert.Single(page.Elements(), node => node.Name.LocalName == "ScrollViewer"));
+        Assert.Contains(page.Descendants(), node => (string?)node.Attribute(X + "Name") == "ConnectSectionSegment");
+        Assert.Contains(page.Descendants(), node => (string?)node.Attribute(X + "Name") == "ServicesSectionSegment");
+        // A nested ScrollViewer swallows the wheel even when it has nothing to scroll, so the connect page has only one.
+        Assert.DoesNotContain(scroll.Descendants(), node => node.Name.LocalName == "ScrollViewer");
+    }
+
+    [Fact]
+    public void NativeRuleCardsPointToTheSidebarInsteadOfShowingTheirState()
+    {
+        var document = XDocument.Load(AppFile("Views", "MainWindow.xaml"));
+        var dashboard = Named(document, "DashboardPanel");
+        Assert.Contains(dashboard.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource ForwardNativeOutboundGoto}");
+        // The state and message lines are hidden for native rules, on the card and in the details.
+        var stateLines = dashboard.Descendants().Where(node => (string?)node.Attribute("Text") is
+            "{Binding Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}"
+            or "{Binding SelectedForward.Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}").ToList();
+        Assert.Equal(2, stateLines.Count);
+        Assert.All(stateLines, line => Assert.Contains("IsNativeOutboundRule", (string?)line.Attribute("Visibility") ?? ""));
     }
 
     [Fact]

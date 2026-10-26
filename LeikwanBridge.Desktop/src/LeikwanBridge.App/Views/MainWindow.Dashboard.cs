@@ -44,7 +44,8 @@ public partial class MainWindow
         // Not ready yet: take the user to the page that completes the setup.
         if (_vm.PairedProxyForwardRows.Count == 0)
         {
-            _vm.NavigateToCommand.Execute("Forwards");
+            _vm.NavigateToCommand.Execute("Proxy");
+            ScrollToServicesSection();
             ForwardPairingStatus.Text = FindResource("DashPairHint") as string ?? "Pair a node with a service first.";
             return;
         }

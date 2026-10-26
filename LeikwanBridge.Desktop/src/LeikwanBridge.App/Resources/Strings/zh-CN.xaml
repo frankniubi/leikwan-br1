@@ -85,6 +85,7 @@
     <system:String x:Key="FwdTransport">传输协议</system:String>
     <!-- 面板下发的原生出站规则：仅配置，无 Agent 托管运行时 -->
     <system:String x:Key="ForwardNativeOutboundRule">（原生出站规则）</system:String>
+  <system:String x:Key="ForwardNativeOutboundGoto">请移步左侧的「原生出口」页面使用。</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">启动</system:String>
@@ -348,6 +349,8 @@
     <system:String x:Key="ForwardDetailsQuality">质量</system:String>
     <system:String x:Key="ForwardDetailsMessage">消息</system:String>
     <system:String x:Key="DashForwardsShownSuffix" xml:space="preserve"> 个转发</system:String>
+  <system:String x:Key="DashForwardTarget">目标地址</system:String>
+  <system:String x:Key="DashForwardPort">端口</system:String>
     <system:String x:Key="ForwardNumberPrefix">转发 #</system:String>
     <system:String x:Key="DashNever">从未</system:String>
     <system:String x:Key="StateStopped">已停止</system:String>
@@ -360,9 +363,6 @@
     <system:String x:Key="ProxyNativeOutboundUnrestricted">不限制完整路由（全部端口，不经 OpenGFW）</system:String>
     <system:String x:Key="OwnNodeLabel">自带节点</system:String>
   <system:String x:Key="NavNative">原生出口</system:String>
-  <system:String x:Key="DashPlan">套餐</system:String>
-  <system:String x:Key="DashPlanHint">面板暂未向客户端下发套餐名。</system:String>
-  <system:String x:Key="DashPlanUnavailable">未提供</system:String>
   <system:String x:Key="DashUsage">用量</system:String>
   <system:String x:Key="DashUsageHint">本次运行期间的上下行流量。</system:String>
   <system:String x:Key="DashRateLimit">速率限制</system:String>
@@ -370,8 +370,11 @@
   <system:String x:Key="DashRateLimitNone">不限速</system:String>
   <system:String x:Key="DashRateLimitMixed">按线路不同</system:String>
   <system:String x:Key="DashProvince">当前归属省份</system:String>
-  <system:String x:Key="DashProvinceHint">由后端按账号下发，只读。登录地区限制依据此归属。</system:String>
-  <system:String x:Key="DashProvinceUnavailable">未获取</system:String>
+  <system:String x:Key="DashProvinceHint">账号的归属省份，由面板设置，客户端只读。登录地区限制依据此判断。</system:String>
+  <system:String x:Key="DashProvinceNotConnected">未连接</system:String>
+  <system:String x:Key="DashProvinceReading">读取中</system:String>
+  <system:String x:Key="DashProvinceReadFailed">读取失败</system:String>
+  <system:String x:Key="DashProvinceNotSet">未设置</system:String>
   <system:String x:Key="Province_AH">安徽</system:String>
   <system:String x:Key="Province_BJ">北京</system:String>
   <system:String x:Key="Province_CQ">重庆</system:String>

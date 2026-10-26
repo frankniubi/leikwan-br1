@@ -132,11 +132,8 @@ public partial class MainViewModel : ObservableObject
     public WindowsProxyEditorViewModel ProxyEditor { get; } = new();
 
     public string SelectedProxyGameDisplayName => _selectedProxyGameDisplayName;
-    public bool IsForwardPairingView => string.Equals(CurrentView, "Forwards", StringComparison.OrdinalIgnoreCase);
-
     partial void OnCurrentViewChanged(string value)
     {
-        OnPropertyChanged(nameof(IsForwardPairingView));
         if (string.Equals(value, "Dashboard", StringComparison.OrdinalIgnoreCase))
             _ = RefreshAccessPolicyAsync();
     }
@@ -1630,6 +1627,7 @@ public partial class MainViewModel : ObservableObject
         _runtimeManager?.StopAll();
         _api?.Dispose();
         _api = null;
+        ResetAccessPolicyState();
         _diagnostics = null;
         IsConnected = false;
         ClearDeviceLimit();
@@ -1645,7 +1643,12 @@ public partial class MainViewModel : ObservableObject
 
     [RelayCommand]
     private void NavigateTo(string view)
-        => CurrentView = string.Equals(view, "Nodes", StringComparison.OrdinalIgnoreCase) ? "Forwards" : view;
+        => CurrentView = IsServicesViewId(view) ? "Proxy" : view;
+
+    /// <summary>The services and nodes section lives on the connect page. The old view ids still open that page.</summary>
+    private static bool IsServicesViewId(string view)
+        => string.Equals(view, "Nodes", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(view, "Forwards", StringComparison.OrdinalIgnoreCase);
 
     [RelayCommand]
     private void SelectForward(ForwardViewModel? forward)
@@ -1654,7 +1657,7 @@ public partial class MainViewModel : ObservableObject
             return;
 
         SelectedForward = forward;
-        CurrentView = "Forwards";
+        CurrentView = "Proxy";
     }
 
     /// <summary>

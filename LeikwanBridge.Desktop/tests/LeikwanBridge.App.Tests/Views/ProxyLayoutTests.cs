@@ -98,11 +98,11 @@ public sealed class ProxyLayoutTests
     public void ForwardNavigationIsPairingOnlyAndHasAnExplicitSaveSurface()
     {
         var document = Load();
-        var nav = Assert.Single(document.Descendants().Where(node => node.Name.LocalName == "Button"), node =>
+        // Services and nodes is a section of the connect page, so it has no sidebar item of its own.
+        Assert.DoesNotContain(document.Descendants().Where(node => node.Name.LocalName == "Button"), node =>
             (string?)node.Attribute("CommandParameter") == "Forwards");
-        Assert.Equal("{DynamicResource NavForwards}", (string?)nav.Attribute("Content"));
-
         var panel = Named(document, "ForwardPairingPanel");
+        Assert.Contains(Named(document, "ConnectPanel").Descendants(), node => node == panel);
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Text") == "{DynamicResource ForwardPairingHint}");
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Content") == "{DynamicResource ForwardPairingSave}");
         Assert.Contains(panel.Descendants(), node => (string?)node.Attribute("Click") == "OnSaveForwardPairings_Click");

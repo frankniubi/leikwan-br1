@@ -231,9 +231,6 @@
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavDashboard}" Tag="Dashboard"
                                 views:NavIcon.Glyph="&#xF246;"
                                 Command="{Binding NavigateToCommand}" CommandParameter="Dashboard"/>
-                        <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavForwards}" Tag="Forwards"
-                                views:NavIcon.Glyph="&#xE71B;"
-                                Command="{Binding NavigateToCommand}" CommandParameter="Forwards"/>
                         <Button Style="{StaticResource NavButton}" Content="{DynamicResource NavProxy}" Tag="Proxy"
                                 views:NavIcon.Glyph="&#xE968;"
                                 Command="{Binding NavigateToCommand}" CommandParameter="Proxy"
@@ -290,20 +287,10 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- Plan: the panel does not send a plan name yet, so this shows the "not provided" text. -->
-                                    <Border Grid.Column="0" Style="{StaticResource DashCard}" Height="176">
-                                        <StackPanel>
-                                            <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashPlan}" Margin="0,0,0,10"/>
-                                            <TextBlock Text="{Binding PlanText, Converter={StaticResource ResourceText}}" Style="{StaticResource BigValue}"/>
-                                            <TextBlock Text="{DynamicResource DashPlanHint}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                        </StackPanel>
-                                    </Border>
-
                                     <!-- Usage: traffic in this session. -->
-                                    <Border Grid.Column="1" Style="{StaticResource DashCard}" Height="176">
+                                    <Border Grid.Column="0" Style="{StaticResource DashCard}" Height="176">
                                         <StackPanel>
                                             <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashUsage}" Margin="0,0,0,10"/>
                                             <Grid>
@@ -328,7 +315,7 @@
                                     </Border>
 
                                     <!-- Rate limit: summary of the line speed limits the panel assigned. -->
-                                    <Border Grid.Column="2" Style="{StaticResource DashCard}" Height="176">
+                                    <Border Grid.Column="1" Style="{StaticResource DashCard}" Height="176">
                                         <StackPanel>
                                             <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashRateLimit}" Margin="0,0,0,10"/>
                                             <TextBlock Text="{Binding SpeedLimitText, Converter={StaticResource ResourceText}}" Style="{StaticResource BigValue}"/>
@@ -337,7 +324,7 @@
                                     </Border>
 
                                     <!-- Home province: read-only, from the panel's access policy (login region rule). -->
-                                    <Border Grid.Column="3" Style="{StaticResource DashCard}" Height="176">
+                                    <Border Grid.Column="2" Style="{StaticResource DashCard}" Height="176">
                                         <StackPanel>
                                             <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource DashProvince}" Margin="0,0,0,10"/>
                                             <TextBlock Text="{Binding ProvinceText, Converter={StaticResource ResourceText}}" Style="{StaticResource BigValue}"/>
@@ -417,16 +404,36 @@
                                                                 </Border>
                                                             </DockPanel>
 
+                                                            <!-- Forwarded target: the address and port the line sends traffic to. Native outbound rules have none. -->
+                                                            <Grid Margin="0,0,0,8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <Grid.RowDefinitions>
+                                                                    <RowDefinition/>
+                                                                    <RowDefinition/>
+                                                                </Grid.RowDefinitions>
+                                                                <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource DashForwardTarget}" Style="{StaticResource MutedText}"
+                                                                           FontSize="12" Margin="0,0,10,4"/>
+                                                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding TargetAddress}" FontSize="12" FontWeight="SemiBold"
+                                                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Config.Target}" Margin="0,0,0,4"/>
+                                                                <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource DashForwardPort}" Style="{StaticResource MutedText}"
+                                                                           FontSize="12" Margin="0,0,10,0"/>
+                                                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TargetPort}" FontSize="12" FontWeight="SemiBold"/>
+                                                            </Grid>
+
                                                             <!-- Native outbound rules ship configuration only: no start/stop control. -->
                                                             <TextBlock Text="{DynamicResource ForwardNativeOutboundRule}" FontSize="11"
                                                                        FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}"
                                                                        TextWrapping="Wrap" Margin="0,0,0,4"
                                                                        Visibility="{Binding Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
 
-                                                            <TextBlock Text="{Binding Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="12"
+                                                            <TextBlock Text="{DynamicResource ForwardNativeOutboundGoto}" FontSize="12" Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="{Binding Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
+                                                            <TextBlock Text="{Binding Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="12" Visibility="{Binding Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"
                                                                        FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}"
                                                                        Margin="0,0,0,4"/>
-                                                            <TextBlock Text="{Binding Summary.FriendlyMessage, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="12"
+                                                            <TextBlock Text="{Binding Summary.FriendlyMessage, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="12" Visibility="{Binding Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"
                                                                        Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap"
                                                                        Margin="0,0,0,8"/>
 
@@ -471,16 +478,17 @@
                                                                    FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}"
                                                                    TextWrapping="Wrap" Margin="0,2,0,0"
                                                                    Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Text="{DynamicResource ForwardNativeOutboundGoto}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" Margin="0,6,0,0" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource BoolToVis}}"/>
                                                     </StackPanel>
 
-                                                    <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsStatus}"/>
-                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="14"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsStatus}" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedForward.Summary.Lifecycle, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="14" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
 
-                                                    <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsQuality}"/>
-                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedForward.Summary.QualityText, Converter={StaticResource ResourceText}, ConverterParameter=Quality}" FontSize="14"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsQuality}" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedForward.Summary.QualityText, Converter={StaticResource ResourceText}, ConverterParameter=Quality}" FontSize="14" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
 
-                                                    <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsMessage}"/>
-                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedForward.Summary.FriendlyMessage, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="14" TextWrapping="Wrap"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource FieldLabel}" Text="{DynamicResource ForwardDetailsMessage}" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
+                                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedForward.Summary.FriendlyMessage, Converter={StaticResource ResourceText}, ConverterParameter=State}" FontSize="14" TextWrapping="Wrap" Visibility="{Binding SelectedForward.Summary.IsNativeOutboundRule, Converter={StaticResource InverseBoolToVis}}"/>
                                                 </Grid>
 
                                                 <WrapPanel HorizontalAlignment="Right">
@@ -502,268 +510,442 @@
                         </ScrollViewer>
 
 
-                        <!-- Services: forward pairing (configuration only, never starts a runtime connection). -->
-                        <ScrollViewer x:Name="ForwardPairingPanel" Visibility="Collapsed"
-                                      VerticalScrollBarVisibility="Auto">
-                            <StackPanel Margin="-6,0,-6,96">
-                                <TextBlock Text="{DynamicResource ForwardPairingHint}" Style="{StaticResource MutedText}" FontSize="13" Margin="6,0,6,10"/>
-
-                                <!-- Cloud sync -->
-                                <Border x:Name="NodesCloudCard" Style="{StaticResource CardBorder}">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Width="44" Height="44" CornerRadius="14" Background="{DynamicResource SecondaryContainerBrush}" ToolTip="{DynamicResource NodesCloudHint}"
-                                                VerticalAlignment="Top" Margin="0,0,14,0">
-                                            <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="20"
-                                                       Foreground="{DynamicResource OnSecondaryContainerBrush}"
-                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                            <TextBlock Text="{DynamicResource NodesCloudTitle}" FontSize="15" FontWeight="SemiBold"/>
-                                            <StackPanel Orientation="Horizontal">
-                                                <ProgressBar Width="16" Height="16" IsIndeterminate="True" Margin="0,0,8,0" Background="Transparent"
-                                                             Visibility="{Binding IsCloudBusy, Converter={StaticResource BoolToVis}}"/>
-                                                <TextBlock x:Name="NodesCloudStatus" Text="{Binding CloudStatusText}" FontSize="12" TextWrapping="Wrap">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding HasCloudError}" Value="True">
-                                                                    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                            </StackPanel>
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
-                                            <Button x:Name="NodesRefreshCloudButton" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
-                                                    Click="OnNodesRefreshCloud_Click" IsEnabled="{Binding IsCloudBusy, Converter={StaticResource InverseBool}}"
-                                                    AutomationProperties.Name="Refresh from cloud">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                                    <TextBlock Text="{DynamicResource NodesRefreshCloud}"/>
-                                                </StackPanel>
-                                            </Button>
-                                            <Button x:Name="NodesSyncAllButton" Style="{StaticResource PrimaryButton}"
-                                                    Click="OnNodesSyncAll_Click" IsEnabled="{Binding IsCloudBusy, Converter={StaticResource InverseBool}}"
-                                                    AutomationProperties.Name="Sync all nodes to cloud">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="&#xE898;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"/>
-                                                    <TextBlock Text="{DynamicResource NodesSyncAll}"/>
-                                                </StackPanel>
-                                            </Button>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-
-                                <!-- Import -->
-                                <Border Style="{StaticResource CardBorder}">
-                                    <StackPanel>
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                                            <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE8C8;"/>
-                                            <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource NodesImportTitle}"/>
-                                        </StackPanel>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <Grid Margin="0,0,10,0">
-                                                <TextBox x:Name="NodesImportText" Style="{StaticResource InputTextBox}" AcceptsReturn="True"
-                                                         TextWrapping="NoWrap" MinHeight="40" MaxHeight="120" VerticalScrollBarVisibility="Auto"
-                                                         FontFamily="Consolas" AutomationProperties.Name="Share links to import"
-                                                         ToolTip="{DynamicResource NodesImportHint}"/>
-                                                <TextBlock Text="ss:// · socks5:// · vless://" Margin="11,0,11,0" VerticalAlignment="Center"
-                                                           Foreground="{DynamicResource MutedTextBrush}" FontSize="13" IsHitTestVisible="False">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding Text, ElementName=NodesImportText}" Value="">
-                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
+                        <!-- Connect and services: one page. Connection settings on top, services and nodes below. -->
+                        <DockPanel x:Name="ConnectPage" Visibility="Collapsed">
+                            <Border DockPanel.Dock="Top" Padding="0,0,0,10">
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton x:Name="ConnectSectionSegment" GroupName="ConnectSections" Style="{StaticResource SegmentButton}" Content="{DynamicResource ProxyForward}" IsChecked="True" Click="OnConnectSegmentClick" Margin="0,0,6,0"/>
+                                    <RadioButton x:Name="ServicesSectionSegment" GroupName="ConnectSections" Style="{StaticResource SegmentButton}" Content="{DynamicResource NavForwards}" Click="OnConnectSegmentClick"/>
+                                </StackPanel>
+                            </Border>
+                            <ScrollViewer x:Name="ConnectPanel" VerticalScrollBarVisibility="Auto" ScrollChanged="OnConnectPanelScrollChanged">
+                                <StackPanel Margin="0,0,0,96">
+                                    <!-- Connect: the connection settings, always open. -->
+                                    <Grid x:Name="ProxyPanel" SizeChanged="OnProxyPanelSizeChanged">
+                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                            <Grid Grid.Row="0" Margin="0,0,0,18">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                
+                                                <Border x:Name="ProxyStatusBanner" Grid.Column="1" Padding="12,6"
+                                                        CornerRadius="14" BorderThickness="1" BorderBrush="{DynamicResource BorderBrush}">
+                                                    <TextBlock x:Name="ProxyStatusTitle" Text="{DynamicResource ProxyDisconnected}" FontSize="12"/>
+                                                </Border>
                                             </Grid>
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
-                                                <Button Style="{StaticResource GhostButton}" Content="{DynamicResource NodesPaste}" Margin="0,0,8,0"
-                                                        Click="OnNodesPaste_Click" Height="40"/>
-                                                <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource NodesImport}"
-                                                        Click="OnNodesImport_Click" Height="40" AutomationProperties.Name="Import nodes"/>
-                                            </StackPanel>
-                                        </Grid>
-                                        <TextBlock x:Name="NodesStatusText" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource SuccessBrush}"/>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Style="{StaticResource CardBorder}">
-                                    <StackPanel>
-                                        <ItemsControl x:Name="ForwardPairingRows" ItemsSource="{Binding ProxyForwardRows}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Border Style="{StaticResource InsetBorder}" Margin="0,0,0,10">
-                                                        <Grid>
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="*"/>
-                                                                <ColumnDefinition Width="260"/>
-                                                            </Grid.ColumnDefinitions>
-                                                            <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
-                                                                <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold"
-                                                                           TextWrapping="Wrap"/>
-                                                                <TextBlock Text="{DynamicResource ProxyRouteListenPort}" FontSize="11"
-                                                                           Foreground="{DynamicResource MutedTextBrush}" Margin="0,5,0,0"/>
-                                                                <TextBlock Text="{Binding ListenerEndpoint}" FontFamily="Consolas" FontSize="12"
-                                                                           Margin="0,2,0,0"/>
-                                                            </StackPanel>
-                                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRowNode}"/>
-                                                                <ComboBox ItemsSource="{Binding Profiles}" SelectedValuePath="Id"
-                                                                          SelectedValue="{Binding SelectedProfileId, Mode=TwoWay}"
-                                                                          SelectionChanged="OnProxyRowProfileSelectionChanged"
-                                                                          AutomationProperties.Name="{Binding Title}">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <StackPanel Orientation="Horizontal">
-                                                                                <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="11" Margin="0,0,6,0"
-                                                                                           VerticalAlignment="Center" Foreground="{DynamicResource PrimaryBrush}"
-                                                                                           Visibility="{Binding IsHosted, Converter={StaticResource BoolToVis}}"/>
-                                                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
-                                                                            </StackPanel>
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </StackPanel>
-                                                        </Grid>
-                                                    </Border>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                        <TextBlock x:Name="ForwardPairingStatus" FontSize="12" Foreground="{DynamicResource SuccessBrush}"
-                                                   Margin="0,2,0,10"/>
-                                        <WrapPanel HorizontalAlignment="Right">
-                                            <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ForwardPairingSave}"
-                                                    Click="OnSaveForwardPairings_Click" Margin="0,0,8,0"/>
-                                                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ForwardPairingOpenProxy}"
-                                                    Command="{Binding NavigateToCommand}" CommandParameter="Proxy"/>
-                                        </WrapPanel>
-                                    </StackPanel>
-                                </Border>
-
-                                <!-- Saved nodes (list + editor). Hosted nodes carry a cloud badge. -->
-                                <Border x:Name="ForwardPairingNodeSection" Style="{StaticResource CardBorder}">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="340"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0" Padding="0,0,14,0">
-                                            <Grid>
-                                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                                <Grid Margin="0,0,0,10">
-                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE774;"/>
-                                                        <TextBlock Text="{DynamicResource ProxyMyNodes}" Style="{StaticResource CardTitle}"/>
-                                                        <TextBlock Text="{Binding ProxyProfiles.Count, StringFormat={}  {0}}" FontSize="12" VerticalAlignment="Center"
-                                                                   Foreground="{DynamicResource MutedTextBrush}"/>
+                                            <Grid Grid.Row="1">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="ProxySidebarColumn" Width="0"/></Grid.ColumnDefinitions>
+                                            <Border x:Name="ProxySavedNodesSidebar" Grid.Column="1" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1,0,0,0" Padding="16,4,0,0" Margin="18,0,0,0" Visibility="Collapsed">
+                                                <Grid>
+                                                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                                    <Grid Margin="0,0,0,12">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{DynamicResource ProxyMyNodes}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                                        <Button x:Name="ProxyNewButton" Grid.Column="1" Style="{StaticResource ProxyIconButton}" Content="&#xE710;"
+                                                                ToolTip="{DynamicResource ProxyNew}" Click="OnProxyNew_Click" AutomationProperties.Name="New proxy profile"/>
+                                                    </Grid>
+                                                    <ListBox x:Name="ProxyProfileList" Grid.Row="1" ItemsSource="{Binding ProxyProfiles}" SelectedValuePath="Id"
+                                                             SelectionChanged="OnProxyProfileSelectionChanged" BorderThickness="0" Background="Transparent"
+                                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch"
+                                                             AutomationProperties.Name="Saved nodes">
+                                                        <ListBox.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <StackPanel Margin="4,8">
+                                                                    <TextBlock Text="{Binding Name}" ToolTip="{Binding Name}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold"/>
+                                                                    <TextBlock Text="{DynamicResource OwnNodeLabel}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,3,0,0"/>
+                                                                </StackPanel>
+                                                            </DataTemplate>
+                                                        </ListBox.ItemTemplate>
+                                                    </ListBox>
+                                                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                                                        <Button Style="{StaticResource ProxyIconButton}" Content="&#xE70F;" Click="OnProxyEdit_Click"
+                                                                ToolTip="{DynamicResource ProxyEdit}" AutomationProperties.Name="Edit saved node" Margin="0,0,8,0"/>
+                                                        <Button Style="{StaticResource ProxyIconButton}" Content="&#xE74D;" Click="OnProxyDelete_Click"
+                                                                ToolTip="{DynamicResource ProxyDelete}" AutomationProperties.Name="Delete saved node"/>
                                                     </StackPanel>
-                                                    <Button Grid.Column="1" Style="{StaticResource ProxyIconButton}" Content="&#xE710;"
-                                                            ToolTip="{DynamicResource ProxyNew}"
-                                                            Click="OnPairingNew_Click" AutomationProperties.Name="New proxy profile"/>
                                                 </Grid>
-                                                <TextBlock Grid.Row="1" Text="{DynamicResource NodesEmpty}" Style="{StaticResource MutedText}" Margin="4,8"
-                                                           Visibility="{Binding ProxyProfiles.Count, Converter={StaticResource ZeroToVis}}"/>
-                                                <ListBox x:Name="ForwardPairingProfileList" Grid.Row="1" ItemsSource="{Binding ProxyProfiles}"
-                                                         SelectedValuePath="Id" SelectionChanged="OnPairingProfileSelectionChanged"
-                                                         MaxHeight="440" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                                         BorderThickness="0" Background="Transparent" HorizontalContentAlignment="Stretch"
-                                                         AutomationProperties.Name="Saved nodes">
-                                                    <ListBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Grid Margin="4,6">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="Auto"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <StackPanel>
-                                                                    <StackPanel Orientation="Horizontal">
-                                                                        <TextBlock Text="{Binding Name}" ToolTip="{Binding Name}" TextTrimming="CharacterEllipsis"
-                                                                                   FontWeight="SemiBold" MaxWidth="170"/>
-                                                                        <Border Style="{StaticResource CloudBadge}" Margin="8,0,0,0"
-                                                                                ToolTip="{DynamicResource NodesCloudBadgeTip}"
-                                                                                Visibility="{Binding IsHosted, Converter={StaticResource BoolToVis}}">
-                                                                            <StackPanel Orientation="Horizontal">
-                                                                                <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="10" Margin="0,0,4,0"
-                                                                                           VerticalAlignment="Center" Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
-                                                                                <TextBlock Text="{DynamicResource NodesCloudBadge}" FontSize="11"
-                                                                                           Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
-                                                                            </StackPanel>
-                                                                        </Border>
+                                            </Border>
+                                            <Grid Grid.Column="0">
+                                              <StackPanel Margin="0,0,8,0">
+                                                <TextBlock Text="{DynamicResource ProxyConnectNote}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                                <TextBlock Text="{DynamicResource ProxyForward}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                                <Border Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                        CornerRadius="16" Padding="16" Margin="0,0,0,12">
+                                                    <StackPanel>
+                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxySelectPairedForward}"/>
+                                                        <ComboBox x:Name="ProxyPairedForwardCombo" ToolTipService.ShowOnDisabled="True" ItemsSource="{Binding PairedProxyForwardRows}"
+                                                                  SelectedValuePath="ForwardId" SelectedValue="{Binding SelectedProxyForwardId, Mode=TwoWay}"
+                                                                  SelectionChanged="OnProxyPairedForwardSelectionChanged"
+                                                                  AutomationProperties.Name="{DynamicResource ProxySelectPairedForward}" MinHeight="38">
+                                                            <ComboBox.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <StackPanel Margin="2,3">
+                                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                                        <WrapPanel Margin="0,3,0,0">
+                                                                            <TextBlock Text="{Binding ListenerEndpoint}" FontFamily="Consolas" FontSize="11"/>
+                                                                            <TextBlock Text=" · " FontSize="11" Foreground="{DynamicResource MutedTextBrush}"/>
+                                                                            <TextBlock Text="{Binding SelectedProfileName}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"/>
+                                                                        </WrapPanel>
                                                                     </StackPanel>
-                                                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                                                        <Border Style="{StaticResource Chip}" Margin="0,0,6,0">
-                                                                            <TextBlock Text="{DynamicResource OwnNodeLabel}" FontSize="10" FontWeight="SemiBold"
-                                                                                       Foreground="{DynamicResource MutedTextBrush}"/>
-                                                                        </Border>
-                                                                        <TextBlock Text="{Binding Server}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
-                                                                                   TextTrimming="CharacterEllipsis" MaxWidth="150" VerticalAlignment="Center"/>
-                                                                    </StackPanel>
-                                                                </StackPanel>
-                                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                                                    <Button Style="{StaticResource IconButton}" Content="&#xE898;" Width="30" Height="30"
-                                                                            ToolTip="{DynamicResource NodesUpload}" Click="OnNodeUpload_Click"
-                                                                            Visibility="{Binding Converter={StaticResource UploadableToVis}}"
-                                                                            AutomationProperties.Name="Upload node to cloud"/>
-                                                                    <Button Style="{StaticResource IconButton}" Content="&#xE8C8;" Width="30" Height="30"
-                                                                            ToolTip="{DynamicResource NodesCopyLink}" Click="OnNodeCopyLink_Click"
-                                                                            AutomationProperties.Name="Copy share link"/>
-                                                                </StackPanel>
-                                                            </Grid>
-                                                        </DataTemplate>
-                                                    </ListBox.ItemTemplate>
-                                                </ListBox>
-                                                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
-                                                    <Button Style="{StaticResource ProxyIconButton}" Content="&#xE70F;" Click="OnPairingEdit_Click"
-                                                            ToolTip="{DynamicResource ProxyEdit}" AutomationProperties.Name="Edit saved node" Margin="0,0,8,0"/>
-                                                    <Button Style="{StaticResource ProxyIconButton}" Content="&#xE74D;" Click="OnPairingDelete_Click"
-                                                            ToolTip="{DynamicResource ProxyDelete}" AutomationProperties.Name="Delete saved node"/>
-                                                </StackPanel>
-                                            </Grid>
-                                        </Border>
-                                        <Expander x:Name="ForwardPairingNodeEditorExpander" Grid.Column="1" IsExpanded="True"
-                                                  Header="{DynamicResource ProxyManualTitle}" Margin="16,-8,0,0"
-                                                  AutomationProperties.Name="Pairing node editor">
-                                            <StackPanel Margin="0,4,0,0">
-                                                <Border Background="{DynamicResource SecondaryContainerBrush}" CornerRadius="10" Padding="10,8" Margin="0,0,0,10"
-                                                        Visibility="{Binding ProxyEditor.IsHosted, Converter={StaticResource BoolToVis}}">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                                   Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
-                                                        <TextBlock Text="{DynamicResource NodesEditingHosted}" TextWrapping="Wrap" FontSize="12"
-                                                                   Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
+                                                                </DataTemplate>
+                                                            </ComboBox.ItemTemplate>
+                                                        </ComboBox>
+                                                        <TextBlock Text="{DynamicResource ProxySelectedForwardUnavailable}"
+                                                                   Visibility="{Binding IsSelectedProxyForwardUnavailable, Converter={StaticResource BoolToVis}}"
+                                                                   FontSize="11" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMode}" Margin="0,12,0,0"/>
+                                                        <ComboBox x:Name="ProxyModeCombo" ToolTipService.ShowOnDisabled="True" SelectedIndex="0" SelectionChanged="OnProxyModeSelectionChanged"
+                                                                  AutomationProperties.Name="Proxy mode" MinHeight="38">
+                                                            <ComboBoxItem Content="{DynamicResource ProxyModeSelect}" Tag=""/>
+                                                            <ComboBoxItem Content="{DynamicResource ProxyModeHttp}" Tag="Http"/>
+                                                            <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
+                                                            <ComboBoxItem Content="{DynamicResource ProxyModeProcess}" Tag="Process"/>
+                                                        </ComboBox>
+                                                        <TextBlock x:Name="ProxyModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
+                                                                   FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                                        <TextBlock x:Name="ProxySwitchLockedNotice" Text="{DynamicResource ProxySwitchRequiresDisconnect}" Visibility="Collapsed"
+                                                                   FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                                        <TextBlock Text="{DynamicResource ProxyPairedForwardHint}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
+                                                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                                        <WrapPanel HorizontalAlignment="Right" Margin="0,14,0,0">
+                                                            <Button x:Name="ProxySelectedConnectButton" Style="{StaticResource PrimaryButton}"
+                                                                    Content="{DynamicResource ProxyConnect}" Click="OnProxySelectedConnect_Click"
+                                                                    IsEnabled="{Binding IsProxyReadyForSelectedPairedForward}" Margin="0,0,8,0"/>
+                                                            <Button x:Name="ProxySelectedDisconnectButton" Style="{StaticResource DangerButton}"
+                                                                    Content="{DynamicResource ProxyDisconnect}" Click="OnProxySelectedDisconnect_Click"
+                                                                    IsEnabled="{Binding IsProxyConnectedForSelectedPairedForward}"/>
+                                                        </WrapPanel>
                                                     </StackPanel>
                                                 </Border>
-                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyImportPrompt}"/>
-                                                <Grid Margin="0,0,0,4">
+                                                <Border Background="{DynamicResource SurfaceVariantBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                        CornerRadius="16" Padding="14" Margin="0,0,0,12">
+                                                    <StackPanel>
+                                                        <TextBlock Text="{DynamicResource ProxyRouteListenPort}" Style="{StaticResource FieldLabel}"/>
+                                                        <TextBlock Text="{Binding SelectedProxyPairedForwardEndpoint}" FontFamily="Consolas" FontSize="14" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding SelectedProxyPairedForwardNode}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0"/>
+                                                    </StackPanel>
+                                                </Border>
+                                                <StackPanel>
+                                                    <ComboBox x:Name="ProxyForwardCombo" Visibility="Collapsed" ItemsSource="{Binding ProxyForwardOptions}"
+                                                              DisplayMemberPath="DisplayName" SelectedValuePath="ForwardId"
+                                                              SelectedValue="{Binding SelectedProxyForwardId, Mode=OneWay}"
+                                                              SelectionChanged="OnProxyForwardSelectionChanged"/>
+                                                </StackPanel>
+                                            <TextBlock x:Name="ProxyStatusText" Text="{DynamicResource ProxyReady}" FontSize="12"
+                                                       Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                                            <TextBlock Text="{DynamicResource ProxyExternalConnectionHint}" FontSize="11"
+                                                       Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+
+                                            <StackPanel Margin="0,8,0,16">
+                                                <StackPanel Margin="0,8,0,0">
+
+                                                    <Border x:Name="ProxyManualSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12" Visibility="Collapsed">
+                                                        <StackPanel>
+                                                            <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource ProxyManualTitle}" Margin="0,0,0,8"/>
+                                                    <StackPanel Visibility="{Binding ProxyEditor.IsNew, Converter={StaticResource BoolToVis}}">
+                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProtocol}"/>
+                                                        <ComboBox ItemsSource="{Binding ProxyEditor.ProtocolOptions}" SelectedItem="{Binding ProxyEditor.Protocol, Mode=TwoWay}"
+                                                                  AutomationProperties.Name="Proxy protocol" Margin="0,0,0,8"/>
+                                                    </StackPanel>
+                                                            <StackPanel Margin="0,0,0,8">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyName}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Name, UpdateSourceTrigger=PropertyChanged}"
+                                                                         AutomationProperties.Name="Proxy profile name"/>
+                                                            </StackPanel>
+
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="120"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServer}"/>
+                                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Server, UpdateSourceTrigger=PropertyChanged}"
+                                                                             AutomationProperties.Name="Proxy server"/>
+                                                                </StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPort}"/>
+                                                                    <ComboBox ItemsSource="{Binding ProxyEditor.PortOptions}" IsEditable="True"
+                                                                              Text="{Binding ProxyEditor.PortText, UpdateSourceTrigger=PropertyChanged}"
+                                                                             AutomationProperties.Name="Proxy port"/>
+                                                                </StackPanel>
+                                                            </Grid>
+
+                                                            <StackPanel x:Name="ProxySsFields">
+                                                                <StackPanel.Style>
+                                                                    <Style TargetType="StackPanel">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding ProxyEditor.IsShadowsocks}" Value="True">
+                                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </StackPanel.Style>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMethod}"/>
+                                                                <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksMethodOptions}"
+                                                                          SelectedItem="{Binding ProxyEditor.Method, Mode=TwoWay}"
+                                                                          Margin="0,0,0,8" AutomationProperties.Name="Shadowsocks cipher"/>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPassword}"/>
+                                                                <PasswordBox x:Name="ProxyPassword" Padding="10,8" FontSize="13" Margin="0,0,0,8"
+                                                                             AutomationProperties.Name="Proxy password"/>
+                                                                <CheckBox Content="{DynamicResource ProxyUdpOverTcp}" IsChecked="{Binding ProxyEditor.UdpOverTcp, Mode=TwoWay}"
+                                                                          Margin="0,0,0,8"/>
+                                                            </StackPanel>
+
+                                                            <StackPanel x:Name="ProxyVlessFields">
+                                                                <StackPanel.Style>
+                                                                    <Style TargetType="StackPanel">
+                                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True">
+                                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </StackPanel.Style>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyUuid}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Uuid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyTransport}"/>
+                                                                        <ComboBox ItemsSource="{Binding ProxyEditor.VlessTransportOptions}"
+                                                                                  SelectedItem="{Binding ProxyEditor.Transport, Mode=TwoWay}"/>
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFlow}"/>
+                                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Flow, UpdateSourceTrigger=PropertyChanged}"/>
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyHost}"/>
+                                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Host, UpdateSourceTrigger=PropertyChanged}"/>
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPath}"/>
+                                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Path, UpdateSourceTrigger=PropertyChanged}"/>
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServiceName}"
+                                                                           Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServiceName, UpdateSourceTrigger=PropertyChanged}"
+                                                                         Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8"/>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServerName}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFingerprint}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Fingerprint, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityKey}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityPublicKey, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityShortId}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityShortId, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                                <StackPanel Orientation="Horizontal">
+                                                                    <CheckBox Content="{DynamicResource ProxyTls}" IsChecked="{Binding ProxyEditor.Tls, Mode=TwoWay}" Margin="0,0,16,0"/>
+                                                                    <CheckBox Content="{DynamicResource ProxyAllowInsecure}" IsChecked="{Binding ProxyEditor.AllowInsecure, Mode=TwoWay}"/>
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <Border x:Name="ProxyConnectionSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
+                                                            BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12"
+                                                            IsEnabled="{Binding IsExternalProxySelected, Converter={StaticResource InverseBool}}">
+                                                        <StackPanel Margin="0,0,0,0">
+                                                                                                            <TextBlock Text="{DynamicResource ProxyElevationHint}" Foreground="{DynamicResource MutedTextBrush}"
+                                                                       TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                                             <CheckBox x:Name="ProxyBypassChinaCheckBox"
+                                                                       Content="{DynamicResource ProxyBypassChinaMainland}"
+                                                                       IsChecked="{Binding Config.ProxyBypassChinaMainland, Mode=TwoWay}"
+                                                                       Margin="0,0,0,10"
+                                                                       AutomationProperties.Name="Bypass mainland China IPs"/>
+
+                                                            <Grid Margin="0,0,0,10">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsMode}"/>
+                                                                    <ComboBox x:Name="ProxyDnsModeCombo"
+                                                                              SelectionChanged="OnProxyDnsModeSelectionChanged"
+                                                                              AutomationProperties.Name="Proxy DNS mode">
+                                                                        <ComboBoxItem Content="{DynamicResource ProxyDnsRemote}" Tag="Remote"/>
+                                                                        <ComboBoxItem Content="{DynamicResource ProxyDnsCustom}" Tag="Custom"/>
+                                                                    </ComboBox>
+                                                                </StackPanel>
+                                                                <StackPanel x:Name="ProxyDnsServersPanel" Grid.Column="1" Margin="8,0,0,0">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsServers}"/>
+                                                                    <TextBox x:Name="ProxyDnsServersText"
+                                                                             Style="{StaticResource InputTextBox}"
+                                                                             TextChanged="OnProxyDnsServersTextChanged"
+                                                                             AutomationProperties.Name="Custom DNS servers"/>
+                                                                </StackPanel>
+                                                            </Grid>
+                                                            <TextBlock Text="{DynamicResource ProxyDnsHint}" Foreground="{DynamicResource MutedTextBrush}"
+                                                                       TextWrapping="Wrap" Margin="0,0,0,10"/>
+
+                                                            <Grid Margin="0,0,0,10">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="160"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyLocalListenPort}"/>
+                                                                    <ComboBox x:Name="ProxyLocalListenPortCombo"
+                                                                              ItemsSource="{Binding ProxyEditor.LocalListenPortOptions}"
+                                                                              IsEditable="True"
+                                                                              AutomationProperties.Name="Local proxy listen port"/>
+                                                                </StackPanel>
+                                                                <TextBlock Grid.Column="1" Text="{DynamicResource ProxyLocalListenPortHint}"
+                                                                           Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
+                                                                           VerticalAlignment="Bottom" Margin="8,0,0,4"/>
+                                                            </Grid>
+
+
+                                                    <StackPanel x:Name="ProxyGameCard" Margin="0,0,0,12" Visibility="Collapsed">
+                                                        <StackPanel>
+                                                            <DockPanel LastChildFill="False">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyGame}" DockPanel.Dock="Left"/>
+                                                                <WrapPanel DockPanel.Dock="Right">
+                                                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyAddGame}"
+                                                                            Click="OnProxyAddGame_Click" Margin="0,0,6,0"/>
+                                                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyImportNetchModes}"
+                                                                            Click="OnProxyImportNetchModes_Click" Margin="0,0,6,0"/>
+                                                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyRefreshGames}"
+                                                                            Click="OnProxyRefreshGames_Click"/>
+                                                                </WrapPanel>
+                                                            </DockPanel>
+                                                            <TextBlock Text="{DynamicResource ProxyGameHint}" Foreground="{DynamicResource MutedTextBrush}"
+                                                                       TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                                            <ComboBox x:Name="ProxyGameCombo" ItemsSource="{Binding ProxyGameOptions}"
+                                                                      SelectedValuePath="Id"
+                                                                      SelectedValue="{Binding SelectedProxyGameId, Mode=OneWay}"
+                                                                      SelectionChanged="OnProxyGameSelectionChanged"
+                                                                      AutomationProperties.Name="Game to proxy">
+                                                                <ComboBox.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <DockPanel LastChildFill="True">
+                                                                            <TextBlock Text="{Binding DisplayName}"/>
+                                                                            <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
+                                                                                       HorizontalAlignment="Right" Margin="12,0,0,0"/>
+                                                                        </DockPanel>
+                                                                    </DataTemplate>
+                                                             </ComboBox.ItemTemplate>
+                                                         </ComboBox>
+                                                             <Border Background="{DynamicResource InfoContainerBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                                     CornerRadius="4" Padding="8" Margin="0,8,0,0">
+                                                                 <DockPanel LastChildFill="True">
+                                                                     <TextBlock Text="{DynamicResource ProxyActiveGame}" FontWeight="SemiBold"
+                                                                                Foreground="{DynamicResource TextBrush}" Margin="0,0,8,0"
+                                                                                DockPanel.Dock="Left"/>
+                                                                     <TextBlock Text="{Binding SelectedProxyGameDisplayName}" FontWeight="Bold"
+                                                                                Foreground="{DynamicResource PrimaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                                                 </DockPanel>
+                                                             </Border>
+                                                     </StackPanel>
+                                                 </StackPanel>
+                                                            <Button x:Name="ProxyTestUdpButton" Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyTestUdp}"
+                                                                    Click="OnProxyTestUdp_Click" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                    <Button x:Name="ProxySaveNodeButton" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxySave}" Visibility="Collapsed"
+                                                            Click="OnProxySave_Click" HorizontalAlignment="Right" Margin="0,12,0,0"/>
+                                                </StackPanel>
+                                            </StackPanel>
+
+                                                                              </StackPanel>
+                                            </Grid>
+                                        </Grid>
+                                    </Grid>
+
+                                    <!-- Services and nodes: configuration only. Pairing never starts a connection. -->
+                                    <StackPanel x:Name="ForwardPairingPanel" Margin="0,28,0,0">
+                                        <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource NavForwards}" Margin="6,0,6,10"/>
+                                        <TextBlock Text="{DynamicResource ForwardPairingHint}" Style="{StaticResource MutedText}" FontSize="13" Margin="6,0,6,10"/>
+
+                                        <!-- Cloud sync -->
+                                        <Border x:Name="NodesCloudCard" Style="{StaticResource CardBorder}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="44" Height="44" CornerRadius="14" Background="{DynamicResource SecondaryContainerBrush}" ToolTip="{DynamicResource NodesCloudHint}"
+                                                        VerticalAlignment="Top" Margin="0,0,14,0">
+                                                    <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="20"
+                                                               Foreground="{DynamicResource OnSecondaryContainerBrush}"
+                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                </Border>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{DynamicResource NodesCloudTitle}" FontSize="15" FontWeight="SemiBold"/>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <ProgressBar Width="16" Height="16" IsIndeterminate="True" Margin="0,0,8,0" Background="Transparent"
+                                                                     Visibility="{Binding IsCloudBusy, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock x:Name="NodesCloudStatus" Text="{Binding CloudStatusText}" FontSize="12" TextWrapping="Wrap">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding HasCloudError}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                                    <Button x:Name="NodesRefreshCloudButton" Style="{StaticResource GhostButton}" Margin="0,0,8,0"
+                                                            Click="OnNodesRefreshCloud_Click" IsEnabled="{Binding IsCloudBusy, Converter={StaticResource InverseBool}}"
+                                                            AutomationProperties.Name="Refresh from cloud">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{DynamicResource NodesRefreshCloud}"/>
+                                                        </StackPanel>
+                                                    </Button>
+                                                    <Button x:Name="NodesSyncAllButton" Style="{StaticResource PrimaryButton}"
+                                                            Click="OnNodesSyncAll_Click" IsEnabled="{Binding IsCloudBusy, Converter={StaticResource InverseBool}}"
+                                                            AutomationProperties.Name="Sync all nodes to cloud">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="&#xE898;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{DynamicResource NodesSyncAll}"/>
+                                                        </StackPanel>
+                                                    </Button>
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- Import -->
+                                        <Border Style="{StaticResource CardBorder}">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                                    <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE8C8;"/>
+                                                    <TextBlock Style="{StaticResource CardTitle}" Text="{DynamicResource NodesImportTitle}"/>
+                                                </StackPanel>
+                                                <Grid>
                                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                                    <Grid Margin="0,0,8,0">
-                                                        <TextBox x:Name="PairingImportUri" Style="{StaticResource InputTextBox}"
-                                                                 AutomationProperties.Name="{DynamicResource ProxyImportPrompt}"
-                                                                 AutomationProperties.HelpText="{DynamicResource ProxyImportSupported}"/>
-                                                        <TextBlock x:Name="PairingImportPlaceholder" Text="ss://" Margin="11,0,11,0"
-                                                                   VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
-                                                                   FontSize="13" IsHitTestVisible="False">
+                                                    <Grid Margin="0,0,10,0">
+                                                        <TextBox x:Name="NodesImportText" Style="{StaticResource InputTextBox}" AcceptsReturn="True"
+                                                                 TextWrapping="NoWrap" MinHeight="40" MaxHeight="120" VerticalScrollBarVisibility="Auto"
+                                                                 FontFamily="Consolas" AutomationProperties.Name="Share links to import"
+                                                                 ToolTip="{DynamicResource NodesImportHint}"/>
+                                                        <TextBlock Text="ss:// · socks5:// · vless://" Margin="11,0,11,0" VerticalAlignment="Center"
+                                                                   Foreground="{DynamicResource MutedTextBrush}" FontSize="13" IsHitTestVisible="False">
                                                             <TextBlock.Style>
                                                                 <Style TargetType="TextBlock">
                                                                     <Setter Property="Visibility" Value="Collapsed"/>
                                                                     <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding Text, ElementName=PairingImportUri}" Value="">
+                                                                        <DataTrigger Binding="{Binding Text, ElementName=NodesImportText}" Value="">
                                                                             <Setter Property="Visibility" Value="Visible"/>
                                                                         </DataTrigger>
                                                                     </Style.Triggers>
@@ -771,467 +953,301 @@
                                                             </TextBlock.Style>
                                                         </TextBlock>
                                                     </Grid>
-                                                    <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxyImport}"
-                                                            Click="OnPairingImport_Click" AutomationProperties.Name="Import proxy URI"/>
-                                                </Grid>
-                                                <TextBlock Text="{DynamicResource ProxyImportSupported}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10"/>
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="1" Margin="8,0,0,8"
-                                                                Visibility="{Binding ProxyEditor.IsNew, Converter={StaticResource BoolToVis}}">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProtocol}"/>
-                                                        <ComboBox ItemsSource="{Binding ProxyEditor.ProtocolOptions}" SelectedItem="{Binding ProxyEditor.Protocol, Mode=TwoWay}"
-                                                                  AutomationProperties.Name="Proxy protocol"/>
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyName}"/>
-                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource NodesPaste}" Margin="0,0,8,0"
+                                                                Click="OnNodesPaste_Click" Height="40"/>
+                                                        <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource NodesImport}"
+                                                                Click="OnNodesImport_Click" Height="40" AutomationProperties.Name="Import nodes"/>
                                                     </StackPanel>
                                                 </Grid>
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServer}"/>
-                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Server, UpdateSourceTrigger=PropertyChanged}"/>
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="1" Margin="8,0,0,8">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPort}"/>
-                                                        <ComboBox ItemsSource="{Binding ProxyEditor.PortOptions}" IsEditable="True"
-                                                                  Text="{Binding ProxyEditor.PortText, UpdateSourceTrigger=PropertyChanged}"/>
-                                                    </StackPanel>
-                                                </Grid>
-                                                <StackPanel>
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsSocks5}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxySocksUsername}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Username, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"
-                                                             AutomationProperties.Name="SOCKS5 username"/>
-                                                </StackPanel>
-                                                <StackPanel>
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Visible"/>
-                                                            <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPassword}"/>
-                                                    <PasswordBox x:Name="PairingProxyPassword" Padding="10,8" FontSize="13" Margin="0,0,0,8"/>
-                                                </StackPanel>
-                                                <StackPanel>
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsShadowsocks}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMethod}"/>
-                                                    <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksMethodOptions}" SelectedItem="{Binding ProxyEditor.Method, Mode=TwoWay}" Margin="0,0,0,8"/>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPlugin}"/>
-                                                            <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksPluginOptions}" SelectedItem="{Binding ProxyEditor.Plugin, Mode=TwoWay}"
-                                                                      AutomationProperties.Name="Shadowsocks plugin"/>
-                                                        </StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPluginOpts}"/>
-                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.PluginOpts, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        </StackPanel>
-                                                    </Grid>
-                                                    <CheckBox Content="{DynamicResource ProxyUdpOverTcp}" IsChecked="{Binding ProxyEditor.UdpOverTcp, Mode=TwoWay}" Margin="0,0,0,8"/>
-                                                </StackPanel>
-                                                <StackPanel>
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyUuid}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Uuid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyTransport}"/><ComboBox ItemsSource="{Binding ProxyEditor.VlessTransportOptions}" SelectedItem="{Binding ProxyEditor.Transport, Mode=TwoWay}"/></StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFlow}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Flow, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                    </Grid>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyHost}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Host, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPath}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Path, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                    </Grid>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServiceName}" Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServiceName, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8"/>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServerName}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServerName, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFingerprint}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Fingerprint, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                    </Grid>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityKey}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityPublicKey, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityShortId}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityShortId, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
-                                                    </Grid>
-                                                    <StackPanel Orientation="Horizontal"><CheckBox Content="{DynamicResource ProxyTls}" IsChecked="{Binding ProxyEditor.Tls, Mode=TwoWay}" Margin="0,0,16,0"/><CheckBox Content="{DynamicResource ProxyAllowInsecure}" IsChecked="{Binding ProxyEditor.AllowInsecure, Mode=TwoWay}"/></StackPanel>
-                                                </StackPanel>
-                                                <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxySave}" Click="OnPairingSave_Click" HorizontalAlignment="Right" Margin="0,10,0,0"/>
-                                            </StackPanel>
-                                        </Expander>
-                                    </Grid>
-                                </Border>
-                            </StackPanel>
-                        </ScrollViewer>
-
-
-                        <!-- Nodes: the user's own nodes, cloud sync ("上云") and pairing per service. -->
-                                                <!-- Local proxy view -->
-                        <Grid x:Name="ProxyPanel" Visibility="Collapsed" SizeChanged="OnProxyPanelSizeChanged">
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                                <Grid Grid.Row="0" Margin="0,0,0,18">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                
-                                    <Border x:Name="ProxyStatusBanner" Grid.Column="1" Padding="12,6"
-                                            CornerRadius="14" BorderThickness="1" BorderBrush="{DynamicResource BorderBrush}">
-                                        <TextBlock x:Name="ProxyStatusTitle" Text="{DynamicResource ProxyDisconnected}" FontSize="12"/>
-                                    </Border>
-                                </Grid>
-                                <Grid Grid.Row="1">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="ProxySidebarColumn" Width="0"/></Grid.ColumnDefinitions>
-                                <Border x:Name="ProxySavedNodesSidebar" Grid.Column="1" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                        BorderThickness="1,0,0,0" Padding="16,4,0,0" Margin="18,0,0,0" Visibility="Collapsed">
-                                    <Grid>
-                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                        <Grid Margin="0,0,0,12">
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <TextBlock Text="{DynamicResource ProxyMyNodes}" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                            <Button x:Name="ProxyNewButton" Grid.Column="1" Style="{StaticResource ProxyIconButton}" Content="&#xE710;"
-                                                    ToolTip="{DynamicResource ProxyNew}" Click="OnProxyNew_Click" AutomationProperties.Name="New proxy profile"/>
-                                        </Grid>
-                                        <ListBox x:Name="ProxyProfileList" Grid.Row="1" ItemsSource="{Binding ProxyProfiles}" SelectedValuePath="Id"
-                                                 SelectionChanged="OnProxyProfileSelectionChanged" BorderThickness="0" Background="Transparent"
-                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch"
-                                                 AutomationProperties.Name="Saved nodes">
-                                            <ListBox.ItemTemplate>
-                                                <DataTemplate>
-                                                    <StackPanel Margin="4,8">
-                                                        <TextBlock Text="{Binding Name}" ToolTip="{Binding Name}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold"/>
-                                                        <TextBlock Text="{DynamicResource OwnNodeLabel}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" Margin="0,3,0,0"/>
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </ListBox.ItemTemplate>
-                                        </ListBox>
-                                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
-                                            <Button Style="{StaticResource ProxyIconButton}" Content="&#xE70F;" Click="OnProxyEdit_Click"
-                                                    ToolTip="{DynamicResource ProxyEdit}" AutomationProperties.Name="Edit saved node" Margin="0,0,8,0"/>
-                                            <Button Style="{StaticResource ProxyIconButton}" Content="&#xE74D;" Click="OnProxyDelete_Click"
-                                                    ToolTip="{DynamicResource ProxyDelete}" AutomationProperties.Name="Delete saved node"/>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                                  <StackPanel Margin="0,0,8,0">
-                                    <TextBlock Text="{DynamicResource ProxyConnectNote}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,12"/>
-                                    <TextBlock Text="{DynamicResource ProxyForward}" FontSize="15" FontWeight="SemiBold" Margin="0,0,0,12"/>
-                                    <Border Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                            CornerRadius="16" Padding="16" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxySelectPairedForward}"/>
-                                            <ComboBox x:Name="ProxyPairedForwardCombo" ToolTipService.ShowOnDisabled="True" ItemsSource="{Binding PairedProxyForwardRows}"
-                                                      SelectedValuePath="ForwardId" SelectedValue="{Binding SelectedProxyForwardId, Mode=TwoWay}"
-                                                      SelectionChanged="OnProxyPairedForwardSelectionChanged"
-                                                      AutomationProperties.Name="{DynamicResource ProxySelectPairedForward}" MinHeight="38">
-                                                <ComboBox.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <StackPanel Margin="2,3">
-                                                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                                            <WrapPanel Margin="0,3,0,0">
-                                                                <TextBlock Text="{Binding ListenerEndpoint}" FontFamily="Consolas" FontSize="11"/>
-                                                                <TextBlock Text=" · " FontSize="11" Foreground="{DynamicResource MutedTextBrush}"/>
-                                                                <TextBlock Text="{Binding SelectedProfileName}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextTrimming="CharacterEllipsis"/>
-                                                            </WrapPanel>
-                                                        </StackPanel>
-                                                    </DataTemplate>
-                                                </ComboBox.ItemTemplate>
-                                            </ComboBox>
-                                            <TextBlock Text="{DynamicResource ProxySelectedForwardUnavailable}"
-                                                       Visibility="{Binding IsSelectedProxyForwardUnavailable, Converter={StaticResource BoolToVis}}"
-                                                       FontSize="11" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMode}" Margin="0,12,0,0"/>
-                                            <ComboBox x:Name="ProxyModeCombo" ToolTipService.ShowOnDisabled="True" SelectedIndex="0" SelectionChanged="OnProxyModeSelectionChanged"
-                                                      AutomationProperties.Name="Proxy mode" MinHeight="38">
-                                                <ComboBoxItem Content="{DynamicResource ProxyModeSelect}" Tag=""/>
-                                                <ComboBoxItem Content="{DynamicResource ProxyModeHttp}" Tag="Http"/>
-                                                <ComboBoxItem Content="{DynamicResource ProxyModeTun}" Tag="Tun"/>
-                                                <ComboBoxItem Content="{DynamicResource ProxyModeProcess}" Tag="Process"/>
-                                            </ComboBox>
-                                            <TextBlock x:Name="ProxyModeHttpNotice" Text="{DynamicResource ProxyModeHttpWebRtcNotice}" Visibility="Collapsed"
-                                                       FontSize="11" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                            <TextBlock x:Name="ProxySwitchLockedNotice" Text="{DynamicResource ProxySwitchRequiresDisconnect}" Visibility="Collapsed"
-                                                       FontSize="11" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                            <TextBlock Text="{DynamicResource ProxyPairedForwardHint}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
-                                                       TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                            <WrapPanel HorizontalAlignment="Right" Margin="0,14,0,0">
-                                                <Button x:Name="ProxySelectedConnectButton" Style="{StaticResource PrimaryButton}"
-                                                        Content="{DynamicResource ProxyConnect}" Click="OnProxySelectedConnect_Click"
-                                                        IsEnabled="{Binding IsProxyReadyForSelectedPairedForward}" Margin="0,0,8,0"/>
-                                                <Button x:Name="ProxySelectedDisconnectButton" Style="{StaticResource DangerButton}"
-                                                        Content="{DynamicResource ProxyDisconnect}" Click="OnProxySelectedDisconnect_Click"
-                                                        IsEnabled="{Binding IsProxyConnectedForSelectedPairedForward}"/>
-                                            </WrapPanel>
-                                        </StackPanel>
-                                    </Border>
-                                    <Border Background="{DynamicResource SurfaceVariantBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                            CornerRadius="16" Padding="14" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Text="{DynamicResource ProxyRouteListenPort}" Style="{StaticResource FieldLabel}"/>
-                                            <TextBlock Text="{Binding SelectedProxyPairedForwardEndpoint}" FontFamily="Consolas" FontSize="14" FontWeight="SemiBold"/>
-                                            <TextBlock Text="{Binding SelectedProxyPairedForwardNode}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0"/>
-                                        </StackPanel>
-                                    </Border>
-                                    <StackPanel>
-                                        <ComboBox x:Name="ProxyForwardCombo" Visibility="Collapsed" ItemsSource="{Binding ProxyForwardOptions}"
-                                                  DisplayMemberPath="DisplayName" SelectedValuePath="ForwardId"
-                                                  SelectedValue="{Binding SelectedProxyForwardId, Mode=OneWay}"
-                                                  SelectionChanged="OnProxyForwardSelectionChanged"/>
-                                    </StackPanel>
-                                <TextBlock x:Name="ProxyStatusText" Text="{DynamicResource ProxyReady}" FontSize="12"
-                                           Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,8"/>
-                                <TextBlock Text="{DynamicResource ProxyExternalConnectionHint}" FontSize="11"
-                                           Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"/>
-
-                                <StackPanel Margin="0,8,0,16">
-                                    <StackPanel Margin="0,8,0,0">
-
-                                        <Border x:Name="ProxyManualSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                                BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12" Visibility="Collapsed">
-                                            <StackPanel>
-                                                <TextBlock Style="{StaticResource SectionHeader}" Text="{DynamicResource ProxyManualTitle}" Margin="0,0,0,8"/>
-                                        <StackPanel Visibility="{Binding ProxyEditor.IsNew, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProtocol}"/>
-                                            <ComboBox ItemsSource="{Binding ProxyEditor.ProtocolOptions}" SelectedItem="{Binding ProxyEditor.Protocol, Mode=TwoWay}"
-                                                      AutomationProperties.Name="Proxy protocol" Margin="0,0,0,8"/>
-                                        </StackPanel>
-                                                <StackPanel Margin="0,0,0,8">
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyName}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Name, UpdateSourceTrigger=PropertyChanged}"
-                                                             AutomationProperties.Name="Proxy profile name"/>
-                                                </StackPanel>
-
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="120"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServer}"/>
-                                                        <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Server, UpdateSourceTrigger=PropertyChanged}"
-                                                                 AutomationProperties.Name="Proxy server"/>
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="1" Margin="8,0,0,8">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPort}"/>
-                                                        <ComboBox ItemsSource="{Binding ProxyEditor.PortOptions}" IsEditable="True"
-                                                                  Text="{Binding ProxyEditor.PortText, UpdateSourceTrigger=PropertyChanged}"
-                                                                 AutomationProperties.Name="Proxy port"/>
-                                                    </StackPanel>
-                                                </Grid>
-
-                                                <StackPanel x:Name="ProxySsFields">
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding ProxyEditor.IsShadowsocks}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMethod}"/>
-                                                    <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksMethodOptions}"
-                                                              SelectedItem="{Binding ProxyEditor.Method, Mode=TwoWay}"
-                                                              Margin="0,0,0,8" AutomationProperties.Name="Shadowsocks cipher"/>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPassword}"/>
-                                                    <PasswordBox x:Name="ProxyPassword" Padding="10,8" FontSize="13" Margin="0,0,0,8"
-                                                                 AutomationProperties.Name="Proxy password"/>
-                                                    <CheckBox Content="{DynamicResource ProxyUdpOverTcp}" IsChecked="{Binding ProxyEditor.UdpOverTcp, Mode=TwoWay}"
-                                                              Margin="0,0,0,8"/>
-                                                </StackPanel>
-
-                                                <StackPanel x:Name="ProxyVlessFields">
-                                                    <StackPanel.Style>
-                                                        <Style TargetType="StackPanel">
-                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True">
-                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </StackPanel.Style>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyUuid}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Uuid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*"/>
-                                                            <ColumnDefinition Width="*"/>
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyTransport}"/>
-                                                            <ComboBox ItemsSource="{Binding ProxyEditor.VlessTransportOptions}"
-                                                                      SelectedItem="{Binding ProxyEditor.Transport, Mode=TwoWay}"/>
-                                                        </StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFlow}"/>
-                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Flow, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        </StackPanel>
-                                                    </Grid>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*"/>
-                                                            <ColumnDefinition Width="*"/>
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel Grid.Column="0" Margin="0,0,8,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyHost}"/>
-                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Host, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        </StackPanel>
-                                                        <StackPanel Grid.Column="1" Margin="8,0,0,8">
-                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPath}"/>
-                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Path, UpdateSourceTrigger=PropertyChanged}"/>
-                                                        </StackPanel>
-                                                    </Grid>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServiceName}"
-                                                               Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServiceName, UpdateSourceTrigger=PropertyChanged}"
-                                                             Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8"/>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServerName}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFingerprint}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Fingerprint, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityKey}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityPublicKey, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityShortId}"/>
-                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityShortId, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <CheckBox Content="{DynamicResource ProxyTls}" IsChecked="{Binding ProxyEditor.Tls, Mode=TwoWay}" Margin="0,0,16,0"/>
-                                                        <CheckBox Content="{DynamicResource ProxyAllowInsecure}" IsChecked="{Binding ProxyEditor.AllowInsecure, Mode=TwoWay}"/>
-                                                    </StackPanel>
-                                                </StackPanel>
+                                                <TextBlock x:Name="NodesStatusText" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource SuccessBrush}"/>
                                             </StackPanel>
                                         </Border>
 
-                                        <Border x:Name="ProxyConnectionSection" Background="{DynamicResource CardBgBrush}" BorderBrush="{DynamicResource BorderBrush}"
-                                                BorderThickness="1" CornerRadius="16" Padding="14" Margin="0,0,0,12"
-                                                IsEnabled="{Binding IsExternalProxySelected, Converter={StaticResource InverseBool}}">
-                                            <StackPanel Margin="0,0,0,0">
-                                                                                                <TextBlock Text="{DynamicResource ProxyElevationHint}" Foreground="{DynamicResource MutedTextBrush}"
-                                                           TextWrapping="Wrap" Margin="0,0,0,8"/>
-                                                 <CheckBox x:Name="ProxyBypassChinaCheckBox"
-                                                           Content="{DynamicResource ProxyBypassChinaMainland}"
-                                                           IsChecked="{Binding Config.ProxyBypassChinaMainland, Mode=TwoWay}"
-                                                           Margin="0,0,0,10"
-                                                           AutomationProperties.Name="Bypass mainland China IPs"/>
-
-                                                <Grid Margin="0,0,0,10">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="*"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsMode}"/>
-                                                        <ComboBox x:Name="ProxyDnsModeCombo"
-                                                                  SelectionChanged="OnProxyDnsModeSelectionChanged"
-                                                                  AutomationProperties.Name="Proxy DNS mode">
-                                                            <ComboBoxItem Content="{DynamicResource ProxyDnsRemote}" Tag="Remote"/>
-                                                            <ComboBoxItem Content="{DynamicResource ProxyDnsCustom}" Tag="Custom"/>
-                                                        </ComboBox>
-                                                    </StackPanel>
-                                                    <StackPanel x:Name="ProxyDnsServersPanel" Grid.Column="1" Margin="8,0,0,0">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyDnsServers}"/>
-                                                        <TextBox x:Name="ProxyDnsServersText"
-                                                                 Style="{StaticResource InputTextBox}"
-                                                                 TextChanged="OnProxyDnsServersTextChanged"
-                                                                 AutomationProperties.Name="Custom DNS servers"/>
-                                                    </StackPanel>
-                                                </Grid>
-                                                <TextBlock Text="{DynamicResource ProxyDnsHint}" Foreground="{DynamicResource MutedTextBrush}"
-                                                           TextWrapping="Wrap" Margin="0,0,0,10"/>
-
-                                                <Grid Margin="0,0,0,10">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="160"/>
-                                                        <ColumnDefinition Width="*"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyLocalListenPort}"/>
-                                                        <ComboBox x:Name="ProxyLocalListenPortCombo"
-                                                                  ItemsSource="{Binding ProxyEditor.LocalListenPortOptions}"
-                                                                  IsEditable="True"
-                                                                  AutomationProperties.Name="Local proxy listen port"/>
-                                                    </StackPanel>
-                                                    <TextBlock Grid.Column="1" Text="{DynamicResource ProxyLocalListenPortHint}"
-                                                               Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap"
-                                                               VerticalAlignment="Bottom" Margin="8,0,0,4"/>
-                                                </Grid>
-
-
-                                        <StackPanel x:Name="ProxyGameCard" Margin="0,0,0,12" Visibility="Collapsed">
+                                        <Border Style="{StaticResource CardBorder}">
                                             <StackPanel>
-                                                <DockPanel LastChildFill="False">
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyGame}" DockPanel.Dock="Left"/>
-                                                    <WrapPanel DockPanel.Dock="Right">
-                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyAddGame}"
-                                                                Click="OnProxyAddGame_Click" Margin="0,0,6,0"/>
-                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyImportNetchModes}"
-                                                                Click="OnProxyImportNetchModes_Click" Margin="0,0,6,0"/>
-                                                        <Button Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyRefreshGames}"
-                                                                Click="OnProxyRefreshGames_Click"/>
-                                                    </WrapPanel>
-                                                </DockPanel>
-                                                <TextBlock Text="{DynamicResource ProxyGameHint}" Foreground="{DynamicResource MutedTextBrush}"
-                                                           TextWrapping="Wrap" Margin="0,0,0,8"/>
-                                                <ComboBox x:Name="ProxyGameCombo" ItemsSource="{Binding ProxyGameOptions}"
-                                                          SelectedValuePath="Id"
-                                                          SelectedValue="{Binding SelectedProxyGameId, Mode=OneWay}"
-                                                          SelectionChanged="OnProxyGameSelectionChanged"
-                                                          AutomationProperties.Name="Game to proxy">
-                                                    <ComboBox.ItemTemplate>
+                                                <ItemsControl x:Name="ForwardPairingRows" ItemsSource="{Binding ProxyForwardRows}">
+                                                    <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
-                                                            <DockPanel LastChildFill="True">
-                                                                <TextBlock Text="{Binding DisplayName}"/>
-                                                                <TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource MutedTextBrush}"
-                                                                           HorizontalAlignment="Right" Margin="12,0,0,0"/>
-                                                            </DockPanel>
+                                                            <Border Style="{StaticResource InsetBorder}" Margin="0,0,0,10">
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                        <ColumnDefinition Width="260"/>
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <StackPanel Margin="0,0,16,0" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="SemiBold"
+                                                                                   TextWrapping="Wrap"/>
+                                                                        <TextBlock Text="{DynamicResource ProxyRouteListenPort}" FontSize="11"
+                                                                                   Foreground="{DynamicResource MutedTextBrush}" Margin="0,5,0,0"/>
+                                                                        <TextBlock Text="{Binding ListenerEndpoint}" FontFamily="Consolas" FontSize="12"
+                                                                                   Margin="0,2,0,0"/>
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRowNode}"/>
+                                                                        <ComboBox ItemsSource="{Binding Profiles}" SelectedValuePath="Id"
+                                                                                  SelectedValue="{Binding SelectedProfileId, Mode=TwoWay}"
+                                                                                  SelectionChanged="OnProxyRowProfileSelectionChanged"
+                                                                                  AutomationProperties.Name="{Binding Title}">
+                                                                            <ComboBox.ItemTemplate>
+                                                                                <DataTemplate>
+                                                                                    <StackPanel Orientation="Horizontal">
+                                                                                        <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="11" Margin="0,0,6,0"
+                                                                                                   VerticalAlignment="Center" Foreground="{DynamicResource PrimaryBrush}"
+                                                                                                   Visibility="{Binding IsHosted, Converter={StaticResource BoolToVis}}"/>
+                                                                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"/>
+                                                                                    </StackPanel>
+                                                                                </DataTemplate>
+                                                                            </ComboBox.ItemTemplate>
+                                                                        </ComboBox>
+                                                                    </StackPanel>
+                                                                </Grid>
+                                                            </Border>
                                                         </DataTemplate>
-                                                 </ComboBox.ItemTemplate>
-                                             </ComboBox>
-                                                 <Border Background="{DynamicResource InfoContainerBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                                         CornerRadius="4" Padding="8" Margin="0,8,0,0">
-                                                     <DockPanel LastChildFill="True">
-                                                         <TextBlock Text="{DynamicResource ProxyActiveGame}" FontWeight="SemiBold"
-                                                                    Foreground="{DynamicResource TextBrush}" Margin="0,0,8,0"
-                                                                    DockPanel.Dock="Left"/>
-                                                         <TextBlock Text="{Binding SelectedProxyGameDisplayName}" FontWeight="Bold"
-                                                                    Foreground="{DynamicResource PrimaryBrush}" TextTrimming="CharacterEllipsis"/>
-                                                     </DockPanel>
-                                                 </Border>
-                                         </StackPanel>
-                                     </StackPanel>
-                                                <Button x:Name="ProxyTestUdpButton" Style="{StaticResource GhostButton}" Content="{DynamicResource ProxyTestUdp}"
-                                                        Click="OnProxyTestUdp_Click" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                                <TextBlock x:Name="ForwardPairingStatus" FontSize="12" Foreground="{DynamicResource SuccessBrush}"
+                                                           Margin="0,2,0,10"/>
+                                                <WrapPanel HorizontalAlignment="Right">
+                                                    <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ForwardPairingSave}"
+                                                            Click="OnSaveForwardPairings_Click" Margin="0,0,8,0"/>
+                                                </WrapPanel>
                                             </StackPanel>
                                         </Border>
-                                        <Button x:Name="ProxySaveNodeButton" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxySave}" Visibility="Collapsed"
-                                                Click="OnProxySave_Click" HorizontalAlignment="Right" Margin="0,12,0,0"/>
+
+                                        <!-- Saved nodes (list + editor). Hosted nodes carry a cloud badge. -->
+                                        <Border x:Name="ForwardPairingNodeSection" Style="{StaticResource CardBorder}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="340"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0" Padding="0,0,14,0">
+                                                    <Grid>
+                                                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                                        <Grid Margin="0,0,0,10">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Style="{StaticResource CardTitleIcon}" Text="&#xE774;"/>
+                                                                <TextBlock Text="{DynamicResource ProxyMyNodes}" Style="{StaticResource CardTitle}"/>
+                                                                <TextBlock Text="{Binding ProxyProfiles.Count, StringFormat={}  {0}}" FontSize="12" VerticalAlignment="Center"
+                                                                           Foreground="{DynamicResource MutedTextBrush}"/>
+                                                            </StackPanel>
+                                                            <Button Grid.Column="1" Style="{StaticResource ProxyIconButton}" Content="&#xE710;"
+                                                                    ToolTip="{DynamicResource ProxyNew}"
+                                                                    Click="OnPairingNew_Click" AutomationProperties.Name="New proxy profile"/>
+                                                        </Grid>
+                                                        <TextBlock Grid.Row="1" Text="{DynamicResource NodesEmpty}" Style="{StaticResource MutedText}" Margin="4,8"
+                                                                   Visibility="{Binding ProxyProfiles.Count, Converter={StaticResource ZeroToVis}}"/>
+                                                        <ListBox x:Name="ForwardPairingProfileList" Grid.Row="1" ItemsSource="{Binding ProxyProfiles}"
+                                                                 SelectedValuePath="Id" SelectionChanged="OnPairingProfileSelectionChanged"
+                                                                 MaxHeight="440" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                                 BorderThickness="0" Background="Transparent" HorizontalContentAlignment="Stretch"
+                                                                 AutomationProperties.Name="Saved nodes">
+                                                            <ListBox.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Grid Margin="4,6">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*"/>
+                                                                            <ColumnDefinition Width="Auto"/>
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <StackPanel>
+                                                                            <StackPanel Orientation="Horizontal">
+                                                                                <TextBlock Text="{Binding Name}" ToolTip="{Binding Name}" TextTrimming="CharacterEllipsis"
+                                                                                           FontWeight="SemiBold" MaxWidth="170"/>
+                                                                                <Border Style="{StaticResource CloudBadge}" Margin="8,0,0,0"
+                                                                                        ToolTip="{DynamicResource NodesCloudBadgeTip}"
+                                                                                        Visibility="{Binding IsHosted, Converter={StaticResource BoolToVis}}">
+                                                                                    <StackPanel Orientation="Horizontal">
+                                                                                        <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" FontSize="10" Margin="0,0,4,0"
+                                                                                                   VerticalAlignment="Center" Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
+                                                                                        <TextBlock Text="{DynamicResource NodesCloudBadge}" FontSize="11"
+                                                                                                   Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
+                                                                                    </StackPanel>
+                                                                                </Border>
+                                                                            </StackPanel>
+                                                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                                                <Border Style="{StaticResource Chip}" Margin="0,0,6,0">
+                                                                                    <TextBlock Text="{DynamicResource OwnNodeLabel}" FontSize="10" FontWeight="SemiBold"
+                                                                                               Foreground="{DynamicResource MutedTextBrush}"/>
+                                                                                </Border>
+                                                                                <TextBlock Text="{Binding Server}" FontSize="11" Foreground="{DynamicResource MutedTextBrush}"
+                                                                                           TextTrimming="CharacterEllipsis" MaxWidth="150" VerticalAlignment="Center"/>
+                                                                            </StackPanel>
+                                                                        </StackPanel>
+                                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                                            <Button Style="{StaticResource IconButton}" Content="&#xE898;" Width="30" Height="30"
+                                                                                    ToolTip="{DynamicResource NodesUpload}" Click="OnNodeUpload_Click"
+                                                                                    Visibility="{Binding Converter={StaticResource UploadableToVis}}"
+                                                                                    AutomationProperties.Name="Upload node to cloud"/>
+                                                                            <Button Style="{StaticResource IconButton}" Content="&#xE8C8;" Width="30" Height="30"
+                                                                                    ToolTip="{DynamicResource NodesCopyLink}" Click="OnNodeCopyLink_Click"
+                                                                                    AutomationProperties.Name="Copy share link"/>
+                                                                        </StackPanel>
+                                                                    </Grid>
+                                                                </DataTemplate>
+                                                            </ListBox.ItemTemplate>
+                                                        </ListBox>
+                                                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                                                            <Button Style="{StaticResource ProxyIconButton}" Content="&#xE70F;" Click="OnPairingEdit_Click"
+                                                                    ToolTip="{DynamicResource ProxyEdit}" AutomationProperties.Name="Edit saved node" Margin="0,0,8,0"/>
+                                                            <Button Style="{StaticResource ProxyIconButton}" Content="&#xE74D;" Click="OnPairingDelete_Click"
+                                                                    ToolTip="{DynamicResource ProxyDelete}" AutomationProperties.Name="Delete saved node"/>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                                <Expander x:Name="ForwardPairingNodeEditorExpander" Grid.Column="1" IsExpanded="True"
+                                                          Header="{DynamicResource ProxyManualTitle}" Margin="16,-8,0,0"
+                                                          AutomationProperties.Name="Pairing node editor">
+                                                    <StackPanel Margin="0,4,0,0">
+                                                        <Border Background="{DynamicResource SecondaryContainerBrush}" CornerRadius="10" Padding="10,8" Margin="0,0,0,10"
+                                                                Visibility="{Binding ProxyEditor.IsHosted, Converter={StaticResource BoolToVis}}">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="&#xE753;" FontFamily="{StaticResource IconFont}" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                                           Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
+                                                                <TextBlock Text="{DynamicResource NodesEditingHosted}" TextWrapping="Wrap" FontSize="12"
+                                                                           Foreground="{DynamicResource OnSecondaryContainerBrush}"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyImportPrompt}"/>
+                                                        <Grid Margin="0,0,0,4">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                            <Grid Margin="0,0,8,0">
+                                                                <TextBox x:Name="PairingImportUri" Style="{StaticResource InputTextBox}"
+                                                                         AutomationProperties.Name="{DynamicResource ProxyImportPrompt}"
+                                                                         AutomationProperties.HelpText="{DynamicResource ProxyImportSupported}"/>
+                                                                <TextBlock x:Name="PairingImportPlaceholder" Text="ss://" Margin="11,0,11,0"
+                                                                           VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}"
+                                                                           FontSize="13" IsHitTestVisible="False">
+                                                                    <TextBlock.Style>
+                                                                        <Style TargetType="TextBlock">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding Text, ElementName=PairingImportUri}" Value="">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </TextBlock.Style>
+                                                                </TextBlock>
+                                                            </Grid>
+                                                            <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxyImport}"
+                                                                    Click="OnPairingImport_Click" AutomationProperties.Name="Import proxy URI"/>
+                                                        </Grid>
+                                                        <TextBlock Text="{DynamicResource ProxyImportSupported}" FontSize="12" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10"/>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="1" Margin="8,0,0,8"
+                                                                        Visibility="{Binding ProxyEditor.IsNew, Converter={StaticResource BoolToVis}}">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyProtocol}"/>
+                                                                <ComboBox ItemsSource="{Binding ProxyEditor.ProtocolOptions}" SelectedItem="{Binding ProxyEditor.Protocol, Mode=TwoWay}"
+                                                                          AutomationProperties.Name="Proxy protocol"/>
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyName}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServer}"/>
+                                                                <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Server, UpdateSourceTrigger=PropertyChanged}"/>
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPort}"/>
+                                                                <ComboBox ItemsSource="{Binding ProxyEditor.PortOptions}" IsEditable="True"
+                                                                          Text="{Binding ProxyEditor.PortText, UpdateSourceTrigger=PropertyChanged}"/>
+                                                            </StackPanel>
+                                                        </Grid>
+                                                        <StackPanel>
+                                                            <StackPanel.Style>
+                                                                <Style TargetType="StackPanel">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsSocks5}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                                                </Style>
+                                                            </StackPanel.Style>
+                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxySocksUsername}"/>
+                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Username, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"
+                                                                     AutomationProperties.Name="SOCKS5 username"/>
+                                                        </StackPanel>
+                                                        <StackPanel>
+                                                            <StackPanel.Style>
+                                                                <Style TargetType="StackPanel">
+                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                    <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
+                                                                </Style>
+                                                            </StackPanel.Style>
+                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPassword}"/>
+                                                            <PasswordBox x:Name="PairingProxyPassword" Padding="10,8" FontSize="13" Margin="0,0,0,8"/>
+                                                        </StackPanel>
+                                                        <StackPanel>
+                                                            <StackPanel.Style>
+                                                                <Style TargetType="StackPanel">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsShadowsocks}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                                                </Style>
+                                                            </StackPanel.Style>
+                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyMethod}"/>
+                                                            <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksMethodOptions}" SelectedItem="{Binding ProxyEditor.Method, Mode=TwoWay}" Margin="0,0,0,8"/>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPlugin}"/>
+                                                                    <ComboBox ItemsSource="{Binding ProxyEditor.ShadowsocksPluginOptions}" SelectedItem="{Binding ProxyEditor.Plugin, Mode=TwoWay}"
+                                                                              AutomationProperties.Name="Shadowsocks plugin"/>
+                                                                </StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8">
+                                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPluginOpts}"/>
+                                                                    <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.PluginOpts, UpdateSourceTrigger=PropertyChanged}"/>
+                                                                </StackPanel>
+                                                            </Grid>
+                                                            <CheckBox Content="{DynamicResource ProxyUdpOverTcp}" IsChecked="{Binding ProxyEditor.UdpOverTcp, Mode=TwoWay}" Margin="0,0,0,8"/>
+                                                        </StackPanel>
+                                                        <StackPanel>
+                                                            <StackPanel.Style>
+                                                                <Style TargetType="StackPanel">
+                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                    <Style.Triggers><DataTrigger Binding="{Binding ProxyEditor.IsVless}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers>
+                                                                </Style>
+                                                            </StackPanel.Style>
+                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyUuid}"/>
+                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Uuid, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyTransport}"/><ComboBox ItemsSource="{Binding ProxyEditor.VlessTransportOptions}" SelectedItem="{Binding ProxyEditor.Transport, Mode=TwoWay}"/></StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFlow}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Flow, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                            </Grid>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyHost}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Host, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyPath}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Path, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                            </Grid>
+                                                            <TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServiceName}" Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}"/>
+                                                            <TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServiceName, UpdateSourceTrigger=PropertyChanged}" Visibility="{Binding ProxyEditor.IsVlessGrpc, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8"/>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyServerName}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.ServerName, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyFingerprint}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.Fingerprint, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                            </Grid>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" Margin="0,0,8,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityKey}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityPublicKey, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                                <StackPanel Grid.Column="1" Margin="8,0,0,8"><TextBlock Style="{StaticResource FieldLabel}" Text="{DynamicResource ProxyRealityShortId}"/><TextBox Style="{StaticResource InputTextBox}" Text="{Binding ProxyEditor.RealityShortId, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                                                            </Grid>
+                                                            <StackPanel Orientation="Horizontal"><CheckBox Content="{DynamicResource ProxyTls}" IsChecked="{Binding ProxyEditor.Tls, Mode=TwoWay}" Margin="0,0,16,0"/><CheckBox Content="{DynamicResource ProxyAllowInsecure}" IsChecked="{Binding ProxyEditor.AllowInsecure, Mode=TwoWay}"/></StackPanel>
+                                                        </StackPanel>
+                                                        <Button Style="{StaticResource PrimaryButton}" Content="{DynamicResource ProxySave}" Click="OnPairingSave_Click" HorizontalAlignment="Right" Margin="0,10,0,0"/>
+                                                    </StackPanel>
+                                                </Expander>
+                                            </Grid>
+                                        </Border>
                                     </StackPanel>
                                 </StackPanel>
+                            </ScrollViewer>
+                        </DockPanel>
 
-                                                                  </StackPanel>
-                                </ScrollViewer>
-                            </Grid>
-                        </Grid>
 
                         <!-- Native outbound: its own page, listed in the sidebar only when the plan assigns a native exit. -->
                         <ScrollViewer x:Name="NativePanel" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">

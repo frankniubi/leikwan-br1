@@ -54,6 +54,7 @@
     <system:String x:Key="FwdTransport">Transport</system:String>
     <!-- Panel-declared native outbound rule: configuration only, no agent-managed runtime. -->
     <system:String x:Key="ForwardNativeOutboundRule">(Native Outbound Rule)</system:String>
+  <system:String x:Key="ForwardNativeOutboundGoto">Use Native outbound in the sidebar.</system:String>
 
     <!-- Actions -->
     <system:String x:Key="ActionStart">Start</system:String>
@@ -348,6 +349,8 @@
     <system:String x:Key="ForwardDetailsQuality">Quality</system:String>
     <system:String x:Key="ForwardDetailsMessage">Message</system:String>
     <system:String x:Key="DashForwardsShownSuffix" xml:space="preserve"> forwards shown</system:String>
+  <system:String x:Key="DashForwardTarget">Target address</system:String>
+  <system:String x:Key="DashForwardPort">Port</system:String>
     <system:String x:Key="ForwardNumberPrefix">Forward #</system:String>
     <system:String x:Key="DashNever">Never</system:String>
     <system:String x:Key="StateStopped">Stopped</system:String>
@@ -359,9 +362,6 @@
     <system:String x:Key="QualityUnavailable">Unavailable</system:String>
     <system:String x:Key="OwnNodeLabel">Your own node</system:String>
   <system:String x:Key="NavNative">Native outbound</system:String>
-  <system:String x:Key="DashPlan">Plan</system:String>
-  <system:String x:Key="DashPlanHint">The panel does not send the plan name to the desktop yet.</system:String>
-  <system:String x:Key="DashPlanUnavailable">Not provided</system:String>
   <system:String x:Key="DashUsage">Usage</system:String>
   <system:String x:Key="DashUsageHint">Upload and download during this session.</system:String>
   <system:String x:Key="DashRateLimit">Rate limit</system:String>
@@ -369,8 +369,11 @@
   <system:String x:Key="DashRateLimitNone">Unlimited</system:String>
   <system:String x:Key="DashRateLimitMixed">Varies by line</system:String>
   <system:String x:Key="DashProvince">Home province</system:String>
-  <system:String x:Key="DashProvinceHint">Set by the account on the server and read-only. The sign-in region check uses it.</system:String>
-  <system:String x:Key="DashProvinceUnavailable">Not loaded</system:String>
+  <system:String x:Key="DashProvinceHint">The account's home province, set by the panel. Read-only in the client. The sign-in region check uses it.</system:String>
+  <system:String x:Key="DashProvinceNotConnected">Not connected</system:String>
+  <system:String x:Key="DashProvinceReading">Reading</system:String>
+  <system:String x:Key="DashProvinceReadFailed">Read failed</system:String>
+  <system:String x:Key="DashProvinceNotSet">Not set</system:String>
   <system:String x:Key="Province_AH">Anhui</system:String>
   <system:String x:Key="Province_BJ">Beijing</system:String>
   <system:String x:Key="Province_CQ">Chongqing</system:String>

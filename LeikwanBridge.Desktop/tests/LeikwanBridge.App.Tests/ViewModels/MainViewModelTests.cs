@@ -879,7 +879,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public void SelectForward_UpdatesSelectedForward_AndShowsForwardsView()
+    public void SelectForward_UpdatesSelectedForward_AndShowsConnectPage()
     {
         var vm = new MainViewModel();
         vm.ApplyForwardSnapshot(
@@ -892,7 +892,7 @@ public sealed class MainViewModelTests
         vm.SelectForwardCommand.Execute(target);
 
         Assert.Equal(target.ForwardId, vm.SelectedForward?.ForwardId);
-        Assert.Equal("Forwards", vm.CurrentView);
+        Assert.Equal("Proxy", vm.CurrentView);
     }
 
     [Fact]
