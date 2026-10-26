@@ -299,16 +299,16 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/leikwan-bond": "c2b15af07b88f077e9242498ced87c15ed5ae21a10dd6487f004050d6531c1fa",
-      "bin/leikwan-ingress": "26b178aaa347c1b448482db850043afc070e43d807788cc717c556bddb607b64",
-      "bin/leikwan-uot-bond": "f27fc19162fdd5c20c886f009735656341eb4350e814b0a466d182f14e3a8a69",
-      "bin/sing-box": "0b70e5d8aadb490dc90ad2a63260d57f2bcc05cf04dd05fde7e21229f5f505e7",
-      "bin/ultra-client": "4578a4405e7e435f33da6d77069df38fce479e4cbc3678113dea6e44c51d5a6f",
-      "bin/wstunnel": "7e203514eb07b90186b8a668c0f192701008699d40fa52738164095b406c5977"
+      "bin/leikwan-bond": "6f55c8e84376c8b5082ed25c008f746f65e04959769031c4ca1d15e4b56d7c7e",
+      "bin/leikwan-ingress": "3e092cb2509df47b98ebb09ba737f5b502df5e19828c89717dbc7a133be18e6e",
+      "bin/leikwan-uot-bond": "97d881f4b6d089a4b2c9dc2980df8a92b4b88b048943b0562c113d7b00a99293",
+      "bin/sing-box": "feb06b7ee8950bdbffd1b2d860a9b51bd261057fa23b4184bfb0885ed78222e9",
+      "bin/ultra-client": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
+      "bin/wstunnel": "bba594f382de37aafd37015e955aa9b9dd6b710f2ecc18a7f8303aabbc3536b3"
     },
-    "sha256": "57d76cef7109f6eadc973d51ff3025a9211874e9b719dcc0118670db0fe044b4",
-    "size_bytes": 79039232,
-    "version": "1.0.59",
+    "sha256": "7d4865826e9b9877edcc844fc6e21267eba45bbe8c8de03d7ca53dd07b6714ba",
+    "size_bytes": 78959950,
+    "version": "1.0.60",
     "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_app_x64": {
@@ -346,16 +346,16 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/leikwan-bond": "c2b15af07b88f077e9242498ced87c15ed5ae21a10dd6487f004050d6531c1fa",
-      "bin/leikwan-ingress": "26b178aaa347c1b448482db850043afc070e43d807788cc717c556bddb607b64",
-      "bin/leikwan-uot-bond": "f27fc19162fdd5c20c886f009735656341eb4350e814b0a466d182f14e3a8a69",
-      "bin/sing-box": "0b70e5d8aadb490dc90ad2a63260d57f2bcc05cf04dd05fde7e21229f5f505e7",
-      "bin/ultra-client": "4578a4405e7e435f33da6d77069df38fce479e4cbc3678113dea6e44c51d5a6f",
-      "bin/wstunnel": "7e203514eb07b90186b8a668c0f192701008699d40fa52738164095b406c5977"
+      "bin/leikwan-bond": "6f55c8e84376c8b5082ed25c008f746f65e04959769031c4ca1d15e4b56d7c7e",
+      "bin/leikwan-ingress": "3e092cb2509df47b98ebb09ba737f5b502df5e19828c89717dbc7a133be18e6e",
+      "bin/leikwan-uot-bond": "97d881f4b6d089a4b2c9dc2980df8a92b4b88b048943b0562c113d7b00a99293",
+      "bin/sing-box": "feb06b7ee8950bdbffd1b2d860a9b51bd261057fa23b4184bfb0885ed78222e9",
+      "bin/ultra-client": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
+      "bin/wstunnel": "bba594f382de37aafd37015e955aa9b9dd6b710f2ecc18a7f8303aabbc3536b3"
     },
-    "sha256": "ce658b3bfffbb17357da28303ce7abc7116d21d8765f2103a072dd4080a3a23f",
-    "size_bytes": 70407201,
-    "version": "1.0.59",
+    "sha256": "5a12b34bfaded4a63485a0179b3c0c95b1ca3d87d21311ec8a787a2560f02304",
+    "size_bytes": 70408043,
+    "version": "1.0.60",
     "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_update_x64": {
@@ -529,8 +529,8 @@
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "33328e3b7aa06263989ee57d2fd6828f7e72dde0e5191f0486df1f545043234e"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "95acf4d8a80c764020ef66ccac4e52f0afae52ccebf0c6456a15626baea47dd1"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
     "hardening": [
@@ -545,9 +545,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "33328e3b7aa06263989ee57d2fd6828f7e72dde0e5191f0486df1f545043234e",
-    "size_bytes": 19206410,
-    "version": "2026.10.12.1",
+    "sha256": "95acf4d8a80c764020ef66ccac4e52f0afae52ccebf0c6456a15626baea47dd1",
+    "size_bytes": 19398922,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "build_provenance": {
       "source_commit": "06471310",
@@ -560,8 +560,8 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "018170e8998728ef4bccea4b827cb26e1f0e6faf2e7b1931152d5a6be8d53f2c"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "2a65c9c6771f4802dd95b3376481db294f596a1793dd9f67bb1895abb39fb9ed"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
     "hardening": [
@@ -576,9 +576,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_arm64",
-    "sha256": "018170e8998728ef4bccea4b827cb26e1f0e6faf2e7b1931152d5a6be8d53f2c",
-    "size_bytes": 17432836,
-    "version": "2026.10.12.1",
+    "sha256": "2a65c9c6771f4802dd95b3376481db294f596a1793dd9f67bb1895abb39fb9ed",
+    "size_bytes": 17498372,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "build_provenance": {
       "source_commit": "06471310",
@@ -591,8 +591,8 @@
     "architecture": "x86_64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "563e7d291bef55a6ba8d3f9d0cd55e7a3a8e3801ef749a8cc31ef9e51d9a1950"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "0039f32bdb966cc59f3fd8893f1e558b1cee91ed0c2ce17a5c10ff70abbe0756"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
     "hardening": [
@@ -608,9 +608,9 @@
     "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_x86_64",
-    "sha256": "563e7d291bef55a6ba8d3f9d0cd55e7a3a8e3801ef749a8cc31ef9e51d9a1950",
-    "size_bytes": 19205280,
-    "version": "2026.10.12.1",
+    "sha256": "0039f32bdb966cc59f3fd8893f1e558b1cee91ed0c2ce17a5c10ff70abbe0756",
+    "size_bytes": 19401912,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "build_provenance": {
       "source_commit": "06471310",
@@ -623,8 +623,8 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "30a852b883b192cf465117d79cb7052e0b9bc00690572cdaaed26c125997bac3"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "c22773366501041c4e035d6be40ce6f0b0c06e225c1eecb92cb751454e6f7794"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
     "hardening": [
@@ -639,9 +639,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "30a852b883b192cf465117d79cb7052e0b9bc00690572cdaaed26c125997bac3",
-    "size_bytes": 17432842,
-    "version": "2026.10.12.1",
+    "sha256": "c22773366501041c4e035d6be40ce6f0b0c06e225c1eecb92cb751454e6f7794",
+    "size_bytes": 17760522,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "build_provenance": {
       "source_commit": "06471310",
@@ -654,15 +654,15 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "4df2a36f075478a5a6c59a16ca5abf1a6834cf62f80dc005f53806933637237b",
-    "size_bytes": 16054976,
-    "version": "2026.10.12.1",
+    "sha256": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
+    "size_bytes": 15926336,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "hardening": [
       "cgo-disabled",
@@ -714,15 +714,15 @@
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "attestation": {
-      "fingerprint": "2026.10.12.1.06471310",
-      "self_sha256": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2"
+      "fingerprint": "2026.10.26.1.571600c2",
+      "self_sha256": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46"
     },
     "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.10.12.1",
     "obfuscator": "none",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "sha256": "ddb8b98e08a7f08872b4c4e88c0f95721147ba0924152b233c1e126ac0ece9d2",
-    "size_bytes": 7472640,
-    "version": "2026.10.12.1",
+    "sha256": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46",
+    "size_bytes": 7485440,
+    "version": "2026.10.26.1",
     "runtime_build_version": "2026.10.12.1.06471310",
     "hardening": [
       "cgo-disabled",
