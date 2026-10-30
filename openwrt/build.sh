@@ -52,19 +52,21 @@ done
 
 echo "==> building ipk with the SDK"
 cd "$SDK"
-# The SetupHostCommand probe for GNU install fails outright on the pristine CI
-# runner (both candidate commands, under the exact PATH, with the tool present
-# and working — observed identically across runs 5-7, with and without a
-# preseeded stub farm), while every other probe behaves. The SDK tarball is
-# freshly unpacked each run, so patch the check to a plain TestHostCommand:
-# same guarantee (a GNU install must exist), no stub-symlink machinery.
+# GitHub's ubuntu-24.04 image ships uutils coreutils: /usr/bin/install reports
+# "install (uutils coreutils) 0.10.0" with no "GNU" substring, so the SDK's
+# SetupHostCommand probe (install --version | grep GNU) fails both attempts
+# and aborts the whole pass — while the tool itself works fine for OpenWrt's
+# host builds. The SDK tarball is freshly unpacked per run: patch the probe to
+# accept either upstream coreutils or the uutils rewrite. The neighbouring
+# probes (cp, bash, tar, ...) keep passing because their match strings are
+# still printed by the uutils builds.
 python3 - <<'PY'
 src = open('include/prereq-build.mk', encoding='utf-8').read()
 old = "$(eval $(call SetupHostCommand,install,Please install GNU 'install', \\\n\tinstall --version | grep GNU, \\\n\tginstall --version | grep GNU))"
-new = "$(eval $(call TestHostCommand,install,Please install GNU 'install', \\\n\tinstall --version 2>&1 | grep -q GNU))"
+new = "$(eval $(call TestHostCommand,install,Please install GNU 'install', \\\n\tinstall --version 2>&1 | grep -qE 'GNU|uutils coreutils'))"
 if old in src:
 	open('include/prereq-build.mk', 'w', encoding='utf-8').write(src.replace(old, new))
-	print('install probe simplified')
+	print('install probe accepts uutils coreutils')
 PY
 # The prereq check swallows its own output (2>/dev/null inside toplevel.mk),
 # so run it verbosely first: a missing host package should say its name
