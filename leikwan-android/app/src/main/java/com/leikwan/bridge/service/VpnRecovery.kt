@@ -19,6 +19,10 @@ internal object VpnRecovery {
      * off until the user opened the app.
      */
     val RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 30_000L, 60_000L, 120_000L)
+    /** Waits after a Wi-Fi <-> cellular switch before probing whether the tunnel still works. */
+    const val SWITCH_PROBE_DELAY_MS = 4_000L
+    /** Per-attempt timeout of the post-switch tunnel probe. */
+    const val SWITCH_PROBE_TIMEOUT_MS = 2_000
 
     /**
      * A sticky restart (null intent), an always-on start or the boot receiver's start rebuilds the

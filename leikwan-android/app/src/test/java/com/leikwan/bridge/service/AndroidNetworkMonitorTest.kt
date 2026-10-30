@@ -121,4 +121,54 @@ class AndroidNetworkMonitorTest {
         monitor.remove(listener)
         monitor.close()
     }
+
+    @Test
+    fun `default interface listeners fire only when the picked network changes`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val shadow = shadowOf(cm)
+        val physical = NetworkInterface.getNetworkInterfaces().toList().first { it.index > 0 }
+        val network = org.robolectric.shadows.ShadowNetwork.newInstance(303)
+        val properties = LinkProperties().apply {
+            interfaceName = physical.name
+            val address = LinkAddress::class.java.getDeclaredConstructor(String::class.java)
+                .apply { isAccessible = true }.newInstance("192.0.2.4/24")
+            LinkProperties::class.java.getDeclaredMethod("addLinkAddress", LinkAddress::class.java)
+                .apply { isAccessible = true }.invoke(this, address)
+        }
+        shadow.clearAllNetworks()
+        val caps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance()
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        shadow.addNetwork(network, null)
+        shadow.setNetworkCapabilities(network, caps)
+        shadow.setLinkProperties(network, properties)
+        val changes = mutableListOf<String?>()
+        val monitor = AndroidNetworkMonitor(
+            context,
+            onUnderlyingNetwork = {},
+            refreshScheduler = { task, _ -> task.run() },
+        )
+        monitor.addOnDefaultInterfaceChanged { name -> changes += name }
+        val listener = object : InterfaceUpdateListener {
+            override fun updateDefaultInterface(name: String?, index: Int, expensive: Boolean, constrained: Boolean) {}
+        }
+        monitor.start(listener)
+        val afterStart = changes.toList()
+        // Registration replays the current pick; the initial start must not count as a change.
+        assertEquals(0, changes.size - afterStart.size)
+        // A capability burst that does not change the pick fires nothing.
+        shadow.networkCallbacks.toList().forEach { callback ->
+            callback.onCapabilitiesChanged(network, caps)
+            callback.onLinkPropertiesChanged(network, properties)
+        }
+        assertEquals(afterStart, changes)
+        // Losing the network switches the pick to none.
+        shadow.removeNetwork(network)
+        shadow.networkCallbacks.toList().forEach { it.onLost(network) }
+        assertEquals(listOf(null), changes.drop(afterStart.size))
+        monitor.remove(listener)
+        monitor.close()
+    }
 }

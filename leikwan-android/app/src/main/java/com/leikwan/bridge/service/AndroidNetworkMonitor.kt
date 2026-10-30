@@ -34,6 +34,8 @@ internal class AndroidNetworkMonitor(
      */
     private val refreshDebounceMs: Long = 500L
     private var refreshPending = false
+    /** Fired when the picked physical network changes (Wi-Fi <-> cellular switch, loss of all). */
+    private val defaultInterfaceListeners = mutableListOf<(String?) -> Unit>()
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = requestRefresh()
         override fun onLost(network: Network) = requestRefresh()
@@ -104,12 +106,24 @@ internal class AndroidNetworkMonitor(
     fun close() {
         synchronized(lock) {
             listeners.clear()
+            defaultInterfaceListeners.clear()
             if (registered) runCatching { connectivity.unregisterNetworkCallback(callback) }
             registered = false
             refreshPending = false
             selectedNetwork = null
         }
     }
+
+    /** Observes the picked physical interface name; null when no physical network is usable. */
+    fun addOnDefaultInterfaceChanged(listener: (String?) -> Unit) {
+        synchronized(lock) {
+            defaultInterfaceListeners.add(listener)
+            listener(selectedNetwork?.let { interfaceNameOf(it) })
+        }
+    }
+
+    private fun interfaceNameOf(network: Network): String? =
+        connectivity.getLinkProperties(network)?.interfaceName?.takeIf { it.isNotBlank() }
 
     private fun requestRefresh() {
         synchronized(lock) {
@@ -153,6 +167,13 @@ internal class AndroidNetworkMonitor(
         selectedNetwork = physical?.network
         if (changed) runCatching { onUnderlyingNetwork(physical?.network) }
             .onFailure { Log.w("AndroidNetworkMonitor", "Unable to update underlying VPN network", it) }
+        if (changed) {
+            val name = physical?.name
+            defaultInterfaceListeners.toList().forEach { listener ->
+                runCatching { listener(name) }
+                    .onFailure { Log.w("AndroidNetworkMonitor", "Default-interface listener failed", it) }
+            }
+        }
         currentListeners.forEach { listener ->
             if (registered && listener in listeners) {
                 runCatching { listener.updateDefaultInterface(physical?.name.orEmpty(), physical?.index ?: -1, physical?.metered ?: false, false) }
