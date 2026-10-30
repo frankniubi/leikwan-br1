@@ -54,8 +54,9 @@ echo "==> building ipk with the SDK"
 cd "$SDK"
 # The prereq check swallows its own output (2>/dev/null inside toplevel.mk),
 # so run it verbosely first: a missing host package should say its name
-# instead of a bare Error 1.
-make -j1 -r -s -f include/prereq-build.mk TOPDIR="$(pwd)/" prereq
+# instead of a bare Error 1. TMP_DIR must exist for the error file.
+mkdir -p tmp
+make -j1 -r -s -f include/prereq-build.mk TOPDIR="$(pwd)/" TMP_DIR="$(pwd)/tmp" prereq
 make defconfig >/dev/null
 make package/leikwan/leikwand/compile V=s
 make package/leikwan/leikwan-runtime/compile V=s
