@@ -68,6 +68,24 @@ if [ -f "$IB/repositories.conf.example" ]; then
 	cp "$IB/repositories.conf.example" "$IB/repositories.conf"
 fi
 
+# The ImageBuilder carries its own prereq-build.mk with the same SetupHostCommand
+# probe for GNU install. GitHub's ubuntu-24.04 image ships uutils coreutils,
+# whose install --version prints no "GNU" substring, so the probe fails both
+# attempts and the image build dies before compiling anything. Freshly unpacked
+# per run: patch the probe the same way the SDK's is patched (see ../build.sh).
+if grep -q "SetupHostCommand,install" "$IB/include/prereq-build.mk" 2>/dev/null; then
+	python3 - "$IB/include/prereq-build.mk" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path, encoding='utf-8').read()
+old = "$(eval $(call SetupHostCommand,install,Please install GNU 'install', \\\n\tinstall --version | grep GNU, \\\n\tginstall --version | grep GNU))"
+new = "$(eval $(call TestHostCommand,install,Please install GNU 'install', \\\n\tinstall --version 2>&1 | grep -qE 'GNU|uutils coreutils'))"
+if old in src:
+	open(path, 'w', encoding='utf-8').write(src.replace(old, new))
+	print('ImageBuilder install probe accepts uutils coreutils')
+PY
+fi
+
 # The local index is signed, and opkg verifies it against the image keyring.
 # A freshly unpacked ImageBuilder ships no key pair and no keyring entry, so
 # both are created here; without them the build fails with an opaque
