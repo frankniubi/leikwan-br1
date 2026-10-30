@@ -102,7 +102,15 @@ jobs:
       - name: Build ipks
         run: |
           export PATH=/usr/local/go/bin:$PATH
-          ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk
+          ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk || {
+            echo "=== debugging the install host tool ==="
+            command -v install || true
+            install --version || true
+            echo "install exit=$?"
+            sh -c 'command -v install; install --version | grep GNU; echo sh-exit=$?'
+            echo "PATH=$PATH"
+            exit 1
+          }
       - name: Collect ipks
         run: |
           mkdir -p artifacts/ipk-${{ matrix.arch }}
