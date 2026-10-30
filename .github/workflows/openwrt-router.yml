@@ -176,6 +176,9 @@ jobs:
       - name: Boot the image in QEMU and verify the install
         run: |
           set -uo pipefail
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq qemu-system-x86 socat >/dev/null 2>&1
+          command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 missing"; exit 1; }
           IMG=$(find ~/leikwan-build/ib/bin/targets -name '*ext4-combined-efi.img.gz' | head -1)
           test -n "$IMG" || { echo "no ext4-efi image produced"; exit 1; }
           gunzip -kf "$IMG"
@@ -192,8 +195,6 @@ jobs:
             -serial unix:/tmp/qemu-serial.sock,server,nowait
           # A fresh OpenWrt boots in well under a minute; poll the serial socket
           # through socat for the shell prompt.
-          sudo apt-get update -qq >/dev/null 2>&1 || true
-          sudo apt-get install -y -qq socat >/dev/null 2>&1
           ok=0
           for _ in $(seq 1 90); do
             sleep 2
