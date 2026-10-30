@@ -89,9 +89,12 @@ jobs:
           cache-dependency-path: "**/go.sum"
       - name: Install SDK
         run: |
+          # python3-distutils was removed in Ubuntu 24.04 (noble); the SDK's
+          # prereq check only needs it on 22.04, so install it best-effort.
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential libncurses-dev libz-dev libssl-dev \
-            python3 python3-distutils python3-setuptools rsync file unzip zstd
+            python3 python3-setuptools rsync file unzip zstd
+          sudo apt-get install -y -qq python3-distutils >/dev/null 2>&1 || true
           mkdir -p ~/leikwan-build
           curl -fsSL "${{ matrix.sdk-url }}" -o sdk.tar.zst
           tar --zstd -xf sdk.tar.zst -C ~/leikwan-build
