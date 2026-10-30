@@ -194,7 +194,8 @@ jobs:
             -append "root=PARTLABEL=rootfs rootwait console=ttyS0" \
             -drive file="$RAW",format=raw,if=virtio \
             -netdev user,id=wan -device virtio-net-pci,netdev=wan \
-            -nographic -no-reboot -daemonize -pidfile qemu.pid \
+            # -display none (not -nographic): -daemonize forbids -nographic.
+            -display none -no-reboot -daemonize -pidfile qemu.pid \
             -serial unix:/tmp/qemu-serial.sock,server,nowait
           # A fresh OpenWrt boots in well under a minute; poll the serial socket
           # through socat for the shell prompt.
