@@ -67,9 +67,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
     private val networkMonitor by lazy {
-        AndroidNetworkMonitor(this) { network ->
-            setUnderlyingNetworks(network?.let { arrayOf(it) })
-        }
+        AndroidNetworkMonitor(this, onUnderlyingNetwork = { network ->
+            applyUnderlyingNetworks(network)
+        })
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -333,9 +333,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .setMtu(options.mtu)
 
         if (plan.bindActiveNetwork) {
-            resolveUnderlyingNetwork()?.let { network ->
+            resolveUnderlyingNetworks().takeIf { it.isNotEmpty() }?.let { networks ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    builder.setUnderlyingNetworks(arrayOf(network))
+                    builder.setUnderlyingNetworks(networks.toTypedArray())
                 }
             }
         }
@@ -587,7 +587,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     private fun resolveUnderlyingNetwork(): Network? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return null
-        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
+        return resolveUnderlyingNetworks().firstOrNull()
+    }
+
+    private fun resolveUnderlyingNetworks(): List<Network> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return emptyList()
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
         val candidates = connectivity.allNetworks.mapNotNull { network ->
             val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
             UnderlyingNetworkCandidate(
@@ -596,7 +601,29 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                 hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
             )
         }
-        return UnderlyingNetworkSelector.select(connectivity.activeNetwork, candidates)
+        return UnderlyingNetworkSelector.selectAll(connectivity.activeNetwork, candidates)
+    }
+
+    /**
+     * Publishes the physical networks the tunnel may leave through. Passing every physical
+     * network (not only the selected one) lets the kernel keep tunnel traffic flowing across a
+     * Wi-Fi <-> cellular switch: on 4G/5G the selected network can die seconds before the
+     * monitor sees it, and a single pinned network blackholed the tunnel until the next
+     * `onLost` callback re-pinned it. When nothing physical is up, fall back to default
+     * routing (null) so the tunnel follows the system as networks return.
+     */
+    private fun applyUnderlyingNetworks(preferred: Network?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return
+        val networks = resolveUnderlyingNetworks()
+        val ordered = buildList {
+            if (preferred != null && networks.contains(preferred)) add(preferred)
+            networks.forEach { if (it != preferred) add(it) }
+        }
+        try {
+            setUnderlyingNetworks(ordered.ifEmpty { null }?.toTypedArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to update underlying VPN networks", e)
+        }
     }
 
     private fun RoutePrefixIterator?.toRoutePrefixes(): List<RoutePrefix> {

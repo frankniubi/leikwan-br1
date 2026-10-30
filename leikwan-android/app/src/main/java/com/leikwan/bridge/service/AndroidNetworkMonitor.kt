@@ -6,6 +6,8 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import io.nekohasekai.libbox.InterfaceUpdateListener
 import java.net.NetworkInterface
@@ -14,17 +16,29 @@ import java.net.NetworkInterface
 internal class AndroidNetworkMonitor(
     context: Context,
     private val onUnderlyingNetwork: (Network?) -> Unit,
+    /** Test seam: runs the pending refresh immediately instead of on the main-thread delay. */
+    private val refreshScheduler: (Runnable, Long) -> Unit = { task, delayMs ->
+        mainHandler.postDelayed(task, delayMs)
+    },
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val listeners = linkedSetOf<InterfaceUpdateListener>()
     private val lock = Any()
     private var registered = false
     private var selectedNetwork: Network? = null
+    /**
+     * Network callbacks arrive in bursts on cellular (signal bars, validation, link properties
+     * all fire within seconds, repeatedly). Every burst republished the default interface to
+     * libbox, which re-evaluates its outbound interface and sockets each time — a churn that
+     * showed up as stalls on 4G/5G. Collapse a burst into one refresh after [refreshDebounceMs].
+     */
+    private val refreshDebounceMs: Long = 500L
+    private var refreshPending = false
     private val callback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = refresh()
-        override fun onLost(network: Network) = refresh()
-        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refresh()
-        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = refresh()
+        override fun onAvailable(network: Network) = requestRefresh()
+        override fun onLost(network: Network) = requestRefresh()
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = requestRefresh()
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = requestRefresh()
     }
 
     data class PhysicalInterface(
@@ -92,7 +106,24 @@ internal class AndroidNetworkMonitor(
             listeners.clear()
             if (registered) runCatching { connectivity.unregisterNetworkCallback(callback) }
             registered = false
+            refreshPending = false
             selectedNetwork = null
+        }
+    }
+
+    private fun requestRefresh() {
+        synchronized(lock) {
+            if (!registered || refreshPending) return
+            refreshPending = true
+            refreshScheduler({ runRefresh() }, refreshDebounceMs)
+        }
+    }
+
+    private fun runRefresh() {
+        synchronized(lock) {
+            refreshPending = false
+            if (!registered) return
+            refreshLocked()
         }
     }
 
@@ -128,5 +159,9 @@ internal class AndroidNetworkMonitor(
                     .onFailure { Log.w("AndroidNetworkMonitor", "Unable to publish default interface", it) }
             }
         }
+    }
+
+    private companion object {
+        val mainHandler = Handler(Looper.getMainLooper())
     }
 }
