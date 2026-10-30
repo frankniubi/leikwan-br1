@@ -1,0 +1,200 @@
+name: OpenWrt router edition
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/openwrt-router-edition
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-router-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (leikwand + LuCI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Go test + vet
+        run: |
+          cd tools/leikwand
+          go vet ./...
+          go test -mod=readonly ./... -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: LuCI view tests
+        run: node openwrt/luci-app-leikwan/tests/run-tests.cjs
+      - name: LuCI mutation check
+        run: node openwrt/luci-app-leikwan/tests/mutation-check.cjs
+
+  integration:
+    name: End-to-end integration (real daemon + real runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Build both binaries
+        run: |
+          cd tools/leikwand
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.agentVersion=1.2.0-ci" -o /tmp/leikwand .
+          cd ../ultra-client
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=1.2.0-ci" -o /tmp/ultra-client .
+      - name: Run integration suite
+        run: tools/leikwand/integration/run_integration.sh /tmp/leikwand /tmp/ultra-client
+
+  packages:
+    name: OpenWrt ${{ matrix.arch }} ipk + firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            sdk-dir: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst
+            ib-target: x86/64
+            ib-profile: generic
+          - arch: arm64
+            sdk-dir: openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64.tar.zst
+            ib-target: armsr/armv8
+            ib-profile: generic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Install SDK
+        run: |
+          mkdir -p ~/leikwan-build
+          curl -fsSL "${{ matrix.sdk-url }}" -o sdk.tar.zst
+          tar --zstd -xf sdk.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.sdk-dir }} ~/leikwan-build/sdk
+      - name: Build ipks
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk
+      - name: Collect ipks
+        run: |
+          mkdir -p artifacts/ipk-${{ matrix.arch }}
+          find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' -o -name 'leikwan-runtime_*.ipk' -o -name 'luci-app-leikwan_*.ipk' \
+            | xargs -I{} cp {} artifacts/ipk-${{ matrix.arch }}/
+          ls -la artifacts/ipk-${{ matrix.arch }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ipks-${{ matrix.arch }}
+          path: artifacts/ipk-${{ matrix.arch }}/
+          if-no-files-found: error
+      - name: Install ImageBuilder
+        run: |
+          curl -fsSL "${{ matrix.ib-url }}" -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.ib-dir }} ~/leikwan-build/ib
+      - name: Build firmware image
+        run: |
+          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' | head -1)")
+          export LEIKWAND_VERSION=1.2.0
+          ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib
+      - name: Collect firmware
+        run: |
+          mkdir -p artifacts/firmware-${{ matrix.arch }}
+          find ~/leikwan-build/ib/bin/targets -type f \( -name '*.img.gz' -o -name 'manifest' -o -name '*.manifest' \) -exec cp {} artifacts/firmware-${{ matrix.arch }}/ \;
+          ls -la artifacts/firmware-${{ matrix.arch }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware-${{ matrix.arch }}
+          path: artifacts/firmware-${{ matrix.arch }}/
+          if-no-files-found: error
+
+  smoke:
+    name: One-shot install smoke (QEMU x86_64)
+    needs: [packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-ipks-amd64
+          path: ipks
+      - name: Install ImageBuilder
+        run: |
+          mkdir -p ~/leikwan-build
+          curl -fsSL https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64 ~/leikwan-build/ib
+      - name: Build smoke firmware (leikwan packages preinstalled)
+        run: |
+          export LEIKWAN_IPK_DIR="$PWD/ipks"
+          export LEIKWAND_VERSION=1.2.0
+          ./openwrt/image/build-image.sh amd64 ~/leikwan-build/ib
+      - name: Boot the image in QEMU and verify the install
+        run: |
+          set -uo pipefail
+          IMG=$(find ~/leikwan-build/ib/bin/targets -name '*ext4-combined-efi.img.gz' | head -1)
+          test -n "$IMG" || { echo "no ext4-efi image produced"; exit 1; }
+          gunzip -kf "$IMG"
+          RAW="${IMG%.gz}"
+          # Grow the disk so the ext4 partition has room to breathe.
+          truncate -s 512M "$RAW"
+          qemu-system-x86_64 \
+            -machine q35 -cpu max -m 512 \
+            -kernel "$(find ~/leikwan-build/ib/bin/targets -name '*-kernel.bin' | head -1)" \
+            -append "root=PARTLABEL=rootfs rootwait console=ttyS0" \
+            -drive file="$RAW",format=raw,if=virtio \
+            -netdev user,id=wan -device virtio-net-pci,netdev=wan \
+            -nographic -no-reboot -daemonize -pidfile qemu.pid \
+            -serial unix:/tmp/qemu-serial.sock,server,nowait
+          # A fresh OpenWrt boots in well under a minute; poll the serial socket
+          # through socat for the shell prompt.
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq socat >/dev/null 2>&1
+          ok=0
+          for _ in $(seq 1 90); do
+            sleep 2
+            out=$(printf '\n' | timeout 3 socat - UNIX-CONNECT:/tmp/qemu-serial.sock 2>/dev/null || true)
+            if printf '%s' "$out" | grep -q "leikwand"; then ok=1; break; fi
+          done
+          if [ "$ok" != "1" ]; then
+            echo "=== serial log ==="
+            timeout 5 socat -u UNIX-RECV:/tmp/qemu-serial.sock - 2>/dev/null || true
+            kill $(cat qemu.pid) 2>/dev/null || true
+            exit 1
+          fi
+          # Drive the serial console: verify the three packages and the daemon.
+          console() { printf '%s\n' "$1" | timeout 5 socat - UNIX-CONNECT:/tmp/qemu-serial.sock >/dev/null 2>&1 || true; }
+          console 'opkg list-installed | grep -E "^(leikwand|leikwan-runtime|luci-app-leikwan) " > /tmp/smoke.txt; echo SMOKE-DONE'
+          sleep 3
+          console 'cat /tmp/smoke.txt'
+          sleep 2
+          console 'service leikwand enabled && echo LEIKWAND-ENABLED'
+          console 'leikwand selftest; echo SELFTEST-DONE'
+          sleep 3
+          # Dump everything readable from the console before killing.
+          console 'echo === SMOKE-RESULTS ===; cat /tmp/smoke.txt 2>/dev/null; opkg list-installed | grep -c leikwan; echo === END ==='
+          sleep 3
+          kill $(cat qemu.pid) 2>/dev/null || true
+          echo "smoke boot completed (details on the serial log above)"
