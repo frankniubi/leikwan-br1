@@ -97,13 +97,25 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1])))==0 else 1)" "$1"; }
 
 # forward_echo sends a marker through the supervised listener and returns the
 # response — the only assertion that proves the whole data path works.
+# The response must be read to completion: TCP may deliver it in any number of
+# segments, and a client that closes after a partial recv() flushes an RST at
+# the runtime (unread bytes in the receive buffer), which both kills the
+# session this step is supposed to observe and makes the failure look like a
+# data-path fault.
 forward_echo() { python3 -c "
 import socket,sys
 try:
-    s=socket.socket(); s.settimeout(4)
+    s=socket.socket(); s.settimeout(8)
     s.connect(('127.0.0.1', int(sys.argv[1])))
     s.sendall(sys.argv[2].encode())
-    print(s.recv(4096).decode(errors='replace'))
+    chunks=b''
+    while True:
+        part=s.recv(4096)
+        if not part: break
+        chunks+=part
+        if b'echo:' in chunks and len(chunks) >= 5+len(sys.argv[2]): break
+    print(chunks.decode(errors='replace'))
+    s.close()
 except Exception as e:
     print('ERR', e)" "$1" "$2"; }
 
