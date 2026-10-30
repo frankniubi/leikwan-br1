@@ -93,18 +93,12 @@ type Agent struct {
 	forceStatusFlush chan struct{}
 	offline          bool
 
-	// wan and gateway are set by their own loops; they are nil when the
-	// corresponding feature is disabled.
-	wan           *wanManager
+	// gateway is set by its own loop; it is nil before the loop stores it.
 	gateway       *gatewayManager
 	gatewaySignal chan struct{}
 
-	// bypass keeps every relay address out of the gateway TUN.
-	bypass *bypassRoutes
-
 	// secretStamp tracks the credential file so an operator (or a restored
-	// backup, or an out-of-band pairing) can enrol a running agent without
-	// restarting it.
+	// backup) can enrol a running agent without restarting it.
 	secretStamp  time.Time
 	secretSeenAt time.Time
 }
@@ -127,7 +121,6 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		panelStopped:     map[int]string{},
 		forwards:         map[int]ForwardConfig{},
 		nativeForwards:   map[int]ForwardConfig{},
-		bypass:           newBypassRoutes(),
 		reconcile:        make(chan string, 16),
 		forceStatusFlush: make(chan struct{}, 1),
 		gatewaySignal:    make(chan struct{}, 1),
@@ -167,15 +160,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(a.healthLoop)
 	start(a.leaseLoop)
 	start(a.reconcileLoop)
-	if a.cfg.UplinkEnabled {
-		start(a.uplinkLoop)
-	}
-	// Always running: it idles while gateway mode is off, so enabling it from
-	// LuCI applies on reload.
+	// Always running: it starts the native relay when the Panel grants native
+	// outbound, without a mode switch and without a service restart.
 	start(a.gatewayLoop)
 
 	if !a.enrolled() {
-		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding (mode=%s)", a.cfg.Mode)
+		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
 	}
 
 	wg.Wait()
@@ -406,9 +396,7 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	a.applyForwards(response.Forwards)
 	a.evaluateRuntimeDrift()
 	a.triggerReconcile(reason)
-	if a.cfg.gatewayActive() {
-		a.triggerGatewayReconcile()
-	}
+	a.triggerGatewayReconcile()
 	return nil
 }
 
@@ -499,23 +487,17 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	if !a.enrolled() {
 		return
 	}
-	// Ordinary forwards are served only in forward and hybrid mode. In gateway
-	// mode the router carries the LAN over the native carrier alone, so the
-	// client's other forwards get no listener and no lease here.
-	serving := a.config().forwardActive()
 	a.mu.Lock()
 	desired := make(map[int]ForwardConfig, len(a.forwards))
-	if serving {
-		for k, v := range a.forwards {
-			if generation, stopped := a.panelStopped[k]; stopped {
-				if generation == policyGenerationOf(v) {
-					continue
-				}
-				// A new grant generation is the Panel re-enabling the forward.
-				delete(a.panelStopped, k)
+	for k, v := range a.forwards {
+		if generation, stopped := a.panelStopped[k]; stopped {
+			if generation == policyGenerationOf(v) {
+				continue
 			}
-			desired[k] = v
+			// A new grant generation is the Panel re-enabling the forward.
+			delete(a.panelStopped, k)
 		}
+		desired[k] = v
 	}
 	for k := range a.panelStopped {
 		if _, listed := a.forwards[k]; !listed {
@@ -541,11 +523,7 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	}
 	a.mu.Unlock()
 	for _, state := range stale {
-		if serving {
-			a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
-		} else {
-			a.log.Info("runtime", "forward %d is not served in gateway mode; stopping", state.forward.ForwardID)
-		}
+		a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
 		a.stopRuntime(state.proc, "withdrawn")
 		a.store.DeleteApplied(state.forward.ForwardID)
 	}
@@ -875,7 +853,6 @@ type StatusSnapshot struct {
 	Platform       string        `json:"platform"`
 	Architecture   string        `json:"architecture"`
 	UptimeSeconds  int64         `json:"uptime_seconds"`
-	Mode           string        `json:"mode"`
 	Enabled        bool          `json:"enabled"`
 	Enrolled       bool          `json:"enrolled"`
 	PanelURL       string        `json:"panel_url"`
@@ -889,11 +866,9 @@ type StatusSnapshot struct {
 	LastPullError  string        `json:"last_pull_error,omitempty"`
 	ForwardCount   int           `json:"forward_count"`
 	Forwards       []ForwardView `json:"forwards"`
-	Uplinks        []UplinkView  `json:"uplinks,omitempty"`
 	Gateway        *GatewayView  `json:"gateway,omitempty"`
 	RuntimeBin     string        `json:"runtime_bin"`
 	RuntimeOK      bool          `json:"runtime_present"`
-	SingBoxOK      bool          `json:"singbox_present"`
 
 	// Runtime drift is reported, never auto-applied: on OpenWrt the runtime is
 	// updated by opkg, so the router must have exactly one update authority.
@@ -934,7 +909,6 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Platform:       platformName,
 		Architecture:   runtime.GOARCH,
 		UptimeSeconds:  int64(time.Since(a.startedAt).Seconds()),
-		Mode:           a.cfg.Mode,
 		Enabled:        a.cfg.Enabled,
 		Enrolled:       a.enrolled(),
 		PanelURL:       a.panel.endpointLabel(),
@@ -948,7 +922,6 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Forwards:       a.forwardViews(),
 		RuntimeBin:     a.cfg.RuntimeBin,
 		RuntimeOK:      fileExists(a.cfg.RuntimeBin),
-		SingBoxOK:      fileExists(a.cfg.GatewaySingBoxBin),
 	}
 	if !lastPull.IsZero() {
 		snapshot.LastPullAt = formatRFC3339(lastPull)
@@ -961,12 +934,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 	snapshot.PanelEgressDevice, snapshot.PanelEgressReason, snapshot.PanelEgressOverride, snapshot.PanelEgressError = a.panel.egressView()
 	snapshot.ProxyIgnored = true
 	snapshot.ForwardCount = len(snapshot.Forwards)
-	if a.cfg.UplinkEnabled {
-		snapshot.Uplinks = a.uplinkViews()
-	}
-	if cfg := a.config(); cfg.GatewayEnabled || cfg.gatewayActive() {
-		snapshot.Gateway = a.gatewayView()
-	}
+	snapshot.Gateway = a.gatewayView()
 	a.mu.Lock()
 	snapshot.DesiredRuntimeSha = strings.ToLower(strings.TrimSpace(meta.DesiredUltraSHA))
 	a.mu.Unlock()

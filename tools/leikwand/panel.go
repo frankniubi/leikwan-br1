@@ -500,51 +500,6 @@ func (c *PanelClient) DiagnosticsResult(ctx context.Context, payload any) error 
 	return c.do(ctx, http.MethodPost, "/api/client/diagnostics/result", payload, nil)
 }
 
-// Login exchanges operator credentials for a client list, then selects the
-// target client and returns its agent token. This is the same two-step flow
-// the desktop app uses, so no Panel change is required for basic onboarding.
-func (c *PanelClient) Login(ctx context.Context, email, password string) (*loginResponse, error) {
-	var out loginResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/login", map[string]string{
-		"email":    email,
-		"password": password,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *PanelClient) SelectClient(ctx context.Context, sessionToken string, clientID int) (*selectResponse, error) {
-	var out selectResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/select", map[string]any{
-		"session_token": sessionToken,
-		"client_id":     clientID,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// PairWithCode redeems a router pairing code. The Panel endpoint is additive:
-// when it is absent (older Panel) the error is surfaced verbatim so LuCI can
-// fall back to the account flow.
-func (c *PanelClient) PairWithCode(ctx context.Context, code, deviceID, deviceName string) (*pairResponse, error) {
-	var out pairResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/devices/openwrt/pair", map[string]string{
-		"pairing_code": code,
-		"device_id":    deviceID,
-		"device_name":  deviceName,
-		"platform":     platformName,
-		"architecture": runtime.GOARCH,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // Probe performs an authenticated pull with no wait. It is the "Test
 // connection" action in LuCI and intentionally costs one round trip only.
 func (c *PanelClient) Probe(ctx context.Context) error {
@@ -552,32 +507,6 @@ func (c *PanelClient) Probe(ctx context.Context) error {
 	defer cancel()
 	_, err := c.Pull(probeCtx, "", 0)
 	return err
-}
-
-type loginResponse struct {
-	OK           bool   `json:"ok"`
-	SessionToken string `json:"session_token"`
-	UserID       int    `json:"user_id"`
-	Username     string `json:"username"`
-	Email        string `json:"email"`
-	Clients      []struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"clients"`
-}
-
-type selectResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
-}
-
-type pairResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
 }
 
 // urlEncode escapes the small set of characters that appear in revisions.

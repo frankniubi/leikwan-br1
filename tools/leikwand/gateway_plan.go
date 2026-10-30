@@ -3,8 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
-	"os"
 	"strings"
 )
 
@@ -21,16 +19,9 @@ func (p carrierPlan) key() string {
 	return strings.Join([]string{itoa(p.Carrier.ForwardID), p.Native.Direction, p.Scope, p.Policy}, "|")
 }
 
-// gatewayPlan is everything that decides what the native relays and sing-box
-// run: the primary carrier and, optionally, a split carrier that only the
-// destinations in SplitCIDRs use.
+// gatewayPlan is everything that decides what the native relay runs.
 type gatewayPlan struct {
 	carrierPlan
-	Split      *carrierPlan
-	SplitCIDRs []string
-	// CaptureCIDRs is set in cidr capture mode: the primary carrier carries
-	// only these destinations and nothing else on the box is touched.
-	CaptureCIDRs []string
 	// Notes explain a downgrade from what the operator asked for.
 	Notes []string
 }
@@ -49,22 +40,7 @@ func (a *Agent) gatewayPlan() (gatewayPlan, error) {
 	}
 	cfg := a.cfg
 	a.mu.Unlock()
-	plan, err := resolveGatewayPlan(cfg, capability, forwards)
-	if err != nil {
-		return plan, err
-	}
-	if cfg.GatewayCapture == "cidr" {
-		return resolveCIDRCapture(cfg, plan)
-	}
-	if cfg.GatewaySplitForwardID <= 0 {
-		return plan, nil
-	}
-	cidrs, loadErr := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
-	if loadErr != nil {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("split carrier #%d is off: %v", cfg.GatewaySplitForwardID, loadErr))
-		return plan, nil
-	}
-	return resolveGatewaySplit(cfg, capability, forwards, plan, cidrs), nil
+	return resolveGatewayPlan(cfg, capability, forwards)
 }
 
 func resolveGatewayPlan(cfg Config, capability *NativeOutboundCapability, forwards map[int]ForwardConfig) (gatewayPlan, error) {
@@ -109,111 +85,6 @@ func resolveGatewayPlan(cfg Config, capability *NativeOutboundCapability, forwar
 	plan.Scope, plan.Notes = resolveGatewayScope(cfg.GatewayRouteScope, native, plan.Notes)
 	plan.Policy, plan.Notes = resolveGatewayPolicy(cfg.GatewayRoutePolicy, native, plan.Notes)
 	return plan, nil
-}
-
-// resolveCIDRCapture turns the plan into a CIDR-only capture: the list is
-// required (an empty or unreadable list would capture nothing, which is an
-// error rather than a silently idle gateway), the scope is global whenever the
-// line offers it (the router, not the line, narrows the destinations), and a
-// split carrier has no meaning here.
-func resolveCIDRCapture(cfg Config, plan gatewayPlan) (gatewayPlan, error) {
-	cidrs, err := loadSplitCIDRs(cfg.GatewaySplitCIDRFile)
-	if err != nil {
-		return plan, fmt.Errorf("cidr capture: %w", err)
-	}
-	if len(cidrs) == 0 {
-		return plan, fmt.Errorf("cidr capture: %s has no usable prefixes", cfg.GatewaySplitCIDRFile)
-	}
-	plan.CaptureCIDRs = cidrs
-	want := strings.ToLower(strings.TrimSpace(cfg.GatewayRouteScope))
-	if (want == "" || want == "auto") && containsString(nativeScopesOf(plan.Native), "global") {
-		plan.Scope = "global"
-	}
-	if cfg.GatewaySplitForwardID > 0 {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("split carrier #%d is ignored in cidr capture mode", cfg.GatewaySplitForwardID))
-	}
-	return plan, nil
-}
-
-// resolveGatewaySplit adds the split carrier. Any problem with it is a note,
-// never an error: the primary carrier keeps the LAN online on its own. The
-// split relay asks for the global scope because the router, not the line,
-// narrows it to the CIDR list.
-func resolveGatewaySplit(cfg Config, capability *NativeOutboundCapability, forwards map[int]ForwardConfig, plan gatewayPlan, cidrs []string) gatewayPlan {
-	id := cfg.GatewaySplitForwardID
-	off := func(reason string) gatewayPlan {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("split carrier #%d is off: %s", id, reason))
-		return plan
-	}
-	if id == plan.Carrier.ForwardID {
-		return off("it is already the primary carrier")
-	}
-	native, ok := capability.carrier(id)
-	if !ok {
-		return off("it is not a native outbound line on this account")
-	}
-	carrier, ok := forwards[id]
-	if !ok {
-		return off("it is not in this device's forward list")
-	}
-	if strings.TrimSpace(native.Direction) == "" || !strings.EqualFold(strings.TrimSpace(native.Transport), "tcp+udp") {
-		return off("it has no usable direction")
-	}
-	if len(cidrs) == 0 {
-		return off("the CIDR list is empty")
-	}
-	split := carrierPlan{Carrier: carrier, Native: native}
-	split.Scope, plan.Notes = resolveGatewayScope("global", native, plan.Notes)
-	split.Policy, plan.Notes = resolveGatewayPolicy(cfg.GatewaySplitRoutePolicy, native, plan.Notes)
-	plan.Split = &split
-	plan.SplitCIDRs = cidrs
-	return plan
-}
-
-// loadSplitCIDRs reads one IPv4 CIDR per line (# comments allowed). Entries
-// broader than /8, private, loopback or unspecified ranges are dropped: the
-// list steers public destinations, it must never capture the LAN or the
-// whole Internet by accident.
-func loadSplitCIDRs(path string) ([]string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return nil, errors.New("no CIDR file is configured")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("CIDR file %s: %w", path, err)
-	}
-	return parseSplitCIDRs(string(raw)), nil
-}
-
-func parseSplitCIDRs(text string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, line := range strings.Split(text, "\n") {
-		if hash := strings.IndexByte(line, '#'); hash >= 0 {
-			line = line[:hash]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		ip, network, err := net.ParseCIDR(line)
-		if err != nil || ip.To4() == nil {
-			continue
-		}
-		if ones, _ := network.Mask.Size(); ones < 8 {
-			continue
-		}
-		if network.IP.IsPrivate() || network.IP.IsLoopback() || network.IP.IsUnspecified() || network.IP.IsLinkLocalUnicast() {
-			continue
-		}
-		canonical := network.String()
-		if !seen[canonical] {
-			seen[canonical] = true
-			out = append(out, canonical)
-		}
-	}
-	return out
 }
 
 func nativeScopesOf(native NativeOutboundForward) []string {

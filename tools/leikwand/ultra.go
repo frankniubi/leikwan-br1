@@ -342,6 +342,9 @@ func buildNativeRuntimeConfig(cfg Config, forwardID, listenPort int, paths runti
 
 const nativeRuntimeTargetPlaceholder = "1.1.1.1:443"
 
+// nativePortMin mirrors ultra-client's restricted-policy floor.
+const nativePortMin = 1000
+
 func nativeFilterProfile(routePolicy string) string {
 	if normalizeRoutePolicy(routePolicy) == "unrestricted" {
 		return "off"

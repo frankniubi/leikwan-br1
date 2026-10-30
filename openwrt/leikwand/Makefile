@@ -9,7 +9,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=leikwand
-PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.1.0)
+PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.2.0)
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
@@ -21,7 +21,7 @@ define Package/leikwand
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
-  TITLE:=Leikwan convergence agent (panel-managed, two-layer HA)
+  TITLE:=Leikwan convergence agent (panel-managed forwarding + native relay)
   URL:=https://v3.leikwanhost.com
   DEPENDS:=
 endef
@@ -29,13 +29,11 @@ endef
 define Package/leikwand/description
  Router-side agent for the Leikwan convergence service.
 
- It keeps a supervised forwarding runtime in sync with the central panel,
- delivers high-availability candidate lines over the runtime control socket,
- fails over between multiple WAN uplinks, and can act as a transparent egress
- for the whole LAN through the Panel's native outbound (restricted or
- unrestricted route) with the desktop clients' anti-pollution DNS policy.
- Gateway mode additionally needs sing-box and kmod-tun. Managed from LuCI
- (luci-app-leikwan).
+ It keeps one supervised forwarding runtime per assigned line in sync with
+ the central panel, delivers high-availability candidate lines over the
+ runtime control socket, and exposes the panel's native outbound as a local
+ SOCKS5 relay on 127.0.0.1:2080 when the plan grants it. Managed from LuCI
+ (luci-app-leikwan); onboarding is the panel-issued client id + agent token.
 endef
 
 define Package/leikwand/conffiles
@@ -66,14 +64,6 @@ define Package/leikwand/install
 	$(INSTALL_DIR) $(1)/etc/leikwan
 	$(INSTALL_DIR) $(1)/var/run/leikwand
 	$(INSTALL_DIR) $(1)/usr/libexec/leikwan
-
-	# China rule-sets for gateway mode, so sing-box never waits on GitHub.
-	$(INSTALL_DIR) $(1)/usr/share/leikwan/rule-set
-	$(INSTALL_DATA) ./files/rule-set/geoip-cn.srs ./files/rule-set/geosite-cn.srs $(1)/usr/share/leikwan/rule-set/
-	$(INSTALL_DATA) ./files/rule-set/NOTICE.txt ./files/rule-set/LICENSE.txt ./files/rule-set/COPYING.txt $(1)/usr/share/leikwan/rule-set/
-	# Destination lists for the gateway split carrier (SHIXP members).
-	$(INSTALL_DIR) $(1)/usr/share/leikwan/split
-	$(INSTALL_DATA) ./files/split/shixp-v4.txt $(1)/usr/share/leikwan/split/
 endef
 
 define Package/leikwand/postinst
@@ -90,13 +80,6 @@ define Package/leikwand/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	/etc/init.d/leikwand stop >/dev/null 2>&1
 	/etc/init.d/leikwand disable >/dev/null 2>&1
-	# Remove the gateway firewall zone only on a real removal, not an upgrade.
-	if [ "$${PKG_UPGRADE:-0}" != "1" ] && uci -q get firewall.leikwan >/dev/null 2>&1; then
-		uci -q delete firewall.leikwan
-		uci -q delete firewall.leikwan_lan
-		uci -q commit firewall
-		/etc/init.d/firewall reload >/dev/null 2>&1
-	fi
 }
 exit 0
 endef

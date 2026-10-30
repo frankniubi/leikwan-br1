@@ -22,10 +22,8 @@
 		"write": {
 			"ubus": {
 				"luci.leikwand": [
-					"enroll",
-					"pair",
+					"register",
 					"sign_out",
-					"forward_action",
 					"reload",
 					"set_config"
 				]

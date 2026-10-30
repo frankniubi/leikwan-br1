@@ -51,9 +51,7 @@ func (a *Agent) watchCredentials() {
 	a.panel.setToken(secrets.AgentToken, secrets.ClientID)
 	a.log.Info("ctl", "adopted credentials for client %d (%s)", secrets.ClientID, secrets.ClientName)
 	a.triggerReconcile("credentials_changed")
-	if a.cfg.gatewayActive() {
-		a.triggerGatewayReconcile()
-	}
+	a.triggerGatewayReconcile()
 }
 
 // signOut clears every credential and stops all supervised work.

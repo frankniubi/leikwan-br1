@@ -198,14 +198,6 @@ return view.extend({
 		o.placeholder = '/usr/libexec/leikwan/ultra-client';
 		o.validate = validatePath;
 
-		o = s.taboption('paths', form.Value, 'gateway_singbox_bin', _('sing-box 路径 (sing-box binary)'));
-		o.placeholder = '/usr/bin/sing-box';
-		o.validate = validatePath;
-
-		o = s.taboption('paths', form.Value, 'cn_ip_list', _('中国 IP 列表 (CN IP list)'));
-		o.placeholder = '/etc/leikwan/CN.conf';
-		o.validate = validatePath;
-
 		/* --- actions ----------------------------------------------------- */
 		this.actionsNode = E('div', { 'class': 'cbi-section' }, [
 			E('h3', _('服务操作 (Service actions)')),
@@ -244,8 +236,8 @@ return view.extend({
 			else {
 				var snapshot = response.data || {};
 
-				ui.addNotification(null, E('p', _('配置已重新加载：模式 %s，线路 %d 条。')
-					.format(snapshot.mode || '-', snapshot.forward_count || 0)), 'success');
+				ui.addNotification(null, E('p', _('配置已重新加载：线路 %d 条。')
+					.format(snapshot.forward_count || 0)), 'success');
 			}
 		});
 	},
@@ -261,8 +253,8 @@ return view.extend({
 
 			var snapshot = response.data || {};
 
-			ui.addNotification(null, E('p', _('已重新加载 /etc/config/leikwan：模式 %s，已注册 %s，线路 %d 条。')
-				.format(snapshot.mode || '-', snapshot.enrolled ? _('是') : _('否'),
+			ui.addNotification(null, E('p', _('已重新加载 /etc/config/leikwan：已注册 %s，线路 %d 条。')
+				.format(snapshot.enrolled ? _('是') : _('否'),
 					snapshot.forward_count || 0)), 'success');
 		}).catch(function(error) {
 			ui.addNotification(null, E('p', _('重新加载失败：%s')

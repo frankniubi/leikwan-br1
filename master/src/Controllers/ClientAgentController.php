@@ -1477,7 +1477,12 @@ final class ClientAgentController extends BaseController
         return str_starts_with($platform, 'windows')
             || str_starts_with($platform, 'linux')
             || str_starts_with($platform, 'macos')
-            || str_starts_with($platform, 'ios');
+            || str_starts_with($platform, 'ios')
+            // leikwand (openwrt-* / router) speaks the same ultra-client
+            // runtime, so it needs the session_ticket the v2 grant carries;
+            // without it the lease endpoint refuses with lease_scope_invalid.
+            || str_starts_with($platform, 'openwrt')
+            || $platform === 'router';
     }
 
     /** @param array<string,mixed> $forward @return array<string,mixed> */

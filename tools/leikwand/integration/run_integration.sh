@@ -128,7 +128,7 @@ cat > "$ROOT/leikwan.uci" <<EOF
 config leikwan 'main'
 	option enabled '1'
 	option panel_url 'http://127.0.0.1:$PANEL_PORT'
-	option mode 'forward'
+	# router edition: no mode option
 	option poll_interval '2'
 	option heartbeat_interval '2'
 	option health_interval '3'
