@@ -28,14 +28,14 @@ echo "==> building leikwand for linux/$GOARCH"
 mkdir -p "$HERE/leikwand/bin"
 ( cd "$REPO/tools/leikwand" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.agentVersion=${VERSION:-1.1.0}" \
+	go build -trimpath -ldflags "-s -w -X main.agentVersion=${VERSION:-1.2.0}" \
 	-o "$HERE/leikwand/bin/leikwand" . )
 
 echo "==> building ultra-client runtime for linux/$GOARCH"
 mkdir -p "$HERE/leikwan-runtime/bin"
 ( cd "$REPO/tools/ultra-client" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${VERSION:-1.1.0}" \
+	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${VERSION:-1.2.0}" \
 	-o "$HERE/leikwan-runtime/bin/ultra-client" . )
 
 echo "==> verifying the staged binaries are static"
