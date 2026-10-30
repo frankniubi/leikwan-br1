@@ -181,7 +181,10 @@ jobs:
           command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 missing"; exit 1; }
           IMG=$(find ~/leikwan-build/ib/bin/targets -name '*ext4-combined-efi.img.gz' | head -1)
           test -n "$IMG" || { echo "no ext4-efi image produced"; exit 1; }
-          gunzip -kf "$IMG"
+          # The ImageBuilder appends random padding after the gzip stream, so
+          # gunzip reports "trailing garbage ignored" with exit 2; that is a
+          # warning, not a failure. Only a missing output file is fatal.
+          gunzip -kf "$IMG" || [ -f "${IMG%.gz}" ] || { echo "gunzip failed"; exit 1; }
           RAW="${IMG%.gz}"
           # Grow the disk so the ext4 partition has room to breathe.
           truncate -s 512M "$RAW"
