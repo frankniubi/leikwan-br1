@@ -133,7 +133,13 @@ jobs:
         run: |
           export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' | head -1)")
           export LEIKWAND_VERSION=1.2.0
-          ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib
+          # uutils coreutils: the ImageBuilder's own scripts may also probe for
+          # GNU wording; make sure the diagnostics survive the run either way.
+          ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib || {
+            echo "=== leikwan-image-build.log (full) ==="
+            cat ~/leikwan-build/ib/leikwan-image-build.log || true
+            exit 1
+          }
       - name: Collect firmware
         run: |
           mkdir -p artifacts/firmware-${{ matrix.arch }}
