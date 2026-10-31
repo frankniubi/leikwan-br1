@@ -192,11 +192,14 @@ jobs:
           # The serial console goes to a file: a unix-socket serial plus socat
           # probes loses data between connects and made the previous run see
           # nothing at all. A file keeps every byte since boot.
+          # root=/dev/vda2: the EFI combined image's rootfs partition (vda1 is
+          # boot); PARTLABEL=rootfs does not resolve under this q35/virtio
+          # combination (kernel sat at "Waiting for root device").
           rm -f serial.log
           qemu-system-x86_64 \
             -machine q35 -cpu max -m 512 \
             -kernel "$(find ~/leikwan-build/ib/bin/targets -name '*-kernel.bin' | head -1)" \
-            -append "root=PARTLABEL=rootfs rootwait console=ttyS0" \
+            -append "root=/dev/vda2 rootwait console=ttyS0" \
             -drive file="$RAW",format=raw,if=virtio \
             -netdev user,id=wan -device virtio-net-pci,netdev=wan \
             -display none -no-reboot -daemonize -pidfile qemu.pid \
