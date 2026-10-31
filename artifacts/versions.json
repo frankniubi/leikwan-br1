@@ -418,6 +418,26 @@
     "size_bytes": 42508,
     "version": "2026.05.13.1"
   },
+  "openwrt_leikwand_aarch64_generic": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk",
+    "format": "opkg-ipk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk",
+    "sha256": "",
+    "size_bytes": 0,
+    "version": "1.2.1"
+  },
+  "openwrt_leikwand_x86_64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.1-r1_x86_64.ipk",
+    "format": "opkg-ipk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.1-r1_x86_64.ipk",
+    "sha256": "",
+    "size_bytes": 0,
+    "version": "1.2.1"
+  },
   "retired_runtime_030b48158478": {
     "attestation": {
       "fingerprint": "2026.09.12.1.4b106b02",

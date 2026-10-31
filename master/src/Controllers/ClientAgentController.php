@@ -846,8 +846,9 @@ final class ClientAgentController extends BaseController
         $sinceRevision = trim((string) $request->input('since_revision', ''));
         $waitSeconds = max(0, min(25, (int) $request->input('wait_seconds', 0)));
         $runtimeArchitecture = $this->clientRuntimeArchitecture($request);
+        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
 
-        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $platform);
         $configRevision = (string) $snapshot['config_revision'];
         $forceApply = (bool) $snapshot['force_apply'];
 
@@ -856,7 +857,7 @@ final class ClientAgentController extends BaseController
             $deadline = microtime(true) + $waitSeconds;
             while (microtime(true) < $deadline) {
                 usleep(500000);
-                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $platform);
                 if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
                     break;
                 }
@@ -890,7 +891,6 @@ final class ClientAgentController extends BaseController
         $updateRequested = (bool) $snapshot['update_requested'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
-        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
         // Older Mac builds did not consistently send X-Device-Platform. The
         // dedicated User-Agent remains an authenticated client identity signal
         // and keeps those builds on the scrubbed Ultra v2 contract.
@@ -1018,7 +1018,8 @@ final class ClientAgentController extends BaseController
         int $clientId,
         ?array $deviceSession,
         array $client,
-        string $runtimeArchitecture = 'amd64'
+        string $runtimeArchitecture = 'amd64',
+        string $platform = ''
     ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
@@ -1027,6 +1028,19 @@ final class ClientAgentController extends BaseController
         if ($clientAgent === []) {
             $clientAgentKey = 'client_agent';
             $clientAgent = $this->artifactMetadata($clientAgentKey);
+        }
+        // OpenWrt agents self-update through opkg, so the version they compare
+        // against is the packaged leikwand ipk, not the python client-agent.
+        // The router checks DesiredAgentVer against its own agentVersion, and
+        // opkg resolves the download — the panel only names the version.
+        if (str_starts_with($platform, 'openwrt') || $platform === 'router') {
+            $leikwandArch = $runtimeArchitecture === 'arm64' ? 'aarch64_generic' : 'x86_64';
+            $leikwandKey = 'openwrt_leikwand_' . $leikwandArch;
+            $leikwand = $this->artifactMetadata($leikwandKey);
+            if ($leikwand !== []) {
+                $clientAgent = $leikwand;
+                $clientAgentKey = $leikwandKey;
+            }
         }
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
