@@ -23,6 +23,17 @@ import (
 //     re-selects. This is how a Panel-driven line rotation reaches the router.
 const leaseTickInterval = 5 * time.Second
 
+// leaseNonce generates the per-request nonce the Panel's lease plane requires
+// (UltraLeaseService::normalizeRequest enforces ^[a-f0-9]{16,128}$). The
+// native lease path has always minted one (native_lease.go); the ordinary
+// per-forward path skipped it, which made every ordinary lease 409 with
+// lease_scope_invalid on leikwand 1.2.0 — the desktop clients always sent a
+// nonce, so the contract was never exercised without one until the router
+// edition shipped.
+func leaseNonce() (string, error) {
+	return newLeaseNonce()
+}
+
 func (a *Agent) leaseLoop(ctx context.Context) {
 	ticker := time.NewTicker(leaseTickInterval)
 	defer ticker.Stop()
@@ -186,6 +197,14 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	}
 	state.lastLeaseAt = time.Now()
 
+	nonce, err := leaseNonce()
+	if err != nil {
+		state.leaseFailures++
+		state.lastLeaseErr = "nonce generation failed"
+		a.log.Warn("lease", "forward %d could not mint a lease nonce: %v", state.forward.ForwardID, err)
+		return
+	}
+
 	request := LeaseRequest{
 		DeviceID: a.deviceID,
 		Forwards: []LeaseRequestForward{{
@@ -193,6 +212,7 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 			ForwardID:        state.forward.ForwardID,
 			SessionTicket:    policy.SessionTicket,
 			PolicyGeneration: strings.ToLower(strings.TrimSpace(policy.PolicyGeneration)),
+			Nonce:            nonce,
 			TargetDigest:     strings.ToLower(strings.TrimSpace(policy.TargetDigest)),
 			Transport:        strings.ToLower(strings.TrimSpace(policy.Transport)),
 			SelectionMode:    "auto",
