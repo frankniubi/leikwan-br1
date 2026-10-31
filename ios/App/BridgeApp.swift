@@ -23,10 +23,10 @@ struct BridgeApp: App {
                     #endif
                 }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { phase in
             // The dashboard's one-second status poll only matters on screen; in the
             // background the tunnel controller drops to a 5 s cadence (or stops, once
-            // iOS suspends the app).
+            // iOS suspends the app). iOS 16 two-parameter form.
             model.tunnel.setAppVisible(phase == .active)
         }
     }

@@ -232,7 +232,7 @@ final class TunnelController: ObservableObject {
                 // In the background a 1 s IPC round trip (status decode + speed sample) runs
                 // for nothing; iOS suspends the app anyway, but a suspended app is not
                 // guaranteed, and the tunnel keeps paying for the messages meanwhile.
-                let interval = self?.isAppVisible == true ? 1_000_000_000 : 5_000_000_000
+                let interval: UInt64 = self?.isAppVisible == true ? 1_000_000_000 : 5_000_000_000
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
