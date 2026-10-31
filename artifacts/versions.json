@@ -859,5 +859,25 @@
     "artifact_url": "/artifacts/leikwan-lease-seal.py",
     "sha256": "cc097b2b4ae5f7422e3f058c6cd0c2ce57bce2847e1c612c2991ca22d2749a60",
     "size_bytes": 20515
+  },
+  "openwrt_leikwand_x86_64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.1-r1_x86_64.ipk",
+    "format": "opkg-ipk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.1-r1_x86_64.ipk",
+    "sha256": "c118734fc447e9b3e8e4b24a324f750dcb7e3c3c5551c50e1ed9c48934117777",
+    "size_bytes": 2860637,
+    "version": "1.2.1"
+  },
+  "openwrt_leikwand_aarch64_generic": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk",
+    "format": "opkg-ipk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk",
+    "sha256": "938b012b6dc32b3856ef76dec879fa69007fa543c80f381394ea6764e4bc25f8",
+    "size_bytes": 2583200,
+    "version": "1.2.1"
   }
 }
