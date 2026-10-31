@@ -1394,29 +1394,28 @@ final class TenantController extends BaseController
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
-        // macOS: App (Apple Silicon) + no-GUI together; Windows + Windows no-GUI together; Docker standalone.
-        // All command <pre> blocks are collapsible via <details> so the page stays scannable.
+        // Windows and macOS each get ONE card with two symmetric collapsed
+        // variants: 无界面版 (CLI) and 有界面版 (GUI). Docker stands alone.
         $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
         $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
         $dockerCommand = $this->dockerClientInstallCommand($client);
         $dockerComposeSnippet = $this->dockerClientComposeInline($client);
 
-        // No-GUI (CLI) clients lead each desktop card; the GUI app is collapsed below.
         $macosGuiSectionRaw = $this->renderMacClientInstallSection();
+        $macosGuiVersion = $this->macosClientReleaseVersion();
         $macosGuiBlock = '';
         if ($macosGuiSectionRaw !== '') {
-            $macosGuiVersion = $this->macosClientReleaseVersion();
-            $macosGuiBlock = '<details style="margin-top:12px;"><summary>' . $this->platformIcon('macos')
-                . $this->escape('macOS' . ($macosGuiVersion !== '' ? ' ' . $macosGuiVersion : '') . ' · 图形界面版')
+            $macosGuiBlock = '<details style="margin-top:10px;"><summary>' . $this->platformIcon('macos')
+                . $this->escape('图形界面版' . ($macosGuiVersion !== '' ? ' · macOS ' . $macosGuiVersion : ''))
                 . '</summary>'
                 . $this->renderMacClientInstallBody()
                 . '</details>';
         }
         $macosSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('macos')
-            . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 (CLI)', 'macos_headless_installer')) . '</strong>'
-            . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
+            . $this->escape($this->clientAppReleaseLabel('macOS', 'macos_headless_installer')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>无界面版 (CLI) · 一键安装命令</summary>'
+            . '<div class="muted" style="margin:6px 0;">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
@@ -1428,9 +1427,9 @@ final class TenantController extends BaseController
 
         $windowsSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows · 无界面版 (CLI)', 'windows_headless_client')) . '</strong>'
-            . '<div class="muted">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
-            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_headless_client')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>无界面版 (CLI) · 一键安装命令</summary>'
+            . '<div class="muted" style="margin:6px 0;">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
@@ -1438,8 +1437,8 @@ final class TenantController extends BaseController
             . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
             . '</div></details>'
-            . '<details style="margin-top:12px;"><summary>' . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app') . ' · 图形界面版') . '</summary>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('windows')
+            . $this->escape('图形界面版 · ' . $this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</summary>'
             . '<div class="actions" style="margin-top:8px;">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '<div class="muted" style="margin:10px 0 6px;">' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
