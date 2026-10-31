@@ -13,10 +13,11 @@ import Security
 /// * failures retry with ControlPlaneBackoff (full jitter, 5 s doubling to 60 s), device-limit
 ///   refusals every 60 s; the runtime keeps serving its current lease meanwhile (offline survival);
 /// * a terminal panel control stops the forward's loop (TunnelControlLoop tears the tunnel down);
-/// * an essential forward (the default binding) left without a usable lease for
-///   `unusableGraceSeconds` (past the policy expiry, or since start when none was delivered)
-///   stops the tunnel, so iOS shows Disconnected (and on-demand can start it again) instead of
-///   a Connected tunnel that carries nothing.
+/// * an essential forward (the default binding) left without a usable lease past the 180 s
+///   floor AND `unusableGraceAttempts` failed attempts stops the tunnel, so iOS shows
+///   Disconnected (and on-demand can start it again) instead of a Connected tunnel that
+///   carries nothing. The attempt count keeps a burst of panel timeouts (heavy uplink on
+///   cellular, a speed test) from tearing the tunnel down while it is otherwise healthy.
 ///
 /// Leases are opened with the device lease key (`X-Leikwan-Lease-Key`) from this extension's
 /// Keychain and delivered over the runtime's control socket; they are never persisted.
@@ -25,6 +26,13 @@ final class UltraLeaseManager {
     typealias UnusableHandler = (_ message: String) -> Void
 
     static let unusableGraceSeconds: TimeInterval = 180
+    /// The unusable tunnel is stopped only after both: the wall-clock floor above and this many
+    /// failed attempts (each attempt is a full pull+deliver round trip). A transient burst of
+    /// timeouts burns attempts slowly; a panel that truly refuses the device burns one per try.
+    static let unusableGraceAttempts = 6
+    /// Wall-clock floor: never stop before the old 180 s window has passed, whatever the
+    /// attempt count says (an attempt can fail in well under a second).
+    static let minimumUnusableSeconds: TimeInterval = 180
 
     private let client: PanelClient
     private let forwards: [UltraForwardLaunch]
@@ -104,6 +112,7 @@ final class UltraLeaseManager {
         var active: Active?
         var pullFirst = false
         var first = true
+        var failedAttempts = 0
         let startedAt = Date()
         while !Task.isCancelled {
             if let current = active {
@@ -136,6 +145,7 @@ final class UltraLeaseManager {
                 active = Active(policy: policy, sentAt: Date())
                 backoff.reset()
                 pullFirst = false
+                failedAttempts = 0
                 setAlert(nil, for: forward.forwardID)
                 let remaining = Int(policy.expiresAt.timeIntervalSinceNow)
                 TunnelLog.shared.write("ultra forward \(forward.forwardID): lease delivered, policy expires in \(remaining)s")
@@ -157,7 +167,8 @@ final class UltraLeaseManager {
                     backoff.reset()
                     delayMs = 60_000
                 default:
-                    if stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt) { return }
+                    failedAttempts += 1
+                    if stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
                     reportFailure(error.description, forward: forward, active: active)
                     delayMs = backoff.nextDelayMs()
                 }
@@ -165,7 +176,8 @@ final class UltraLeaseManager {
                 first = false
                 pullFirst = true
                 let message = Self.describe(error)
-                if stopIfUnusable(message, forward: forward, active: active, startedAt: startedAt) { return }
+                failedAttempts += 1
+                if stopIfUnusable(message, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
                 reportFailure(message, forward: forward, active: active)
                 delayMs = backoff.nextDelayMs()
             }
@@ -306,12 +318,20 @@ final class UltraLeaseManager {
 
     /// True when the tunnel is being stopped: an essential forward has had no usable lease for
     /// `unusableGraceSeconds`. Device-limit refusals never get here (the device waits for a slot).
-    private func stopIfUnusable(_ message: String, forward: UltraForwardLaunch, active: Active?, startedAt: Date) -> Bool {
+    ///
+    /// The grace is measured in retry attempts, not wall clock: with the backoff capped at 60 s
+    /// the old 180 s wall-clock window was only ~5 attempts, which a burst of panel timeouts
+    /// (heavy uplink like a speed test on cellular) could burn through while the tunnel was
+    /// otherwise fine. `unusableGraceAttempts` attempts span roughly 4-5 minutes and each one is
+    /// a real round trip, so surviving them means the panel really is refusing this device.
+    private func stopIfUnusable(_ message: String, forward: UltraForwardLaunch, active: Active?, startedAt: Date, failedAttempts: Int) -> Bool {
         guard essentialForwardIDs.contains(forward.forwardID) else { return false }
         let unusableSince = active?.policy.expiresAt ?? startedAt
         let unusableFor = Date().timeIntervalSince(unusableSince)
-        guard unusableFor >= Self.unusableGraceSeconds else { return false }
-        TunnelLog.shared.write("ultra forward \(forward.forwardID): no usable lease for \(Int(unusableFor))s (\(message)); stopping the tunnel", level: 1)
+        guard unusableFor >= Self.minimumUnusableSeconds, failedAttempts >= Self.unusableGraceAttempts else {
+            return false
+        }
+        TunnelLog.shared.write("ultra forward \(forward.forwardID): no usable lease for \(Int(unusableFor))s over \(failedAttempts) attempts (\(message)); stopping the tunnel", level: 1)
         let reason = Self.userMessage(message)
         setAlert(reason, for: forward.forwardID)
         onUnusable(L("Ultra forward %@: %@", String(describing: forward.forwardID), String(describing: reason)))

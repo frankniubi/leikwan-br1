@@ -24,6 +24,8 @@ final class TunnelController: ObservableObject {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
     private var pollTask: Task<Void, Never>?
+    /// Status poll cadence switch (1 s foreground, 5 s background).
+    private var isAppVisible = false
     /// Reloads run one after another (see `reload`).
     private var reloadQueue: Task<Void, Never>?
 
@@ -226,9 +228,20 @@ final class TunnelController: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollStatus()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                // The one-second cadence only matters while the user watches the dashboard.
+                // In the background a 1 s IPC round trip (status decode + speed sample) runs
+                // for nothing; iOS suspends the app anyway, but a suspended app is not
+                // guaranteed, and the tunnel keeps paying for the messages meanwhile.
+                let interval = self?.isAppVisible == true ? 1_000_000_000 : 5_000_000_000
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    /// Set by the app on scenePhase changes; false by default so a tunnel that outlives the
+    /// UI (or was started on demand) polls at the slow rate.
+    func setAppVisible(_ visible: Bool) {
+        isAppVisible = visible
     }
 
     private func pollStatus() async {

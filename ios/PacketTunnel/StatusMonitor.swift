@@ -12,7 +12,10 @@ final class StatusMonitor {
     func start() {
         let options = LibboxCommandClientOptions()
         options.addCommand(LibboxCommandStatus)
-        options.addCommand(LibboxCommandLog)
+        // No CommandLog subscription: at info level sing-box emits a line per connection, and
+        // under load (a speed test) that is dozens of lines a second, each pushed through
+        // TunnelLog into os_log plus an append to the shared log file — measurable NE CPU and
+        // I/O that buys nothing (platform.writeLog already mirrors what TunnelLog needs).
         options.statusInterval = Int64(NSEC_PER_SEC)
         guard let client = LibboxNewCommandClient(Handler(self), options) else {
             TunnelLog.shared.write("status monitor unavailable", level: 2)
@@ -70,15 +73,8 @@ final class StatusMonitor {
 
         func clearLogs() {}
 
-        func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {
-            guard let messageList else { return }
-            while messageList.hasNext() {
-                guard let entry = messageList.next() else { break }
-                // libbox levels: 0 panic .. 6 trace; map onto the shared scale.
-                let level = max(1, min(5, Int(entry.level) - 1))
-                TunnelLog.shared.write("[sing-box] \(entry.message)", level: level)
-            }
-        }
+        /// Not subscribed (no CommandLog in `start`); left as a no-op guard.
+        func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {}
 
         func writeStatus(_ message: LibboxStatusMessage?) {
             guard let message else { return }

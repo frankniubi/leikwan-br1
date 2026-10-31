@@ -18,6 +18,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var failedBindings: [String: String] = [:]
     private let refreshLock = NSLock()
     private var lastPathRefresh = Date.distantPast
+    /// Periodic in-process runtime health check (see `runRuntimeWatchdog`).
+    private var watchdogTask: Task<Void, Never>?
     /// Ultra usage counters -> heartbeat rows; shared by the control loop and the lease manager.
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
@@ -101,6 +103,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
         statusMonitor.start()
+        startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
             let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
                 self?.handleTerminal(alert)
@@ -113,6 +116,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason) async {
         TunnelLog.shared.write("tunnel stopping, reason \(reason.rawValue)")
+        watchdogTask?.cancel()
+        watchdogTask = nil
         controlLoop?.stop()
         controlLoop = nil
         stopUltraLeases()
@@ -203,6 +208,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         controlLoop?.nudge()
         ultraLeases?.nudge()
         nativeLeases?.nudge()
+    }
+
+    // MARK: Runtime watchdog
+
+    /// Periodically restarts an in-process runtime that exited on its own. Android's
+    /// `GuardedProcessPool` does this for child processes; without a counterpart here, one Go
+    /// panic in the ultra runtime left the tunnel Connected while it forwarded nothing, until
+    /// the lease grace eventually stopped it. After a restart the affected lease loop is woken
+    /// so a fresh lease lands at once (a restarted runtime rebinds its listeners only after
+    /// it holds a policy again).
+    private func startRuntimeWatchdog() {
+        guard watchdogTask == nil else { return }
+        watchdogTask = Task.detached { [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10 * NSEC_PER_SEC)
+                if Task.isCancelled { return }
+                let restarted = self.runtimes.restartStoppedRuntimes()
+                if !restarted.isEmpty {
+                    TunnelLog.shared.write("watchdog restarted \(restarted.joined(separator: ", "))")
+                    if restarted.contains(where: { name in self.launch?.ultra.contains(where: { $0.runtimeName == name }) == true }) {
+                        self.ultraLeases?.nudge()
+                    }
+                    if restarted.contains(where: { name in self.launch?.nativeOutbound?.runtimeName == name }) {
+                        self.nativeLeases?.nudge()
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Service lifecycle

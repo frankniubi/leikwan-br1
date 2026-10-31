@@ -24,6 +24,10 @@ final class NativeOutboundLeaseManager {
     /// no longer allows this exit), as opposed to a lease that lapsed while renewals failed.
     typealias FatalHandler = (_ message: String, _ permanent: Bool) -> Void
 
+    /// Failed renewals tolerated after the current lease has already expired before the tunnel
+    /// is stopped (with the 60 s backoff cap this spans roughly 4-5 minutes of real attempts).
+    static let maxRefreshFailuresWhenExpired = 5
+
     private let client: PanelClient
     private let launch: NativeOutboundLaunch
     private let restartRuntime: RuntimeRestarter
@@ -116,6 +120,10 @@ final class NativeOutboundLeaseManager {
         var runtimeGeneration = launch.policyGeneration
         var runtimeDirection = launch.carrierDirection
         var preferPlan = true
+        // Consecutive failed renewals while the current lease has already expired. The tunnel
+        // stops only after this many: one burst of panel timeouts (heavy uplink on cellular)
+        // must not tear the tunnel down while the runtime is otherwise fine. Reset on delivery.
+        var refreshFailures = 0
         while !Task.isCancelled {
             if let current = active {
                 let now = Date()
@@ -172,7 +180,7 @@ final class NativeOutboundLeaseManager {
                 let accepted = await deliver(leases)
                 if Task.isCancelled { return }
                 if !accepted {
-                    if let current = active, Date() >= current.leaseExpiresAt {
+                    if let current = active, Date() >= current.leaseExpiresAt, refreshFailures >= Self.maxRefreshFailuresWhenExpired {
                         fail("native_lease_refresh_expired")
                         return
                     }
@@ -184,6 +192,7 @@ final class NativeOutboundLeaseManager {
                 }
                 active = Active(policy: context.policy, leaseExpiresAt: leaseExpiry, sentAt: Date())
                 backoff.reset()
+                refreshFailures = 0
                 setAlert(nil)
                 let remaining = Int(leaseExpiry.timeIntervalSinceNow)
                 TunnelLog.shared.write("native outbound: \(leases.count) candidate(s) delivered (\(scope.rawValue), \(routePolicy.rawValue)), lease expires in \(remaining)s")
@@ -207,8 +216,11 @@ final class NativeOutboundLeaseManager {
                     return
                 default:
                     if Self.expired(active) {
-                        fail("native_lease_refresh_expired")
-                        return
+                        refreshFailures += 1
+                        if refreshFailures >= Self.maxRefreshFailuresWhenExpired {
+                            fail("native_lease_refresh_expired")
+                            return
+                        }
                     }
                     reportFailure(error.description, active: active)
                     delayMs = backoff.nextDelayMs()
@@ -221,8 +233,11 @@ final class NativeOutboundLeaseManager {
                     return
                 }
                 if Self.expired(active) {
-                    fail("native_lease_refresh_expired")
-                    return
+                    refreshFailures += 1
+                    if refreshFailures >= Self.maxRefreshFailuresWhenExpired {
+                        fail("native_lease_refresh_expired")
+                        return
+                    }
                 }
                 reportFailure(code, active: active)
                 delayMs = backoff.nextDelayMs()
