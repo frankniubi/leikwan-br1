@@ -1482,6 +1482,7 @@ final class TenantController extends BaseController
             . $windowsSection
             . $macosSection
             . $iosSection
+            . $this->tenantOpenwrtSection($client)
             // Docker installation is hidden until container runtime acceptance passes.
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
@@ -1650,6 +1651,68 @@ final class TenantController extends BaseController
             'SELECT status, expire_at FROM services WHERE user_id = :user_id',
             ['user_id' => $userId]
         );
+    }
+
+    /**
+     * OpenWrt card for the app center.
+     *
+     * The router edition (leikwand 1.2.0) onboards exactly like the headless
+     * clients: paste the panel-issued client id and agent token into LuCI (or
+     * run `leikwand ctl register` over SSH). The card renders the ipk install
+     * command for the router's architecture and a ready-made register command
+     * carrying this client's identity, so nothing has to be assembled by hand.
+     *
+     * Copy is Chinese like the rest of the app center and is not routed through
+     * the client-side i18n dictionary (see tenantIosSection for the reason).
+     *
+     * @param array<string, mixed> $client
+     */
+    private function tenantOpenwrtSection(array $client): string
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        $hasClient = $clientId > 0 && $agentToken !== '';
+        $masterUrl = $this->agentBaseUrl();
+        $ipkBase = rtrim($this->artifactBaseUrl(), '/') . '/artifacts/files/openwrt';
+
+        if ($hasClient) {
+            $amd64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . ' && '
+                . 'leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
+            $arm64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . ' && '
+                . 'leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
+        } else {
+            $amd64Command = $ipkBase . '/amd64/';
+            $arm64Command = $ipkBase . '/arm64/';
+        }
+
+        $description = $hasClient
+            ? '刷入固件或在现有 OpenWrt 24.10 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            : '先在下方创建客户端，再回来复制带身份的安装命令。';
+
+        return '<section class="tenant-client-install__platform" data-openwrt-install>'
+            . '<strong>' . $this->platformIcon('openwrt')
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.0)', 'openwrt_leikwand')) . '</strong>'
+            . '<div class="muted">' . $this->escape($description)
+            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . '<details style="margin-top:10px;" open><summary>x86_64 / amd64 软路由</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
+            . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
+            . '</section>';
     }
 
     /**
