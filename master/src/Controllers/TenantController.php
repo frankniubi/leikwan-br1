@@ -1416,12 +1416,13 @@ final class TenantController extends BaseController
             . $this->platformIcon('macos')
             . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 (CLI)', 'macos_headless_installer')) . '</strong>'
             . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
             . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-            . '</div>'
+            . '</div></details>'
             . $macosGuiBlock
             . '</section>';
 
@@ -1429,13 +1430,14 @@ final class TenantController extends BaseController
             . $this->platformIcon('windows')
             . $this->escape($this->clientAppReleaseLabel('Windows · 无界面版 (CLI)', 'windows_headless_client')) . '</strong>'
             . '<div class="muted">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
             . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-            . '</div>'
+            . '</div></details>'
             . '<details style="margin-top:12px;"><summary>' . $this->platformIcon('windows')
             . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app') . ' · 图形界面版') . '</summary>'
             . '<div class="actions" style="margin-top:8px;">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
@@ -1473,12 +1475,13 @@ final class TenantController extends BaseController
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('linux')
             . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
             . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。只能访问国内网络的机器也可以直接运行：连不上 Cloudflare 时会自动改用阿里云 CDN。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
-            . '</div></section>'
+            . '</div></details></section>'
             . $windowsSection
             . $macosSection
             . $iosSection
