@@ -308,7 +308,7 @@
     },
     "sha256": "7d4865826e9b9877edcc844fc6e21267eba45bbe8c8de03d7ca53dd07b6714ba",
     "size_bytes": 78959950,
-    "version": "1.0.60",
+    "version": "1.0.61",
     "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_app_x64": {
@@ -355,7 +355,7 @@
     },
     "sha256": "5a12b34bfaded4a63485a0179b3c0c95b1ca3d87d21311ec8a787a2560f02304",
     "size_bytes": 70408043,
-    "version": "1.0.60",
+    "version": "1.0.61",
     "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
   },
   "macos_client_update_x64": {
@@ -529,10 +529,10 @@
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "attestation": {
-      "fingerprint": "2026.10.26.1.571600c2",
-      "self_sha256": "95acf4d8a80c764020ef66ccac4e52f0afae52ccebf0c6456a15626baea47dd1"
+      "fingerprint": "2026.11.1.b8d5f402",
+      "self_sha256": "129278ef06fbd735e1e667fe94717884c5505056e8269d4b4453608ab372ca68"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -545,15 +545,15 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "95acf4d8a80c764020ef66ccac4e52f0afae52ccebf0c6456a15626baea47dd1",
-    "size_bytes": 19398922,
-    "version": "2026.10.26.1",
-    "runtime_build_version": "2026.10.12.1.06471310",
+    "sha256": "129278ef06fbd735e1e667fe94717884c5505056e8269d4b4453608ab372ca68",
+    "size_bytes": 18981130,
+    "version": "2026.11.1",
+    "runtime_build_version": "2026.11.1.b8d5f402",
     "build_provenance": {
-      "source_commit": "06471310",
+      "source_commit": "b8d5f402",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
+      "reason": "quota-slice exhaustion: TCP copies pause on a drained slice instead of dropping, host renews on low quota, panel slice floor 3 intervals @2500 Mbps"
     }
   },
   "ultra_client_runtime_android_arm64": {
@@ -623,10 +623,10 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
     "attestation": {
-      "fingerprint": "2026.10.26.1.571600c2",
-      "self_sha256": "c22773366501041c4e035d6be40ce6f0b0c06e225c1eecb92cb751454e6f7794"
+      "fingerprint": "2026.11.1.b8d5f402",
+      "self_sha256": "2885548156ecf248ac8a0259626998721c9e7edf754734afa792c36bcd9043df"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -639,15 +639,15 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "c22773366501041c4e035d6be40ce6f0b0c06e225c1eecb92cb751454e6f7794",
-    "size_bytes": 17760522,
-    "version": "2026.10.26.1",
-    "runtime_build_version": "2026.10.12.1.06471310",
+    "sha256": "2885548156ecf248ac8a0259626998721c9e7edf754734afa792c36bcd9043df",
+    "size_bytes": 17301770,
+    "version": "2026.11.1",
+    "runtime_build_version": "2026.11.1.b8d5f402",
     "build_provenance": {
-      "source_commit": "06471310",
+      "source_commit": "b8d5f402",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
+      "reason": "quota-slice exhaustion: TCP copies pause on a drained slice instead of dropping, host renews on low quota, panel slice floor 3 intervals @2500 Mbps"
     }
   },
   "ultra_client_runtime_macos_arm64": {
@@ -655,13 +655,13 @@
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
       "fingerprint": "2026.11.1.b8d5f402",
-      "self_sha256": "PENDING-SIGN"
+      "self_sha256": "40e51f3f78b5c82ddd7474b7a469978139130d9afd0f1a6aa3d9e9d9e015c9f7"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
-    "size_bytes": 15926336,
+    "sha256": "40e51f3f78b5c82ddd7474b7a469978139130d9afd0f1a6aa3d9e9d9e015c9f7",
+    "size_bytes": 15987346,
     "version": "2026.11.1",
     "runtime_build_version": "2026.11.1.b8d5f402",
     "hardening": [
@@ -678,8 +678,7 @@
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
       "reason": "quota-slice exhaustion: TCP copies pause on a drained slice instead of dropping, host renews on low quota, panel slice floor 3 intervals @2500 Mbps"
-    },
-    "_unsigned_sha256": "40e51f3f78b5c82ddd7474b7a469978139130d9afd0f1a6aa3d9e9d9e015c9f7"
+    }
   },
   "ultra_client_runtime_macos_x64": {
     "architecture": "x86_64",
@@ -782,11 +781,11 @@
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46"
+      "ultra_client_runtime_windows": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61"
     },
-    "sha256": "fc9c4125859617498d54a48e44017c09f4edd6f5f62b6bf3398f9c856466e9e1",
-    "size_bytes": 69947549,
-    "version": "0.1.20.77"
+    "sha256": "82bccd78c72f941c93540f804b3b8691c8b5309beea7121ae466a8f326a7fc83",
+    "size_bytes": 69942775,
+    "version": "0.1.20.78"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -794,16 +793,16 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "05562ebc51fb4e6c1f751418b8b556b32b87a2976f9b894ca279331d9b21f1cf",
-    "size_bytes": 63826277,
-    "version": "0.1.20.67",
+    "sha256": "d398b7ada5573b80af47104c4fd02389b18041b23a6badaf12b0dde337f8a481",
+    "size_bytes": 64022791,
+    "version": "0.1.20.68",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "e0933e200c2a26a05d51f26d82fa5f79d28c12a27e0393d0c829fb5466c02e46"
+      "ultra_client_runtime_windows": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61"
     }
   },
   "windows_headless_installer": {
