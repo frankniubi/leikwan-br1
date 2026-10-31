@@ -2,19 +2,12 @@
 'require view';
 'require rpc';
 'require poll';
-'require ui';
+
 'require dom';
 
 var callStatus = rpc.declare({
 	object: 'luci.leikwand',
 	method: 'status',
-	expect: { '': {} }
-});
-
-var callForwardAction = rpc.declare({
-	object: 'luci.leikwand',
-	method: 'forward_action',
-	params: [ 'forward_id', 'action' ],
 	expect: { '': {} }
 });
 
@@ -24,12 +17,6 @@ var HEALTH_STYLES = {
 	unavailable: [ 'danger',  _('不可用 (Unavailable)') ],
 	starting:    [ '',        _('启动中 (Starting)') ],
 	unknown:     [ '',        _('未知 (Unknown)') ]
-};
-
-var MODE_NAMES = {
-	forward: _('转发模式 (Forward)'),
-	gateway: _('网关模式 (Gateway)'),
-	hybrid:  _('混合模式 (Hybrid)')
 };
 
 function fmtUptime(seconds) {
@@ -191,23 +178,19 @@ return view.extend({
 	render: function(status) {
 		this.stopPolling();
 
-		this.busy = {};
-
 		this.nodes = {
 			service: E('div', { 'class': 'cbi-section' }),
 			forwards: E('div', { 'class': 'cbi-section' }),
-			uplinks: E('div', { 'class': 'cbi-section' }),
-			gateway: E('div', { 'class': 'cbi-section' })
+			relay: E('div', { 'class': 'cbi-section' })
 		};
 
 		var body = E('div', { 'class': 'cbi-map' }, [
 			E('h2', _('会聚 Leikwan — 概览 (Overview)')),
 			E('div', { 'class': 'cbi-map-descr' },
-				_('转发线路、网关与多 WAN 高可用的实时状态，每 5 秒自动刷新一次。')),
+				_('转发线路与本地原生出口中继的实时状态，每 5 秒自动刷新一次。')),
 			this.nodes.service,
 			this.nodes.forwards,
-			this.nodes.uplinks,
-			this.nodes.gateway
+			this.nodes.relay
 		]);
 
 		this.apply(status);
@@ -235,8 +218,7 @@ return view.extend({
 
 		dom.content(this.nodes.service, this.renderService(snapshot, error));
 		dom.content(this.nodes.forwards, this.renderForwards(snapshot));
-		dom.content(this.nodes.uplinks, this.renderUplinks(snapshot));
-		dom.content(this.nodes.gateway, this.renderGateway(snapshot));
+		dom.content(this.nodes.relay, this.renderRelay(snapshot));
 	},
 
 	renderService: function(snapshot, error) {
@@ -258,7 +240,6 @@ return view.extend({
 				snapshot.client_id ? '#%d %s'.format(snapshot.client_id, snapshot.client_name || '') : '-'),
 			infoRow(_('设备 (Device)'),
 				'%s / %s'.format(snapshot.device_name || '-', snapshot.device_id || '-')),
-			infoRow(_('工作模式 (Mode)'), MODE_NAMES[snapshot.mode] || String(snapshot.mode || '-')),
 			infoRow(_('运行时长 (Uptime)'), fmtUptime(snapshot.uptime_seconds)),
 			infoRow(_('版本 (Version)'), '%s · %s'.format(snapshot.version || '-', snapshot.architecture || '-')),
 			infoRow(_('配置版本 (Config revision)'), shortRevision(snapshot.config_revision)),
@@ -267,9 +248,6 @@ return view.extend({
 				E('span', { 'class': snapshot.runtime_present ? '' : 'label danger' },
 					'%s %s'.format(snapshot.runtime_bin || '-', snapshot.runtime_present ? '' : _('(缺失 missing)'))))
 		];
-
-		if (snapshot.singbox_present || snapshot.gateway)
-			rows.push(infoRow(_('sing-box'), snapshot.singbox_present ? _('已安装 (present)') : _('未安装 (missing)')));
 
 		var limited = (snapshot.last_pull_error_code == ONLINE_LIMIT);
 
@@ -308,9 +286,7 @@ return view.extend({
 					snapshot ? _('面板尚未下发任何转发线路。') : _('服务未运行，暂无线路数据。'))
 			];
 
-		var rows = forwards.map(L.bind(function(entry) {
-			var busy = !!this.busy[entry.forward_id],
-			    running = (entry.status == 'running');
+		var rows = forwards.map(function(entry) {
 
 			return E('tr', { 'class': 'tr' }, [
 				E('td', { 'class': 'td' }, [
@@ -340,33 +316,8 @@ return view.extend({
 					E('span', { 'class': 'cbi-section-descr' },
 						_('HA 失败 %d').format(entry.ha_failures || 0))
 				]),
-				E('td', { 'class': 'td', 'style': 'white-space: nowrap;' }, [
-					E('button', {
-						'class': 'btn cbi-button cbi-button-apply',
-						'disabled': (running || busy) ? true : null,
-						'click': ui.createHandlerFn(this, 'handleAction', entry.forward_id, 'start')
-					}, _('启动')),
-					' ',
-					E('button', {
-						'class': 'btn cbi-button cbi-button-reset',
-						'disabled': (!running || busy) ? true : null,
-						'click': ui.createHandlerFn(this, 'handleAction', entry.forward_id, 'stop')
-					}, _('停止')),
-					' ',
-					E('button', {
-						'class': 'btn cbi-button',
-						'disabled': busy ? true : null,
-						'click': ui.createHandlerFn(this, 'handleAction', entry.forward_id, 'restart')
-					}, _('重启'))
-				])
 			]);
-		}, this));
-
-		if (this.busy && Object.keys(this.busy).length)
-			rows.push(E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td', 'colspan': 9 },
-					E('em', _('正在执行线路操作… (forward action in progress)')))
-			]));
+		});
 
 		return [
 			E('h3', _('转发线路 (Forward lines)')),
@@ -379,90 +330,36 @@ return view.extend({
 					E('th', { 'class': 'th' }, _('延迟 (RTT)')),
 					E('th', { 'class': 'th' }, _('候选 (Candidates)')),
 					E('th', { 'class': 'th' }, _('流量 (Traffic)')),
-					E('th', { 'class': 'th' }, _('稳定性 (Stability)')),
-					E('th', { 'class': 'th' }, _('操作 (Actions)'))
+					E('th', { 'class': 'th' }, _('稳定性 (Stability)'))
 				])
 			].concat(rows))
 		];
 	},
 
-	renderUplinks: function(snapshot) {
-		var uplinks = (snapshot && snapshot.uplinks) || [];
-
-		if (!uplinks.length)
-			return [];
-
-		var rows = uplinks.map(function(entry) {
-			return E('tr', { 'class': 'tr' }, [
-				E('td', { 'class': 'td' }, [
-					E('strong', entry.interface || '-'),
-					entry.active ? E('span', { 'class': 'label success' }, _('活动 (active)')) : ''
-				]),
-				E('td', { 'class': 'td' }, entry.up
-					? E('span', { 'class': 'label success' }, _('在线 (up)'))
-					: E('span', { 'class': 'label danger' }, _('离线 (down)'))),
-				E('td', { 'class': 'td' }, entry.healthy
-					? E('span', { 'class': 'label success' }, _('健康 (healthy)'))
-					: E('span', { 'class': 'label warning' }, _('异常 (unhealthy)'))),
-				E('td', { 'class': 'td' }, entry.gateway || '-'),
-				E('td', { 'class': 'td' }, String(entry.metric != null ? entry.metric : '-')),
-				E('td', { 'class': 'td' }, '%d ms'.format(entry.latency_ms || 0)),
-				E('td', { 'class': 'td' }, '%s%%'.format(entry.loss_percent || 0)),
-				E('td', { 'class': 'td' }, '%d / %d'.format(entry.consecutive_successes || 0, entry.consecutive_failures || 0)),
-				E('td', { 'class': 'td' }, entry.last_error || entry.last_switch || '-')
-			]);
-		});
-
-		return [
-			E('h3', _('多 WAN 高可用 (Uplinks)')),
-			E('p', { 'class': 'cbi-section-descr' },
-				_('按 metric 切换默认路由；详细视图见「多 WAN 高可用」页面。')),
-			E('table', { 'class': 'table' }, [
-				E('tr', { 'class': 'tr table-titles' }, [
-					E('th', { 'class': 'th' }, _('接口 (Interface)')),
-					E('th', { 'class': 'th' }, _('链路 (Link)')),
-					E('th', { 'class': 'th' }, _('健康 (Health)')),
-					E('th', { 'class': 'th' }, _('网关 (Gateway)')),
-					E('th', { 'class': 'th' }, _('Metric')),
-					E('th', { 'class': 'th' }, _('延迟 (Latency)')),
-					E('th', { 'class': 'th' }, _('丢包 (Loss)')),
-					E('th', { 'class': 'th' }, _('成功/失败 (OK/Fail)')),
-					E('th', { 'class': 'th' }, _('备注 (Note)'))
-				])
-			].concat(rows))
-		];
-	},
-
-	renderGateway: function(snapshot) {
+	renderRelay: function(snapshot) {
 		var gateway = snapshot && snapshot.gateway;
 
-		if (!gateway)
+		if (!gateway || !gateway.native_granted)
 			return [];
 
 		return [
-			E('h3', _('网关模式 (Gateway)')),
+			E('h3', _('本地原生出口中继 (Native outbound relay)')),
+			E('p', { 'class': 'cbi-section-descr' },
+				_('面板授予原生出口时，本机会在 127.0.0.1:2080 提供一个 SOCKS5 入口，' +
+				  '出口即该线路。是否把局域网或本机流量指向它由你自己决定，' +
+				  '本守护进程不做透明代理。')),
 			E('table', { 'class': 'table' }, [
 				infoRow(_('状态 (State)'), gateway.running
 					? E('span', { 'class': 'label success' }, _('运行中 (Running)'))
 					: E('span', { 'class': 'label warning' }, _('未运行 (Stopped)'))),
-				infoRow(_('启用 (Enabled)'), gateway.enabled ? _('是 (yes)') : _('否 (no)')),
-				infoRow(_('原生出口授权 (Native outbound)'), gateway.native_granted
-					? _('已授权 (granted)') : _('未授权 (not granted)')),
 				infoRow(_('承载线路 (Carrier line)'), gateway.carrier_forward_id
 					? '#%d %s'.format(gateway.carrier_forward_id, gateway.direction || '') : '-'),
 				infoRow(_('路由范围 (Route scope)'), '%s · %s'.format(gateway.route_scope || '-',
 					gateway.route_policy === 'unrestricted' ? _('无审全路由 (unrestricted)') : (gateway.route_policy || '-'))),
-				infoRow(_('中继 / sing-box (Relay / sing-box)'), '%s / %s'.format(
-					gateway.relay_running ? _('运行中') : _('未运行'),
-					gateway.singbox_running ? _('运行中') : _('未运行'))),
 				infoRow(_('原生租约 (Native lease)'), gateway.lease_expires_at
 					? _('%d 个候选，到期 %s').format(gateway.candidates || 0, gateway.lease_expires_at)
 					: (gateway.lease_error || '-')),
-				infoRow(_('DNS 防污染 (DNS)'), '%s · %s'.format(gateway.dns_mode || '-', gateway.rule_sets || '-')),
-				infoRow(_('TUN 地址 (TUN address)'), gateway.tun_address || '-'),
-				infoRow(_('SOCKS 端口 (SOCKS port)'), String(gateway.socks_port || '-')),
-				infoRow(_('中继直连例外 (Relay bypass rules)'), String(gateway.bypass_rules || 0)),
-				infoRow(_('全局绕过中国大陆 (Bypass CN)'), gateway.bypass_cn ? _('是 (yes)') : _('否 (no)')),
+				infoRow(_('SOCKS 地址 (SOCKS endpoint)'), '127.0.0.1:%d'.format(gateway.socks_port || 2080)),
 				(gateway.notes || []).length
 					? infoRow(_('提示 (Notes)'), gateway.notes.join('; '))
 					: '',
@@ -471,28 +368,6 @@ return view.extend({
 					: ''
 			])
 		];
-	},
-
-	handleAction: function(forwardId, action) {
-		var self = this;
-
-		this.busy[forwardId] = true;
-
-		return callForwardAction(forwardId, action).then(function(response) {
-			delete self.busy[forwardId];
-
-			if (!response || response.ok !== true) {
-				ui.addNotification(null, E('p', _('线路 #%d 执行 %s 失败：%s').format(
-					forwardId, action, (response && response.error) || _('未知错误'))), 'error');
-			}
-
-			return self.refresh();
-		}).catch(function(error) {
-			delete self.busy[forwardId];
-
-			ui.addNotification(null, E('p', _('线路 #%d 执行 %s 失败：%s').format(
-				forwardId, action, error && error.message ? error.message : _('未知错误'))), 'error');
-		});
 	},
 
 	handleSave: null,

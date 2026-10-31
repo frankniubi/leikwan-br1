@@ -22,9 +22,6 @@ type Config struct {
 	// physical WAN), "none" (no pinning), or a device / UCI interface name.
 	PanelEgressInterface string
 
-	// Operating mode: forward | gateway | hybrid
-	Mode string
-
 	PollIntervalSecs      int
 	HeartbeatIntervalSecs int
 	HealthIntervalSecs    int
@@ -39,42 +36,12 @@ type Config struct {
 	RunDir     string
 	RuntimeBin string
 
-	// Gateway (LAN-wide transparent egress)
-	GatewayEnabled     bool
+	// Native outbound relay. The relay itself starts when the Panel grants
+	// native outbound; the operator only narrows the scope/policy ("auto"
+	// follows the line's direction and the plan's grant).
 	GatewayForwardID   int
 	GatewayRouteScope  string
 	GatewayRoutePolicy string
-	GatewayTunAddress  string
-	// GatewayTunAddress6 lets the TUN capture IPv6 as well; "" turns that off.
-	GatewayTunAddress6 string
-	GatewayTunMTU      int
-	GatewayDNSMode     string
-	GatewayDNSServers  string
-	GatewayBypassCN    bool
-	GatewaySingBoxBin  string
-	GatewayRuleSetDir  string
-	// Split carrier: a second native carrier that only the destinations in
-	// GatewaySplitCIDRFile use (e.g. SHIXP members), next to the primary one.
-	GatewaySplitForwardID   int
-	GatewaySplitRoutePolicy string
-	GatewaySplitCIDRFile    string
-	// GatewayCapture is "full" (the whole LAN, DNS protected) or "cidr": only
-	// the destinations in GatewaySplitCIDRFile are captured, by the primary
-	// carrier, with DNS and everything else left alone (servers, PVE hosts).
-	GatewayCapture string
-
-	// Uplink (multi-WAN) high availability
-	UplinkEnabled       bool
-	UplinkScope         string
-	UplinkInterfaces    []string
-	UplinkProbeTargets  []string
-	UplinkIntervalSecs  int
-	UplinkTimeoutMS     int
-	UplinkFailThreshold int
-	UplinkRecoverThresh int
-	UplinkMinImprovePct int
-	UplinkRouteTable    int
-	UplinkFwMark        int
 
 	CNIPList string
 }
@@ -103,9 +70,6 @@ func applyEnvOverrides(cfg *Config) {
 	if value := os.Getenv("LEIKWAN_PANEL_URL"); value != "" {
 		cfg.PanelURL = strings.TrimRight(value, "/")
 	}
-	if value := os.Getenv("LEIKWAN_SINGBOX_BIN"); value != "" {
-		cfg.GatewaySingBoxBin = value
-	}
 }
 
 func defaultConfig() Config {
@@ -114,7 +78,6 @@ func defaultConfig() Config {
 		PanelURL:                "https://v3.leikwanhost.com",
 		FallbackURL:             "https://api-leikwanbridge.nbwly.com",
 		PanelEgressInterface:    egressAuto,
-		Mode:                    "forward",
 		PollIntervalSecs:        30,
 		HeartbeatIntervalSecs:   30,
 		HealthIntervalSecs:      20,
@@ -129,35 +92,8 @@ func defaultConfig() Config {
 		RuntimeBin:              "/usr/libexec/leikwan/ultra-client",
 		GatewayRouteScope:       "auto",
 		GatewayRoutePolicy:      "auto",
-		GatewayTunAddress:       "172.19.0.1/30",
-		GatewayTunAddress6:      "fdfe:dcba:9876::1/126",
-		GatewayTunMTU:           1280,
-		GatewayDNSMode:          "auto",
-		GatewayDNSServers:       "",
-		GatewayBypassCN:         true,
-		GatewaySingBoxBin:       "/usr/bin/sing-box",
-		GatewayRuleSetDir:       "/usr/share/leikwan/rule-set",
-		GatewaySplitRoutePolicy: "auto",
-		GatewaySplitCIDRFile:    "/usr/share/leikwan/split/shixp-v4.txt",
-		GatewayCapture:          "full",
-		UplinkScope:             "relay",
-		UplinkIntervalSecs:      5,
-		UplinkTimeoutMS:         2000,
-		UplinkFailThreshold:     3,
-		UplinkRecoverThresh:     2,
-		UplinkMinImprovePct:     20,
-		UplinkRouteTable:        1001,
-		UplinkFwMark:            0x4c4b,
 		CNIPList:                "/etc/leikwan/CN.conf",
 	}
-}
-
-func (c Config) gatewayActive() bool {
-	return c.GatewayEnabled && (c.Mode == "gateway" || c.Mode == "hybrid")
-}
-
-func (c Config) forwardActive() bool {
-	return c.Mode == "forward" || c.Mode == "hybrid"
 }
 
 // loadConfig reads UCI without shelling out to the uci binary, so the daemon
@@ -185,7 +121,6 @@ func loadConfig() Config {
 	cfg.DeviceID = get("device_id", "")
 	cfg.ClientID = atoiDefault(get("client_id", "0"), 0)
 	cfg.PanelEgressInterface = get("panel_egress_interface", cfg.PanelEgressInterface)
-	cfg.Mode = normalizeMode(get("mode", cfg.Mode))
 
 	cfg.PollIntervalSecs = clampInt(atoiDefault(get("poll_interval", ""), cfg.PollIntervalSecs), 5, 3600)
 	cfg.HeartbeatIntervalSecs = clampInt(atoiDefault(get("heartbeat_interval", ""), cfg.HeartbeatIntervalSecs), 5, 3600)
@@ -201,60 +136,20 @@ func loadConfig() Config {
 	cfg.RunDir = get("run_dir", cfg.RunDir)
 	cfg.RuntimeBin = get("runtime_bin", cfg.RuntimeBin)
 
-	cfg.GatewayEnabled = boolDefault(get("gateway_enabled", "0"), false)
+	// Legacy gateway/uplink keys are ignored on purpose: the transparent
+	// gateway and the multi-WAN manager no longer exist in this edition, and
+	// an operator's leftover options must not resurrect them.
 	cfg.GatewayForwardID = atoiDefault(get("gateway_forward_id", "0"), 0)
 	cfg.GatewayRouteScope = normalizeGatewayChoice(get("gateway_route_scope", cfg.GatewayRouteScope), "cn_only", "intl_only", "global")
 	cfg.GatewayRoutePolicy = normalizeGatewayChoice(get("gateway_route_policy", cfg.GatewayRoutePolicy), "restricted", "unrestricted")
-	cfg.GatewayTunAddress = get("gateway_tun_address", cfg.GatewayTunAddress)
-	cfg.GatewayTunAddress6 = normalizeTunAddress6(get("gateway_tun_address6", cfg.GatewayTunAddress6))
-	cfg.GatewayTunMTU = clampInt(atoiDefault(get("gateway_tun_mtu", ""), cfg.GatewayTunMTU), 576, 9000)
-	cfg.GatewayDNSMode = normalizeGatewayDNSMode(get("gateway_dns_mode", cfg.GatewayDNSMode))
-	cfg.GatewayDNSServers = get("gateway_dns_servers", cfg.GatewayDNSServers)
-	cfg.GatewayBypassCN = boolDefault(get("gateway_bypass_cn", "1"), true)
-	cfg.GatewaySingBoxBin = get("gateway_singbox_bin", cfg.GatewaySingBoxBin)
-	cfg.GatewayRuleSetDir = get("gateway_rule_set_dir", cfg.GatewayRuleSetDir)
-	cfg.GatewaySplitForwardID = atoiDefault(get("gateway_split_forward_id", "0"), 0)
-	cfg.GatewaySplitRoutePolicy = normalizeGatewayChoice(get("gateway_split_route_policy", cfg.GatewaySplitRoutePolicy), "restricted", "unrestricted")
-	cfg.GatewaySplitCIDRFile = get("gateway_split_cidr_file", cfg.GatewaySplitCIDRFile)
-	cfg.GatewayCapture = normalizeGatewayCapture(get("gateway_capture", cfg.GatewayCapture))
-
-	cfg.UplinkEnabled = boolDefault(get("uplink_enabled", "0"), false)
-	cfg.UplinkScope = strings.ToLower(get("uplink_scope", cfg.UplinkScope))
-	cfg.UplinkInterfaces = splitList(get("uplink_interfaces", ""))
-	cfg.UplinkProbeTargets = splitList(get("uplink_probe", "1.1.1.1 223.5.5.5"))
-	cfg.UplinkIntervalSecs = clampInt(atoiDefault(get("uplink_interval", ""), cfg.UplinkIntervalSecs), 1, 300)
-	cfg.UplinkTimeoutMS = clampInt(atoiDefault(get("uplink_timeout_ms", ""), cfg.UplinkTimeoutMS), 200, 30000)
-	cfg.UplinkFailThreshold = clampInt(atoiDefault(get("uplink_fail_threshold", ""), cfg.UplinkFailThreshold), 1, 60)
-	cfg.UplinkRecoverThresh = clampInt(atoiDefault(get("uplink_recover_threshold", ""), cfg.UplinkRecoverThresh), 1, 60)
-	cfg.UplinkMinImprovePct = clampInt(atoiDefault(get("uplink_min_improve_pct", ""), cfg.UplinkMinImprovePct), 0, 90)
-	cfg.UplinkRouteTable = atoiDefault(get("uplink_route_table", ""), cfg.UplinkRouteTable)
-	cfg.UplinkFwMark = atoiDefault(get("uplink_fwmark", ""), cfg.UplinkFwMark)
 
 	cfg.CNIPList = get("cn_ip_list", cfg.CNIPList)
 	applyEnvOverrides(&cfg)
 	return cfg
 }
 
-func normalizeMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "gateway", "proxy", "transparent", "tun":
-		return "gateway"
-	case "hybrid", "both", "all":
-		return "hybrid"
-	default:
-		return "forward"
-	}
-}
-
-func normalizeRouteScope(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "cn_only", "intl_only", "global":
-		return strings.ToLower(strings.TrimSpace(value))
-	default:
-		return "global"
-	}
-}
-
+// normalizeRoutePolicy maps any spelling to restricted/unrestricted. The
+// native lease contract uses this for both the request and validation.
 func normalizeRoutePolicy(value string) string {
 	if strings.ToLower(strings.TrimSpace(value)) == "unrestricted" {
 		return "unrestricted"
@@ -421,33 +316,4 @@ func normalizeGatewayChoice(value string, allowed ...string) string {
 		}
 	}
 	return "auto"
-}
-
-// normalizeGatewayDNSMode: "auto" is the protected DoH policy shared with the
-// desktop clients; "custom" sends gateway_dns_servers as real UDP (through
-// the relay when the route allows it). The pre-1.1 values "remote" and
-// "local" both map to auto: "local" meant the router's own, poisonable
-// resolver, which the gateway no longer offers.
-func normalizeGatewayDNSMode(value string) string {
-	if strings.ToLower(strings.TrimSpace(value)) == "custom" {
-		return "custom"
-	}
-	return "auto"
-}
-
-// normalizeTunAddress6 maps the opt-out spellings to "" (no IPv6 capture).
-func normalizeTunAddress6(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "0", "off", "none", "disabled":
-		return ""
-	}
-	return strings.TrimSpace(value)
-}
-
-// normalizeGatewayCapture keeps "cidr"; anything else is the full LAN gateway.
-func normalizeGatewayCapture(value string) string {
-	if strings.EqualFold(strings.TrimSpace(value), "cidr") {
-		return "cidr"
-	}
-	return "full"
 }

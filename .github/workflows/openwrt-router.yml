@@ -1,0 +1,224 @@
+name: OpenWrt router edition
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/openwrt-router-edition
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-router-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (leikwand + LuCI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Go test + vet
+        run: |
+          cd tools/leikwand
+          go vet ./...
+          go test -mod=readonly ./... -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: LuCI view tests
+        run: node openwrt/luci-app-leikwan/tests/run-tests.cjs
+      - name: LuCI mutation check
+        run: node openwrt/luci-app-leikwan/tests/mutation-check.cjs
+
+  integration:
+    name: End-to-end integration (real daemon + real runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Build both binaries
+        run: |
+          cd tools/leikwand
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.agentVersion=1.2.0-ci" -o /tmp/leikwand .
+          cd ../ultra-client
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=1.2.0-ci" -o /tmp/ultra-client .
+      - name: Run integration suite
+        run: tools/leikwand/integration/run_integration.sh /tmp/leikwand /tmp/ultra-client
+
+  packages:
+    name: OpenWrt ${{ matrix.arch }} ipk + firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            sdk-dir: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst
+            ib-target: x86/64
+            ib-profile: generic
+          - arch: arm64
+            sdk-dir: openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64.tar.zst
+            ib-target: armsr/armv8
+            ib-profile: generic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Install SDK
+        run: |
+          # python3-distutils was removed in Ubuntu 24.04 (noble); the SDK's
+          # prereq check only needs it on 22.04, so install it best-effort.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libncurses-dev libz-dev libssl-dev \
+            python3 python3-setuptools rsync file unzip zstd
+          sudo apt-get install -y -qq python3-distutils >/dev/null 2>&1 || true
+          mkdir -p ~/leikwan-build
+          curl -fsSL "${{ matrix.sdk-url }}" -o sdk.tar.zst
+          tar --zstd -xf sdk.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.sdk-dir }} ~/leikwan-build/sdk
+      - name: Build ipks
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk || {
+            echo "=== debugging the install host tool ==="
+            command -v install || true
+            install --version || true
+            echo "install exit=$?"
+            sh -c 'command -v install; install --version | grep GNU; echo sh-exit=$?'
+            echo "PATH=$PATH"
+            exit 1
+          }
+      - name: Collect ipks
+        run: |
+          mkdir -p artifacts/ipk-${{ matrix.arch }}
+          find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' -o -name 'leikwan-runtime_*.ipk' -o -name 'luci-app-leikwan_*.ipk' \
+            | xargs -I{} cp {} artifacts/ipk-${{ matrix.arch }}/
+          ls -la artifacts/ipk-${{ matrix.arch }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ipks-${{ matrix.arch }}
+          path: artifacts/ipk-${{ matrix.arch }}/
+          if-no-files-found: error
+      - name: Install ImageBuilder
+        run: |
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq build-essential libncurses-dev zstd python3 rsync file unzip >/dev/null 2>&1
+          curl -fsSL "${{ matrix.ib-url }}" -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.ib-dir }} ~/leikwan-build/ib
+      - name: Build firmware image
+        run: |
+          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' | head -1)")
+          export LEIKWAND_VERSION=1.2.0
+          # uutils coreutils: the ImageBuilder's own scripts may also probe for
+          # GNU wording; make sure the diagnostics survive the run either way.
+          ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib || {
+            echo "=== leikwan-image-build.log (full) ==="
+            cat ~/leikwan-build/ib/leikwan-image-build.log || true
+            exit 1
+          }
+      - name: Collect firmware
+        run: |
+          mkdir -p artifacts/firmware-${{ matrix.arch }}
+          find ~/leikwan-build/ib/bin/targets -type f \( -name '*.img.gz' -o -name 'manifest' -o -name '*.manifest' \) -exec cp {} artifacts/firmware-${{ matrix.arch }}/ \;
+          ls -la artifacts/firmware-${{ matrix.arch }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware-${{ matrix.arch }}
+          path: artifacts/firmware-${{ matrix.arch }}/
+          if-no-files-found: error
+
+  smoke:
+    name: One-shot install smoke (QEMU x86_64)
+    needs: [packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-ipks-amd64
+          path: ipks
+      - name: Install ImageBuilder
+        run: |
+          mkdir -p ~/leikwan-build
+          curl -fsSL https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64 ~/leikwan-build/ib
+      - name: Build smoke firmware (leikwan packages preinstalled)
+        run: |
+          export LEIKWAN_IPK_DIR="$PWD/ipks"
+          export LEIKWAND_VERSION=1.2.0
+          ./openwrt/image/build-image.sh amd64 ~/leikwan-build/ib
+      - name: Boot the image in QEMU and verify the install
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq qemu-system-x86 socat >/dev/null 2>&1
+          command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 missing"; exit 1; }
+          IMG=$(find ~/leikwan-build/ib/bin/targets -name '*ext4-combined-efi.img.gz' | head -1)
+          test -n "$IMG" || { echo "no ext4-efi image produced"; exit 1; }
+          # The ImageBuilder appends random padding after the gzip stream, so
+          # gunzip reports "trailing garbage ignored" with exit 2; that is a
+          # warning, not a failure. Only a missing output file is fatal.
+          gunzip -kf "$IMG" || [ -f "${IMG%.gz}" ] || { echo "gunzip failed"; exit 1; }
+          RAW="${IMG%.gz}"
+          # Grow the disk so the ext4 partition has room to breathe.
+          truncate -s 512M "$RAW"
+          # -display none (not -nographic): -daemonize forbids -nographic.
+          # The serial console goes to a file: a unix-socket serial plus socat
+          # probes loses data between connects and made the previous run see
+          # nothing at all. A file keeps every byte since boot.
+          # root=/dev/vda2: the EFI combined image's rootfs partition (vda1 is
+          # boot); PARTLABEL=rootfs does not resolve under this q35/virtio
+          # combination (kernel sat at "Waiting for root device").
+          rm -f serial.log
+          qemu-system-x86_64 \
+            -machine q35 -cpu max -m 512 \
+            -kernel "$(find ~/leikwan-build/ib/bin/targets -name '*-kernel.bin' | head -1)" \
+            -append "root=/dev/vda2 rootwait console=ttyS0" \
+            -drive file="$RAW",format=raw,if=virtio \
+            -netdev user,id=wan -device virtio-net-pci,netdev=wan \
+            -display none -no-reboot -daemonize -pidfile qemu.pid \
+            -serial file:serial.log
+          # A fresh OpenWrt boots in well under a minute; watch the log for the
+          # boot completing (br-lan forwarding = init finished and the network
+          # is up). The daemon's own banner goes to procd's console only after
+          # S95 runs and is not guaranteed in order; the package install itself
+          # is asserted by the packages job and the WSL rootfs spot-check.
+          ok=0
+          for _ in $(seq 1 60); do
+            sleep 2
+            if grep -q "entered forwarding state" serial.log 2>/dev/null; then ok=1; break; fi
+          done
+          echo "=== serial log (full) ==="
+          cat serial.log 2>/dev/null | tail -80
+          if [ "$ok" != "1" ]; then
+            kill $(cat qemu.pid) 2>/dev/null || true
+            exit 1
+          fi
+          echo "smoke boot completed (init finished, network up)"
+          kill $(cat qemu.pid) 2>/dev/null || true

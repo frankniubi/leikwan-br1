@@ -2,46 +2,37 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-// Gateway mode turns the router into a transparent egress for the whole LAN.
+// Native outbound relay.
 //
-// Data path: LAN client -> router (default gateway) -> sing-box TUN inbound
-// -> SOCKS5 facade of a native ultra-client (the relay) -> Panel-selected
-// Ultra line -> the line's exit.
+// When the Panel grants native outbound for this device, the agent keeps one
+// ultra-client process running as a loopback SOCKS5 facade on 127.0.0.1:2080
+// whose egress is the Panel-selected native line. This is the same relay the
+// desktop clients expose; the router edition deliberately does NOT run a
+// transparent proxy on top of it. Routing LAN traffic through it is the
+// operator's decision (firewall redirects, a separate sing-box, ...).
 //
-// Supervised processes with independent lifecycles:
-//   - the primary relay holds the primary carrier's native lease batch. A
-//     renewal is delivered to the running relay over its control socket; the
-//     relay is only restarted when it or its control channel is gone, or the
-//     plan changes.
-//   - an optional split relay does the same for a second carrier that only a
-//     CIDR list uses (e.g. SHIXP members). Its sing-box rule stays in place
-//     while the relay restarts or renews, so a split failure only affects the
-//     listed destinations and never restarts sing-box (which would drop every
-//     LAN session, the primary carrier's included).
-//   - sing-box owns auto_route (its own ip rules and routes) and is only
-//     restarted when its generated configuration changes, never on a lease
-//     rotation, so LAN sessions survive renewals.
-//
-// The relays' own connections are kept out of the TUN by bypassRoutes.
+// The relay is managed like any other supervised process with an independent
+// lifecycle: a renewal is delivered to the running relay over its control
+// socket, and the relay is only restarted when it or its control channel is
+// gone, or the plan changes.
+
+const gatewaySocksPort = 2080
 
 type GatewayView struct {
 	Enabled       bool                 `json:"enabled"`
 	Active        bool                 `json:"active"`
 	Running       bool                 `json:"running"`
 	RelayRunning  bool                 `json:"relay_running"`
-	SingBoxRun    bool                 `json:"singbox_running"`
 	CarrierID     int                  `json:"carrier_forward_id"`
 	Direction     string               `json:"direction,omitempty"`
 	RouteScope    string               `json:"route_scope"`
@@ -49,24 +40,14 @@ type GatewayView struct {
 	WantScope     string               `json:"configured_route_scope"`
 	WantPolicy    string               `json:"configured_route_policy"`
 	Unrestricted  bool                 `json:"unrestricted_allowed"`
-	TunAddress    string               `json:"tun_address,omitempty"`
-	TunAddress6   string               `json:"tun_address6,omitempty"`
 	SocksPort     int                  `json:"socks_port"`
-	BypassCN      bool                 `json:"bypass_cn"`
-	DNSMode       string               `json:"dns_mode"`
-	RuleSets      string               `json:"rule_sets,omitempty"`
 	Candidates    int                  `json:"candidates"`
 	LeaseExpiry   string               `json:"lease_expires_at,omitempty"`
 	LeaseError    string               `json:"lease_error,omitempty"`
-	BypassRules   int                  `json:"bypass_rules"`
-	BypassError   string               `json:"bypass_error,omitempty"`
 	Notes         []string             `json:"notes,omitempty"`
 	LastError     string               `json:"last_error,omitempty"`
 	Carriers      []GatewayCarrierView `json:"carriers"`
 	NativeGranted bool                 `json:"native_granted"`
-	Split         *GatewaySplitView    `json:"split,omitempty"`
-	Capture       string               `json:"capture"`
-	CaptureCIDRs  int                  `json:"capture_cidrs,omitempty"`
 }
 
 type GatewayCarrierView struct {
@@ -78,29 +59,11 @@ type GatewayCarrierView struct {
 	Default           bool     `json:"default"`
 }
 
-// GatewaySplitView is the split carrier's state. Active means sing-box routes
-// the CIDR list to it and its relay holds a valid lease.
-type GatewaySplitView struct {
-	CarrierID    int    `json:"carrier_forward_id"`
-	Direction    string `json:"direction,omitempty"`
-	RoutePolicy  string `json:"route_policy,omitempty"`
-	WantPolicy   string `json:"configured_route_policy"`
-	CIDRFile     string `json:"cidr_file"`
-	CIDRs        int    `json:"cidrs"`
-	SocksPort    int    `json:"socks_port"`
-	RelayRunning bool   `json:"relay_running"`
-	Active       bool   `json:"active"`
-	Candidates   int    `json:"candidates"`
-	LeaseExpiry  string `json:"lease_expires_at,omitempty"`
-	LeaseError   string `json:"lease_error,omitempty"`
-}
-
-// relaySlot is one native relay and its lease state.
+// relaySlot is the native relay and its lease state.
 type relaySlot struct {
-	role  string // "primary" or "split", for logs
-	port  int    // SOCKS5 facade on 127.0.0.1
-	dir   string // run directory below <run_dir>/gateway
-	owner string // bypassRoutes owner key
+	role string // "primary", for logs
+	port int    // SOCKS5 facade on 127.0.0.1
+	dir  string // run directory below <run_dir>/gateway
 
 	plan           carrierPlan
 	relay          *runtimeProcess
@@ -119,18 +82,10 @@ type relaySlot struct {
 }
 
 type gatewayManager struct {
-	agent *Agent
-
+	agent   *Agent
 	mu      sync.Mutex
 	plan    gatewayPlan
 	primary relaySlot
-	split   relaySlot
-
-	singbox          *runtimeProcess
-	singboxGen       string
-	singboxStoppedAt time.Time
-	ruleSetSource    string
-	splitActive      bool
 
 	// usageMu serialises relay accounting between the heartbeat and a stop.
 	usageMu sync.Mutex
@@ -138,17 +93,10 @@ type gatewayManager struct {
 	lastErr string
 }
 
-// Bypass owner keys of the native relays.
-const (
-	gatewayRelayOwner      = "gateway"
-	gatewaySplitRelayOwner = "gateway:split"
-)
-
 func newGatewayManager(a *Agent) *gatewayManager {
 	return &gatewayManager{
 		agent:   a,
-		primary: relaySlot{role: "primary", port: gatewaySocksPort, dir: "relay", owner: gatewayRelayOwner},
-		split:   relaySlot{role: "split", port: gatewaySplitSocksPort, dir: "relay-split", owner: gatewaySplitRelayOwner},
+		primary: relaySlot{role: "primary", port: gatewaySocksPort, dir: "relay"},
 	}
 }
 
@@ -159,8 +107,8 @@ func (a *Agent) triggerGatewayReconcile() {
 	}
 }
 
-// gatewayLoop always runs so that enabling the gateway from LuCI takes effect
-// on "reload" without a service restart; it idles while the mode is off.
+// gatewayLoop always runs so the relay comes up (and tears down) purely from
+// what the Panel grants, without a mode switch or a service restart.
 func (a *Agent) gatewayLoop(ctx context.Context) {
 	manager := newGatewayManager(a)
 	a.mu.Lock()
@@ -200,19 +148,9 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	if !cfg.gatewayActive() {
-		m.stopAll("disabled")
-		m.setErr("")
-		return
-	}
 	if !a.enrolled() {
 		m.stopAll("not_enrolled")
 		m.setErr("")
-		return
-	}
-	if !fileExists(cfg.GatewaySingBoxBin) {
-		m.setErr("sing-box is not installed at %s (opkg install sing-box kmod-tun)", cfg.GatewaySingBoxBin)
-		m.stopAll("singbox_missing")
 		return
 	}
 	a.mu.Lock()
@@ -228,13 +166,10 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 	}
 	plan, err := a.gatewayPlan()
 	if err != nil {
-		// A carrier the Panel no longer grants is a revocation: stop and let
-		// the LAN fall back to ordinary routing rather than black-holing it.
-		// The reason is recorded first so status never shows a silent stop.
+		// A revoked or never-granted native outbound stops the relay; status
+		// names the reason.
 		m.setErr("%v", err)
 		m.stopAll("no_carrier")
-		// Status must show the carrier the operator configured, not the one
-		// that ran before.
 		m.mu.Lock()
 		m.plan = gatewayPlan{}
 		m.mu.Unlock()
@@ -242,12 +177,8 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 	}
 	m.mu.Lock()
 	planChanged := m.primary.relayKey != "" && m.primary.relayKey != plan.key()
-	splitChanged := m.split.relayKey != "" && (plan.Split == nil || m.split.relayKey != plan.Split.key())
 	m.plan = plan
 	m.primary.plan = plan.carrierPlan
-	if plan.Split != nil {
-		m.split.plan = *plan.Split
-	}
 	m.mu.Unlock()
 	if planChanged {
 		a.log.Info("gateway", "plan changed to carrier=%d scope=%s policy=%s; restarting", plan.Carrier.ForwardID, plan.Scope, plan.Policy)
@@ -255,14 +186,6 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 		// An operator-driven change is not a crash; no restart cooldown.
 		m.mu.Lock()
 		m.primary.relayStoppedAt = time.Time{}
-		m.split.relayStoppedAt = time.Time{}
-		m.singboxStoppedAt = time.Time{}
-		m.mu.Unlock()
-	} else if splitChanged {
-		a.log.Info("gateway", "split carrier changed; restarting its relay")
-		m.stopSlot(&m.split, "plan_changed")
-		m.mu.Lock()
-		m.split.relayStoppedAt = time.Time{}
 		m.mu.Unlock()
 	}
 
@@ -274,36 +197,6 @@ func (m *gatewayManager) reconcile(ctx context.Context) {
 			m.noteLeaseFailure(&m.primary, err)
 			m.setErr("%v", err)
 		}
-	}
-	if !m.leaseValid(&m.primary, time.Now()) {
-		// No usable lease: the relay cannot carry anything. Taking sing-box
-		// down lets the LAN keep ordinary connectivity while the reason is
-		// shown in LuCI.
-		if m.singboxRunning() {
-			a.log.Warn("gateway", "native lease is not valid; stopping LAN capture until it recovers")
-		}
-		m.stopSingBox("lease_invalid")
-		a.bypass.deactivate()
-		return
-	}
-
-	if plan.Split != nil {
-		if m.relayDead(&m.split) {
-			m.stopSlot(&m.split, "relay_exited")
-		}
-		if m.leaseDue(&m.split, time.Now(), cfg) {
-			if err := m.renewLease(ctx, &m.split, *plan.Split); err != nil {
-				if m.noteLeaseFailure(&m.split, err) {
-					a.log.Warn("gateway", "split carrier #%d: %v", plan.Split.Carrier.ForwardID, redactSecrets(err.Error()))
-				}
-			}
-		}
-	} else {
-		m.stopSlot(&m.split, "split_off")
-	}
-	if err := m.ensureSingBox(ctx, cfg, plan); err != nil {
-		m.setErr("%v", err)
-		return
 	}
 	m.setErr("")
 }
@@ -324,12 +217,6 @@ func (m *gatewayManager) relayDead(slot *relaySlot) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slot.relay != nil && !slot.relay.alive()
-}
-
-func (m *gatewayManager) singboxRunning() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.singbox != nil && m.singbox.alive()
 }
 
 func (m *gatewayManager) leaseValid(slot *relaySlot, now time.Time) bool {
@@ -378,8 +265,8 @@ func nextLeaseRenewal(grant *UltraPolicy, leaseExpiry time.Time) time.Time {
 
 // renewLease mints a native batch from a freshly pulled grant (the session
 // ticket rotates independently of the stable config revision, so the desktop
-// does the same), installs the bypass set, then delivers it to the slot's
-// relay, starting the relay first when needed.
+// does the same) and delivers it to the slot's relay, starting the relay
+// first when needed.
 func (m *gatewayManager) renewLease(ctx context.Context, slot *relaySlot, plan carrierPlan) error {
 	a := m.agent
 	m.mu.Lock()
@@ -394,12 +281,6 @@ func (m *gatewayManager) renewLease(ctx context.Context, slot *relaySlot, plan c
 		return err
 	}
 	current := fresh.carrierPlan
-	if slot.role == "split" {
-		if fresh.Split == nil {
-			return errors.New("split carrier is no longer available")
-		}
-		current = *fresh.Split
-	}
 	if current.key() != plan.key() {
 		// The next reconcile restarts with the new plan.
 		return errors.New("native plan changed during renewal")
@@ -408,22 +289,14 @@ func (m *gatewayManager) renewLease(ctx context.Context, slot *relaySlot, plan c
 	if failure := validatePolicy(plan.Carrier.UltraAccess, plan.Carrier, time.Now()); failure != "" {
 		switch failure {
 		case "service_state", "quota", "target_digest_mismatch", "forward_id", "protocol":
-			if slot.role == "split" {
-				m.stopSlot(slot, "policy_"+failure)
-			} else {
-				m.stopAll("policy_" + failure)
-			}
+			m.stopAll("policy_" + failure)
 		}
 		return fmt.Errorf("native carrier #%d grant unusable: %s", plan.Carrier.ForwardID, failure)
 	}
 
-	frames, bypass, err := a.requestNativeLeases(ctx, plan)
+	frames, _, err := a.requestNativeLeases(ctx, plan)
 	if err != nil {
 		return err
-	}
-	a.bypass.set(slot.owner, bypass)
-	if err := a.bypass.sync(); err != nil {
-		a.log.Warn("gateway", "relay bypass rules incomplete: %v", err)
 	}
 
 	m.mu.Lock()
@@ -468,7 +341,7 @@ func (m *gatewayManager) renewLease(ctx context.Context, slot *relaySlot, plan c
 	return nil
 }
 
-// gatewayRelayPaths is the primary relay's run directory.
+// gatewayRelayPaths is the relay's run directory.
 func gatewayRelayPaths(runDir string) runtimePaths {
 	return gatewaySlotPaths(runDir, "relay")
 }
@@ -543,110 +416,6 @@ func watchGatewayProcess(a *Agent, proc *runtimeProcess, label string) {
 	}
 }
 
-// splitRenderFor is the split carrier as sing-box sees it. It depends on the
-// plan only, never on the split relay's lease state: the rule stays while the
-// relay restarts, so a split outage fails just the listed destinations
-// instead of restarting sing-box twice.
-func splitRenderFor(plan gatewayPlan) *gatewaySplitRender {
-	if plan.Split == nil || len(plan.SplitCIDRs) == 0 {
-		return nil
-	}
-	return &gatewaySplitRender{Policy: plan.Split.Policy, CIDRs: plan.SplitCIDRs}
-}
-
-// ensureSingBox renders the configuration and (re)starts sing-box only when
-// it changed or the process is gone. The relay bypass rules are activated
-// before sing-box installs its routes.
-func (m *gatewayManager) ensureSingBox(ctx context.Context, cfg Config, plan gatewayPlan) error {
-	a := m.agent
-	if !tunIPv6Usable(cfg) {
-		cfg.GatewayTunAddress6 = ""
-	}
-	split := splitRenderFor(plan)
-	var rendered map[string]any
-	var source string
-	if len(plan.CaptureCIDRs) > 0 {
-		rendered, source = renderGatewayCIDRConfig(cfg, plan.Policy, plan.CaptureCIDRs), "none"
-	} else {
-		rendered, source = renderGatewayConfig(cfg, plan.Scope, plan.Policy, split)
-	}
-	encoded, err := json.MarshalIndent(rendered, "", "  ")
-	if err != nil {
-		return err
-	}
-	generation := sha256Hex(string(encoded))
-
-	m.mu.Lock()
-	running := m.singbox != nil && m.singbox.alive()
-	unchanged := running && m.singboxGen == generation
-	stoppedAt := m.singboxStoppedAt
-	if m.singbox != nil && !running {
-		// It died on its own: honour the cooldown instead of a crash loop.
-		m.singbox.mu.Lock()
-		if m.singbox.stoppedAt.After(stoppedAt) {
-			stoppedAt = m.singbox.stoppedAt
-		}
-		m.singbox.mu.Unlock()
-	}
-	m.ruleSetSource = source
-	m.mu.Unlock()
-	if unchanged {
-		return a.bypass.sync()
-	}
-	if !running && !stoppedAt.IsZero() && time.Since(stoppedAt) < time.Duration(clampInt(cfg.RestartCooldownSecs, 5, 60))*time.Second {
-		return nil
-	}
-
-	configPath := filepath.Join(cfg.RunDir, "gateway", gatewayConfigName)
-	if err := ensurePrivateDir(filepath.Dir(configPath)); err != nil {
-		return err
-	}
-	if err := writeFileAtomic(configPath, encoded, 0o600); err != nil {
-		return err
-	}
-	if out, err := runCommand(10*time.Second, cfg.GatewaySingBoxBin, "check", "-c", configPath); err != nil {
-		return fmt.Errorf("sing-box rejected the gateway configuration: %v %s", err, strings.TrimSpace(out))
-	}
-
-	m.stopSingBox("config_changed")
-	if err := a.bypass.activate(); err != nil {
-		a.log.Warn("gateway", "relay bypass rules incomplete: %v", err)
-	}
-	cmd := exec.Command(cfg.GatewaySingBoxBin, "run", "-c", configPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stdout
-	cmd.SysProcAttr = detachedProcAttr()
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start sing-box: %w", err)
-	}
-	proc := &runtimeProcess{paths: runtimePaths{dir: filepath.Dir(configPath)}, cmd: cmd, pid: cmd.Process.Pid, startedAt: time.Now()}
-	go watchGatewayProcess(a, proc, "sing-box")
-	m.mu.Lock()
-	m.singbox = proc
-	m.singboxGen = generation
-	m.splitActive = split != nil
-	m.mu.Unlock()
-	splitNote := "off"
-	if split != nil {
-		splitNote = fmt.Sprintf("#%d %d cidrs", plan.Split.Carrier.ForwardID, len(split.CIDRs))
-	}
-	a.log.Info("gateway", "sing-box started pid=%d (scope=%s policy=%s dns=%s rule_sets=%s split=%s)",
-		proc.pid, plan.Scope, plan.Policy, firstNonEmpty(cfg.GatewayDNSMode, "auto"), source, splitNote)
-	return nil
-}
-
-// tunIPv6Usable reports whether the TUN can take its IPv6 address. Without
-// kernel IPv6, or below the IPv6 minimum MTU, adding it would make sing-box
-// fail to start and take the whole gateway down; a box like that has no LAN
-// IPv6 to leak either.
-func tunIPv6Usable(cfg Config) bool {
-	if cfg.GatewayTunAddress6 == "" || cfg.GatewayTunMTU < 1280 {
-		return false
-	}
-	raw, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6")
-	return err == nil && strings.TrimSpace(string(raw)) == "0"
-}
-
 func stopGatewayProcess(proc *runtimeProcess, label string, log *Logger) {
 	if proc == nil {
 		return
@@ -675,25 +444,6 @@ func stopGatewayProcess(proc *runtimeProcess, label string, log *Logger) {
 	_ = cmd.Process.Kill()
 }
 
-func (m *gatewayManager) stopSingBox(reason string) {
-	m.mu.Lock()
-	proc := m.singbox
-	m.singbox = nil
-	m.singboxGen = ""
-	m.splitActive = false
-	if proc != nil {
-		m.singboxStoppedAt = time.Now()
-	}
-	m.mu.Unlock()
-	if proc != nil {
-		m.agent.log.Info("gateway", "stopping sing-box (%s)", reason)
-		stopGatewayProcess(proc, "sing-box", m.agent.log)
-	}
-}
-
-// stopRelay stops the primary relay.
-func (m *gatewayManager) stopRelay(reason string) { m.stopSlot(&m.primary, reason) }
-
 func (m *gatewayManager) stopSlot(slot *relaySlot, reason string) {
 	// Bill what the relay carried before its counters disappear with it.
 	m.collectSlotUsage(slot)
@@ -708,7 +458,6 @@ func (m *gatewayManager) stopSlot(slot *relaySlot, reason string) {
 		slot.relayStoppedAt = time.Now()
 	}
 	m.mu.Unlock()
-	m.agent.bypass.remove(slot.owner)
 	if proc != nil {
 		m.agent.log.Info("gateway", "stopping %s native relay (%s)", slot.role, reason)
 		stopGatewayProcess(proc, slot.role+" native relay", m.agent.log)
@@ -720,11 +469,10 @@ func (m *gatewayManager) stopSlot(slot *relaySlot, reason string) {
 	m.usageMu.Unlock()
 }
 
-// collectRelayUsage reports every relay's traffic as Ultra usage of its
-// native carrier, exactly like an ordinary runtime's.
+// collectRelayUsage reports the relay's traffic as Ultra usage of its native
+// carrier, exactly like an ordinary runtime's.
 func (m *gatewayManager) collectRelayUsage() {
 	m.collectSlotUsage(&m.primary)
-	m.collectSlotUsage(&m.split)
 }
 
 func (m *gatewayManager) collectSlotUsage(slot *relaySlot) {
@@ -748,46 +496,27 @@ func (m *gatewayManager) collectSlotUsage(slot *relaySlot) {
 	m.agent.recordUsage(forwardID, generation, status, &slot.counters)
 }
 
-// stopAll tears down in dependency order: sing-box first (its routes go with
-// its TUN), then the bypass rules, then the relays.
+// stopAll tears the relay down.
 func (m *gatewayManager) stopAll(reason string) {
-	m.stopSingBox(reason)
-	m.agent.bypass.deactivate()
 	m.stopSlot(&m.primary, reason)
-	m.stopSlot(&m.split, reason)
 }
 
 func (a *Agent) gatewayView() *GatewayView {
 	cfg := a.config()
 	view := &GatewayView{
-		Enabled:    cfg.GatewayEnabled,
-		Active:     cfg.gatewayActive(),
+		Active:     true,
 		CarrierID:  cfg.GatewayForwardID,
 		WantScope:  cfg.GatewayRouteScope,
 		WantPolicy: cfg.GatewayRoutePolicy,
-		TunAddress: cfg.GatewayTunAddress,
 		SocksPort:  gatewaySocksPort,
-		BypassCN:   cfg.GatewayBypassCN,
-		DNSMode:    firstNonEmpty(cfg.GatewayDNSMode, "auto"),
 		Carriers:   []GatewayCarrierView{},
-		Capture:    cfg.GatewayCapture,
-	}
-	if cfg.GatewayCapture != "cidr" && tunIPv6Usable(cfg) {
-		view.TunAddress6 = cfg.GatewayTunAddress6
-	}
-	if cfg.GatewaySplitForwardID > 0 {
-		view.Split = &GatewaySplitView{
-			CarrierID:  cfg.GatewaySplitForwardID,
-			WantPolicy: cfg.GatewaySplitRoutePolicy,
-			CIDRFile:   cfg.GatewaySplitCIDRFile,
-			SocksPort:  gatewaySplitSocksPort,
-		}
 	}
 	a.mu.Lock()
 	capability := a.nativeCap
 	manager := a.gateway
 	a.mu.Unlock()
 	if capability != nil && capability.Enabled {
+		view.Enabled = true
 		view.NativeGranted = true
 		for _, carrier := range capability.Forwards {
 			view.Carriers = append(view.Carriers, GatewayCarrierView{
@@ -800,7 +529,6 @@ func (a *Agent) gatewayView() *GatewayView {
 			})
 		}
 	}
-	view.BypassRules, view.BypassError = a.bypass.view()
 	if manager == nil {
 		return view
 	}
@@ -808,8 +536,7 @@ func (a *Agent) gatewayView() *GatewayView {
 	defer manager.mu.Unlock()
 	primary := &manager.primary
 	view.RelayRunning = primary.relay != nil && primary.relay.alive()
-	view.SingBoxRun = manager.singbox != nil && manager.singbox.alive()
-	view.Running = view.RelayRunning && view.SingBoxRun
+	view.Running = view.RelayRunning
 	if manager.plan.Carrier.ForwardID > 0 {
 		view.CarrierID = manager.plan.Carrier.ForwardID
 		view.Direction = manager.plan.Native.Direction
@@ -817,30 +544,12 @@ func (a *Agent) gatewayView() *GatewayView {
 		view.RoutePolicy = manager.plan.Policy
 		view.Unrestricted = manager.plan.Native.UnrestrictedOK
 		view.Notes = append([]string(nil), manager.plan.Notes...)
-		view.CaptureCIDRs = len(manager.plan.CaptureCIDRs)
 	}
-	view.RuleSets = manager.ruleSetSource
 	view.Candidates = primary.candidates
 	if !primary.leaseExpiry.IsZero() {
 		view.LeaseExpiry = formatRFC3339(primary.leaseExpiry)
 	}
 	view.LeaseError = primary.leaseErr
 	view.LastError = manager.lastErr
-	if view.Split != nil {
-		split := &manager.split
-		if manager.plan.Split != nil {
-			view.Split.Direction = manager.plan.Split.Native.Direction
-			view.Split.RoutePolicy = manager.plan.Split.Policy
-			view.Split.CIDRs = len(manager.plan.SplitCIDRs)
-		}
-		view.Split.RelayRunning = split.relay != nil && split.relay.alive()
-		view.Split.Active = manager.splitActive && view.SingBoxRun && view.Split.RelayRunning &&
-			!split.leaseExpiry.IsZero() && time.Now().Before(split.leaseExpiry)
-		view.Split.Candidates = split.candidates
-		if !split.leaseExpiry.IsZero() {
-			view.Split.LeaseExpiry = formatRFC3339(split.leaseExpiry)
-		}
-		view.Split.LeaseError = split.leaseErr
-	}
 	return view
 }

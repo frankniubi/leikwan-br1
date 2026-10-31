@@ -68,6 +68,24 @@ if [ -f "$IB/repositories.conf.example" ]; then
 	cp "$IB/repositories.conf.example" "$IB/repositories.conf"
 fi
 
+# The ImageBuilder carries its own prereq-build.mk with the same SetupHostCommand
+# probe for GNU install. GitHub's ubuntu-24.04 image ships uutils coreutils,
+# whose install --version prints no "GNU" substring, so the probe fails both
+# attempts and the image build dies before compiling anything. Freshly unpacked
+# per run: patch the probe the same way the SDK's is patched (see ../build.sh).
+if grep -q "SetupHostCommand,install" "$IB/include/prereq-build.mk" 2>/dev/null; then
+	python3 - "$IB/include/prereq-build.mk" <<'PY'
+import sys
+path = sys.argv[1]
+src = open(path, encoding='utf-8').read()
+old = "$(eval $(call SetupHostCommand,install,Please install GNU 'install', \\\n\tinstall --version | grep GNU, \\\n\tginstall --version | grep GNU))"
+new = "$(eval $(call TestHostCommand,install,Please install GNU 'install', \\\n\tinstall --version 2>&1 | grep -qE 'GNU|uutils coreutils'))"
+if old in src:
+	open(path, 'w', encoding='utf-8').write(src.replace(old, new))
+	print('ImageBuilder install probe accepts uutils coreutils')
+PY
+fi
+
 # The local index is signed, and opkg verifies it against the image keyring.
 # A freshly unpacked ImageBuilder ships no key pair and no keyring entry, so
 # both are created here; without them the build fails with an opaque
@@ -107,10 +125,10 @@ FILES="$HERE/files"
 mkdir -p "$FILES/etc/uci-defaults"
 cat > "$FILES/etc/uci-defaults/99-leikwan-image" <<'EOF'
 #!/bin/sh
-# Pre-seed the panel URL so a freshly flashed router only needs a pairing code.
+# Pre-seed the panel URL so a freshly flashed router only needs the panel's
+# client id + agent token pasted into LuCI.
 uci -q get leikwan.main >/dev/null 2>&1 || uci -q set leikwan.main=leikwan
 uci -q set leikwan.main.enabled='1'
-uci -q set leikwan.main.mode='forward'
 uci -q commit leikwan
 /etc/init.d/leikwand enable >/dev/null 2>&1
 exit 0
@@ -119,13 +137,9 @@ chmod +x "$FILES/etc/uci-defaults/99-leikwan-image"
 
 # luci-ssl-openssl is deliberately NOT listed: it conflicts with the default
 # libustream-mbedtls that the base image already carries.
+# The native outbound relay is loopback-only ultra-client; it needs neither
+# sing-box nor kmod-tun in this edition.
 PACKAGES="luci luci-ssl leikwand leikwan-runtime luci-app-leikwan"
-# Gateway mode (native outbound for the whole LAN) runs sing-box on a TUN.
-# Both come from the release feed; LEIKWAN_IMAGE_GATEWAY=0 builds a
-# forward-only image for small flash.
-if [ "${LEIKWAN_IMAGE_GATEWAY:-1}" != "0" ]; then
-	PACKAGES="$PACKAGES sing-box kmod-tun"
-fi
 
 # ImageBuilder shells out to find(1) with -execdir, which refuses to run when
 # PATH contains a relative or whitespace-bearing entry. That happens when the
@@ -149,7 +163,7 @@ cd "$IB"
 # diagnostic lines on failure.
 BUILD_LOG="${LEIKWAN_BUILD_LOG:-$IB/leikwan-image-build.log}"
 if ! make image PROFILE="$PROFILE" PACKAGES="$PACKAGES" FILES="$FILES" \
-	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.1.0}" >"$BUILD_LOG" 2>&1; then
+	EXTRA_IMAGE_NAME="leikwan-${LEIKWAND_VERSION:-1.2.0}" >"$BUILD_LOG" 2>&1; then
 	echo "firmware build failed; diagnostics from $BUILD_LOG:" >&2
 	grep -E 'Cannot install|check_data_file_clashes|Collected errors|^ \*|No such file|unknown package' "$BUILD_LOG" | head -20 >&2
 	tail -15 "$BUILD_LOG" >&2

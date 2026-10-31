@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"regexp"
@@ -145,6 +146,33 @@ func systemEgressEnv() egressEnv {
 			return uciNetworkDevice(networkConfigPath, name)
 		},
 	}
+}
+
+// resolveLogicalInterface maps a UCI network name (e.g. "wan") to a kernel
+// device, using ubus first because that is authoritative on OpenWrt. The
+// panel egress pinning accepts logical names.
+func resolveLogicalInterface(name string) string {
+	if name == "" {
+		return ""
+	}
+	if out, err := runCommandFunc(4*time.Second, "ubus", "call", "network.interface."+name, "status"); err == nil {
+		var status struct {
+			L3Device string `json:"l3_device"`
+			Device   string `json:"device"`
+		}
+		if json.Unmarshal([]byte(out), &status) == nil {
+			if status.L3Device != "" {
+				return status.L3Device
+			}
+			if status.Device != "" {
+				return status.Device
+			}
+		}
+	}
+	if dirExists("/sys/class/net/" + name) {
+		return name
+	}
+	return ""
 }
 
 func (env egressEnv) tunLike(device string) bool {

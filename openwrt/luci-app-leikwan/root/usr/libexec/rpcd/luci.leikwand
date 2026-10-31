@@ -60,7 +60,6 @@ const OPTIONS = {
 	panel_egress_interface:   { type: 'string', default: 'auto', max: 15, pattern: /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/ },
 	device_name:              { type: 'string', default: '', max: 64 },
 	device_id:                { type: 'string', default: '', max: 64 },
-	mode:                     { type: 'enum',   default: 'forward', values: [ 'forward', 'gateway', 'hybrid' ] },
 	poll_interval:            { type: 'int',    default: '30', min: 5, max: 3600 },
 	heartbeat_interval:       { type: 'int',    default: '30', min: 5, max: 3600 },
 	health_interval:          { type: 'int',    default: '20', min: 2, max: 600 },
@@ -73,32 +72,9 @@ const OPTIONS = {
 	data_dir:                 { type: 'path',   default: '/etc/leikwan' },
 	run_dir:                  { type: 'path',   default: '/var/run/leikwand' },
 	runtime_bin:              { type: 'path',   default: '/usr/libexec/leikwan/ultra-client' },
-	gateway_enabled:          { type: 'bool',   default: '0' },
 	gateway_forward_id:       { type: 'int',    default: '0', min: 0, max: MAX_INT },
 	gateway_route_scope:      { type: 'enum',   default: 'auto', values: [ 'auto', 'cn_only', 'intl_only', 'global' ] },
 	gateway_route_policy:     { type: 'enum',   default: 'auto', values: [ 'auto', 'restricted', 'unrestricted' ] },
-	gateway_tun_address:      { type: 'cidr',   default: '172.19.0.1/30' },
-	gateway_tun_mtu:          { type: 'int',    default: '1280', min: 576, max: 9000 },
-	gateway_dns_mode:         { type: 'enum',   default: 'auto', values: [ 'auto', 'custom' ] },
-	gateway_dns_servers:      { type: 'list',   default: '' },
-	gateway_bypass_cn:        { type: 'bool',   default: '1' },
-	gateway_singbox_bin:      { type: 'path',   default: '/usr/bin/sing-box' },
-	gateway_rule_set_dir:     { type: 'path',   default: '/usr/share/leikwan/rule-set' },
-	gateway_split_forward_id: { type: 'int',    default: '0', min: 0, max: MAX_INT },
-	gateway_split_route_policy: { type: 'enum', default: 'auto', values: [ 'auto', 'restricted', 'unrestricted' ] },
-	gateway_split_cidr_file:  { type: 'path',   default: '/usr/share/leikwan/split/shixp-v4.txt' },
-	gateway_capture:          { type: 'enum',   default: 'full', values: [ 'full', 'cidr' ] },
-	uplink_enabled:           { type: 'bool',   default: '0' },
-	uplink_scope:             { type: 'string', default: 'relay', max: 32, pattern: /^[A-Za-z0-9_]+$/ },
-	uplink_interfaces:        { type: 'list',   default: '' },
-	uplink_probe:             { type: 'list',   default: '1.1.1.1 223.5.5.5' },
-	uplink_interval:          { type: 'int',    default: '5', min: 1, max: 300 },
-	uplink_timeout_ms:        { type: 'int',    default: '2000', min: 200, max: 30000 },
-	uplink_fail_threshold:    { type: 'int',    default: '3', min: 1, max: 60 },
-	uplink_recover_threshold: { type: 'int',    default: '2', min: 1, max: 60 },
-	uplink_min_improve_pct:   { type: 'int',    default: '20', min: 0, max: 90 },
-	uplink_route_table:       { type: 'int',    default: '1001', min: 1, max: MAX_INT },
-	uplink_fwmark:            { type: 'int',    default: '19531', min: 0, max: MAX_INT },
 	cn_ip_list:               { type: 'path',   default: '/etc/leikwan/CN.conf' }
 };
 
@@ -604,82 +580,48 @@ const METHODS = {
 		return ctl('test_connection');
 	},
 
-	enroll: function(args) {
-		let email = asString(args.email);
-		let password = asString(args.password);
+	register: function(args) {
+		let token = asString(args.agent_token);
 		let clientID = null;
 		let params = null;
 
-		if (email == null || password == null)
-			return err('credentials_required');
+		if (token == null)
+			return err('agent_token_required');
 
-		email = trim(email);
+		token = trim(token);
 
-		if (!match(email, /^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$/) || length(email) > 254)
-			return err('invalid_email');
+		if (!length(token) || length(token) > MAX_VALUE_LENGTH || match(token, /[[:cntrl:]]/))
+			return err('agent_token_required');
 
-		if (!length(password) || length(password) > MAX_VALUE_LENGTH || match(password, /[[:cntrl:]]/))
-			return err('password_required');
+		let raw = trim(asString(args.client_id) ?? '');
 
-		params = { email: email, password: password };
+		if (!match(raw, /^[0-9]{1,10}$/))
+			return err('invalid_client_id');
 
-		if (args.client_id != null && asString(args.client_id) != '') {
-			let raw = trim(asString(args.client_id) ?? '');
+		clientID = +raw;
 
-			if (!match(raw, /^[0-9]{1,10}$/))
-				return err('invalid_client_id');
+		if (clientID < 1 || clientID > MAX_INT)
+			return err('invalid_client_id');
 
-			clientID = +raw;
+		params = { client_id: clientID, agent_token: token };
 
-			if (clientID > MAX_INT)
-				return err('invalid_client_id');
+		let result = ctl('register', params);
 
-			// 0 means "unspecified" in the CLI contract; it makes the agent use
-			// the first client of the account, so it is simply left out.
-			if (clientID >= 1)
-				params.client_id = clientID;
-		}
+		// register persists the credential and reloads; surface the refreshed
+		// status so the wizard can show the enrolled state in one round trip.
+		let status = (result.ok == true) ? ctl('status') : null;
 
-		return ctl('enroll', params);
-	},
-
-	pair: function(args) {
-		let code = asString(args.code);
-
-		if (code == null)
-			return err('invalid_pairing_code');
-
-		code = trim(code);
-
-		if (!match(code, /^[A-Za-z0-9][A-Za-z0-9-]{3,63}$/))
-			return err('invalid_pairing_code');
-
-		return ctl('pair', { code: code });
+		return ok({
+			registered: (result.ok == true),
+			error: (result.ok == true) ? null : (result.error || 'register_failed'),
+			message: result.message ?? null,
+			details: result.details ?? null,
+			status: (status != null && status.ok == true) ? status.data : null
+		});
 	},
 
 	sign_out: function() {
 		return ctl('sign_out');
-	},
-
-	forward_action: function(args) {
-		let raw = asString(args.forward_id);
-		let action = asString(args.action);
-		let forwardID = 0;
-
-		if (raw == null || !match(trim(raw), /^[0-9]{1,10}$/))
-			return err('invalid_forward_id');
-
-		forwardID = +trim(raw);
-
-		if (forwardID < 1 || forwardID > MAX_INT)
-			return err('invalid_forward_id');
-
-		action = trim(action ?? '');
-
-		if (!(action in [ 'start', 'stop', 'restart' ]))
-			return err('invalid_action');
-
-		return ctl('forward_action', { forward_id: forwardID, action: action });
 	},
 
 	reload: function() {
@@ -707,10 +649,8 @@ function signatures() {
 		logs: { limit: 32 },
 		diagnose: {},
 		test_connection: {},
-		enroll: { email: 'string', password: 'string', client_id: 32 },
-		pair: { code: 'string' },
+		register: { client_id: 32, agent_token: 'string' },
 		sign_out: {},
-		forward_action: { forward_id: 32, action: 'string' },
 		reload: {},
 		get_config: {},
 		set_config: { options: {} }
