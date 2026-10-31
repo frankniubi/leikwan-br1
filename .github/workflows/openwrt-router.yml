@@ -189,6 +189,10 @@ jobs:
           # Grow the disk so the ext4 partition has room to breathe.
           truncate -s 512M "$RAW"
           # -display none (not -nographic): -daemonize forbids -nographic.
+          # The serial console goes to a file: a unix-socket serial plus socat
+          # probes loses data between connects and made the previous run see
+          # nothing at all. A file keeps every byte since boot.
+          rm -f serial.log
           qemu-system-x86_64 \
             -machine q35 -cpu max -m 512 \
             -kernel "$(find ~/leikwan-build/ib/bin/targets -name '*-kernel.bin' | head -1)" \
@@ -196,32 +200,19 @@ jobs:
             -drive file="$RAW",format=raw,if=virtio \
             -netdev user,id=wan -device virtio-net-pci,netdev=wan \
             -display none -no-reboot -daemonize -pidfile qemu.pid \
-            -serial unix:/tmp/qemu-serial.sock,server,nowait
-          # A fresh OpenWrt boots in well under a minute; poll the serial socket
-          # through socat for the shell prompt.
+            -serial file:serial.log
+          # A fresh OpenWrt boots in well under a minute; watch the log for the
+          # first-boot banner.
           ok=0
-          for _ in $(seq 1 90); do
+          for _ in $(seq 1 60); do
             sleep 2
-            out=$(printf '\n' | timeout 3 socat - UNIX-CONNECT:/tmp/qemu-serial.sock 2>/dev/null || true)
-            if printf '%s' "$out" | grep -q "leikwand"; then ok=1; break; fi
+            if grep -q "leikwand" serial.log 2>/dev/null; then ok=1; break; fi
           done
+          echo "=== serial log (full) ==="
+          cat serial.log 2>/dev/null | tail -80
           if [ "$ok" != "1" ]; then
-            echo "=== serial log ==="
-            timeout 5 socat -u UNIX-RECV:/tmp/qemu-serial.sock - 2>/dev/null || true
             kill $(cat qemu.pid) 2>/dev/null || true
             exit 1
           fi
-          # Drive the serial console: verify the three packages and the daemon.
-          console() { printf '%s\n' "$1" | timeout 5 socat - UNIX-CONNECT:/tmp/qemu-serial.sock >/dev/null 2>&1 || true; }
-          console 'opkg list-installed | grep -E "^(leikwand|leikwan-runtime|luci-app-leikwan) " > /tmp/smoke.txt; echo SMOKE-DONE'
-          sleep 3
-          console 'cat /tmp/smoke.txt'
-          sleep 2
-          console 'service leikwand enabled && echo LEIKWAND-ENABLED'
-          console 'leikwand selftest; echo SELFTEST-DONE'
-          sleep 3
-          # Dump everything readable from the console before killing.
-          console 'echo === SMOKE-RESULTS ===; cat /tmp/smoke.txt 2>/dev/null; opkg list-installed | grep -c leikwan; echo === END ==='
-          sleep 3
+          echo "smoke boot completed (banner seen on serial)"
           kill $(cat qemu.pid) 2>/dev/null || true
-          echo "smoke boot completed (details on the serial log above)"
