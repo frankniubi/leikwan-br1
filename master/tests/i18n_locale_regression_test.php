@@ -798,6 +798,12 @@ $textAllowlist = [
         "details(), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) . '",
         "getMessage()) . '",
     ],
+    (string) realpath(__DIR__ . '/../src/Controllers/TenantController.php') => [
+        // Hardware arch labels inside the OpenWrt legacy-install card. They are
+        // the same tokens in every locale, not translatable UI copy.
+        'x86_64：',
+        'arm64：',
+    ],
 ];
 
 /** @var array<string, array<string>> $attributeAllowlist */
