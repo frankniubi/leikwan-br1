@@ -299,17 +299,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/leikwan-bond": "6f55c8e84376c8b5082ed25c008f746f65e04959769031c4ca1d15e4b56d7c7e",
-      "bin/leikwan-ingress": "3e092cb2509df47b98ebb09ba737f5b502df5e19828c89717dbc7a133be18e6e",
-      "bin/leikwan-uot-bond": "97d881f4b6d089a4b2c9dc2980df8a92b4b88b048943b0562c113d7b00a99293",
-      "bin/sing-box": "feb06b7ee8950bdbffd1b2d860a9b51bd261057fa23b4184bfb0885ed78222e9",
-      "bin/ultra-client": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
-      "bin/wstunnel": "bba594f382de37aafd37015e955aa9b9dd6b710f2ecc18a7f8303aabbc3536b3"
+      "bin/sing-box": "697e8dcaa6f8dc711377d7ea89345f3805b49eacbd962a180484c12902d6e39a",
+      "bin/wstunnel": "904c0420baed592f576a64208f4aa321774420e69b12c005d6de165e333b3e8e",
+      "bin/leikwan-bond": "3f7f0c5e659725d1ee8fcc3a3d4e2aaf11e49d5bd14e06ac6be12ce0a44451cf",
+      "bin/leikwan-ingress": "46d0a903bf357da711218c6894fde3e4d4ff66a43cf121739dd9eb2b272b1b0e",
+      "bin/leikwan-uot-bond": "ba970b263779b7e47ba8fdb16f43ef8a9e58772c01eef5015e0349837aa9eedd",
+      "bin/ultra-client": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
     },
-    "sha256": "7d4865826e9b9877edcc844fc6e21267eba45bbe8c8de03d7ca53dd07b6714ba",
-    "size_bytes": 78959950,
+    "sha256": "ce6e2c82a236c868dbbae3b331d059b82cc4e47f302de939270fb43b4b8b686f",
+    "size_bytes": 79162157,
     "version": "1.0.61",
-    "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
+    "source_commit": "66a9d84fa15987c3d31f9e475605e14b57f9bb96"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -346,17 +346,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/leikwan-bond": "6f55c8e84376c8b5082ed25c008f746f65e04959769031c4ca1d15e4b56d7c7e",
-      "bin/leikwan-ingress": "3e092cb2509df47b98ebb09ba737f5b502df5e19828c89717dbc7a133be18e6e",
-      "bin/leikwan-uot-bond": "97d881f4b6d089a4b2c9dc2980df8a92b4b88b048943b0562c113d7b00a99293",
-      "bin/sing-box": "feb06b7ee8950bdbffd1b2d860a9b51bd261057fa23b4184bfb0885ed78222e9",
-      "bin/ultra-client": "d8ba96dd0c343688b8ecf6da559f7604ac16182dd4cf9cf2cc5402233b010609",
-      "bin/wstunnel": "bba594f382de37aafd37015e955aa9b9dd6b710f2ecc18a7f8303aabbc3536b3"
+      "bin/sing-box": "697e8dcaa6f8dc711377d7ea89345f3805b49eacbd962a180484c12902d6e39a",
+      "bin/wstunnel": "904c0420baed592f576a64208f4aa321774420e69b12c005d6de165e333b3e8e",
+      "bin/leikwan-bond": "3f7f0c5e659725d1ee8fcc3a3d4e2aaf11e49d5bd14e06ac6be12ce0a44451cf",
+      "bin/leikwan-ingress": "46d0a903bf357da711218c6894fde3e4d4ff66a43cf121739dd9eb2b272b1b0e",
+      "bin/leikwan-uot-bond": "ba970b263779b7e47ba8fdb16f43ef8a9e58772c01eef5015e0349837aa9eedd",
+      "bin/ultra-client": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
     },
-    "sha256": "5a12b34bfaded4a63485a0179b3c0c95b1ca3d87d21311ec8a787a2560f02304",
-    "size_bytes": 70408043,
+    "sha256": "0daddc0222b09b0a371d8990a294957dc7d8ec0d23453a23adaeb7a5fc0b55f4",
+    "size_bytes": 70467783,
     "version": "1.0.61",
-    "source_commit": "26d8ee68e9bfbdd0da4dbe27d2e4a50eb27cbaeb"
+    "source_commit": "66a9d84fa15987c3d31f9e475605e14b57f9bb96"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -655,13 +655,13 @@
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
       "fingerprint": "2026.11.1.b8d5f402",
-      "self_sha256": "40e51f3f78b5c82ddd7474b7a469978139130d9afd0f1a6aa3d9e9d9e015c9f7"
+      "self_sha256": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "40e51f3f78b5c82ddd7474b7a469978139130d9afd0f1a6aa3d9e9d9e015c9f7",
-    "size_bytes": 15987346,
+    "sha256": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945",
+    "size_bytes": 16179696,
     "version": "2026.11.1",
     "runtime_build_version": "2026.11.1.b8d5f402",
     "hardening": [
@@ -671,7 +671,8 @@
       "stripped",
       "garble-identifiers",
       "garble-literals",
-      "codesign-adhoc"
+      "codesign-developer-id",
+      "notarized"
     ],
     "build_provenance": {
       "source_commit": "b8d5f402",
