@@ -1706,7 +1706,11 @@ public sealed partial class MainWindowViewModel : ObservableObject
             if (_connections.IsNativeTunMtuPending
                 && await _connections.ApplyPendingNativeTunMtuAsync(CancellationToken.None).ConfigureAwait(false))
                 return;
-            if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1))
+            // A drained local quota slice (a multi-gigabit download can empty it
+            // inside one renewal interval) renews the lease early instead of
+            // letting active copies pause on the runtime's bounded refill wait.
+            if (expiresAt is DateTimeOffset expiry && expiry > now.AddMinutes(1)
+                && !_connections.IsNativeQuotaLow())
                 return;
             var lease = await _controller.ResolveNativeOutboundLeaseAsync(
                 _nativeActiveForwardId,

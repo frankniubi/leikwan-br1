@@ -2269,7 +2269,9 @@ public partial class MainViewModel : ObservableObject
             // 16 second poll and a fresh candidate batch per forward.
             var expiresAt = proxyService.ActiveNativeLeaseExpiresAt ?? _nativeLeaseBatchExpiresAt;
             var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
+            var quotaLow = dataPlaneRunning && _proxyService.IsNativeQuotaLow();
             if (expiresAt is not null
+                && !quotaLow
                 && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 

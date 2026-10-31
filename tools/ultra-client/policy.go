@@ -236,6 +236,58 @@ func (l *PolicyLimiter) Consume(n int) error {
 	}
 }
 
+// errQuotaWaitAbandoned is returned by WaitQuota when the local quota slice
+// stayed below the requested chunk for the whole wait bound. It carries the
+// same "stop this copy" meaning as ErrQuotaExhausted, but names the wait, so
+// a host log can tell "no slice ever arrived" from "the slice ran out once".
+var errQuotaWaitAbandoned = errors.New("policy quota wait abandoned")
+
+// quotaExhaustedWaitBound is how long a TCP copy may pause on an exhausted
+// local quota slice before it gives up and ends the stream. The host renews
+// the lease on its own cadence (native: before expiry; ordinary ultra: after
+// a failure-driven renewal, minutes at most), so waiting here bridges the
+// slice refill instead of tearing down a healthy download mid-flight. UDP
+// callers keep the immediate drop: a datagram wait is a loss, not a stall.
+// A variable so tests can bound the pause.
+var quotaExhaustedWaitBound = 120 * time.Second
+
+// WaitQuota admits n bytes like Consume, but when the local slice is drained
+// it parks the copy until either the policy is replaced (Replace resets
+// quota to the new slice) or the bound lapses. ErrPolicyStopped (revocation,
+// expiry) returns immediately - that is an authorization verdict, not a
+// refill in flight. The final short Consume is re-checked without the rate
+// limiter's token wait because Consume already did the token accounting for
+// this loop and only the refill changed.
+func (l *PolicyLimiter) WaitQuota(n int, bound time.Duration) error {
+	if n <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(bound)
+	for {
+		err := l.Consume(n)
+		if err == nil || !errors.Is(err, ErrQuotaExhausted) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %w", errQuotaWaitAbandoned, ErrQuotaExhausted)
+		}
+		// Sleep a short poll: Replace() takes no notification channel, so
+		// waiters cannot be woken directly. 50 ms adds at most ~2% CPU on one
+		// goroutine while paused, and a refill lands at the next lease
+		// delivery regardless of this loop.
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// QuotaRemaining reports the local slice's remaining bytes. The host reads it
+// from the status snapshot to renew a lease before the slice drains: a
+// renewal (Replace) resets quota to the replacement grant's slice.
+func (l *PolicyLimiter) QuotaRemaining() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.quota
+}
+
 type ProviderLease struct {
 	LeaseID          string
 	LeaseHash        string

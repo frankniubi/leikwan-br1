@@ -31,6 +31,9 @@ public static class UltraRuntimeStatus
     /// <summary>Identity of the running helper binary.</summary>
     public const string AttestationProperty = "runtime_attestation";
 
+    /// <summary>Local limiter slice remainder, published by runtimes with quota awareness.</summary>
+    public const string QuotaRemainingProperty = "quota_remaining_bytes";
+
     /// <summary>Build identity of a locally built (unstamped) helper.</summary>
     public const string DevelopmentFingerprint = "development";
 
@@ -267,6 +270,28 @@ public static class UltraRuntimeStatus
                 return ceiling;
         }
         return 0;
+    }
+
+    /// <summary>
+    /// Local quota-slice remainder the forward's newest snapshot reports, or null
+    /// when no snapshot carries the field (an older runtime, or no policy). The
+    /// host renews the lease while this is low so a high-throughput download does
+    /// not pause on a drained slice.
+    /// </summary>
+    public static long? ReadForwardQuotaRemaining(string? runtimeDirectory, int forwardId)
+    {
+        foreach (var statusPath in EnumerateForwardStatusPaths(runtimeDirectory, forwardId))
+        {
+            if (!TryReadStatusRoot(statusPath, out var root))
+                continue;
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty(QuotaRemainingProperty, out var element)
+                && element.ValueKind == JsonValueKind.Number
+                && element.TryGetInt64(out var value)
+                && value >= 0)
+                return value;
+        }
+        return null;
     }
 
     private static bool TryReadStatusRoot(string? statusPath, out JsonElement root)

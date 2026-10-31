@@ -127,6 +127,9 @@ func TestCopyInboundObservedRejectsZeroProgressAndInvalidWriteCounts(t *testing.
 }
 
 func TestCopyInboundObservedPolicyRejectionIsNotRemoteFailure(t *testing.T) {
+	saved := quotaExhaustedWaitBound
+	quotaExhaustedWaitBound = 80 * time.Millisecond
+	t.Cleanup(func() { quotaExhaustedWaitBound = saved })
 	limiter, status := observedInboundTestState(t, 1)
 	source := observedInboundConn{read: bytes.NewReader([]byte("reply")).Read}
 	destination := observedInboundConn{write: func([]byte) (int, error) {
@@ -134,12 +137,40 @@ func TestCopyInboundObservedPolicyRejectionIsNotRemoteFailure(t *testing.T) {
 		return 0, nil
 	}}
 	got := copyInboundObserved(destination, source, limiter, status)
+	// The exhausted slice no longer ends the copy immediately: the copy waits
+	// for a refill and gives up with a wrapped ErrQuotaExhausted when no
+	// replacement lease arrives inside the bound.
 	if got.ReadBytes != 5 || got.WrittenBytes != 0 || !errors.Is(got.PolicyError, ErrQuotaExhausted) ||
+		!errors.Is(got.PolicyError, errQuotaWaitAbandoned) ||
 		got.ReadError != nil || got.WriteError != nil || !errors.Is(got.Err(), ErrQuotaExhausted) {
 		t.Fatalf("policy failure misclassified: %+v", got)
 	}
 	if status.status.BytesIn != 0 {
 		t.Fatalf("rejected usage counted: %d", status.status.BytesIn)
+	}
+}
+
+func TestCopyInboundObservedResumesWhenQuotaSliceRefilled(t *testing.T) {
+	saved := quotaExhaustedWaitBound
+	quotaExhaustedWaitBound = 5 * time.Second
+	t.Cleanup(func() { quotaExhaustedWaitBound = saved })
+	limiter, status := observedInboundTestState(t, 2)
+	payload := []byte("reply")
+	source := observedInboundConn{read: bytes.NewReader(payload).Read}
+	var received bytes.Buffer
+	destination := observedInboundConn{write: received.Write}
+	// Refill the slice while the copy is parked: Replace resets quota to the
+	// replacement lease's slice, the same thing the host does on a renewal.
+	time.AfterFunc(100*time.Millisecond, func() {
+		_ = limiter.Replace(0, 100, time.Now().Add(time.Minute), "copy-inbound-test")
+	})
+	got := copyInboundObserved(destination, source, limiter, status)
+	if received.String() != "reply" || got.WrittenBytes != int64(len(payload)) ||
+		got.PolicyError != nil || !errors.Is(got.Err(), io.EOF) {
+		t.Fatalf("refill did not resume the copy: %+v received=%q", got, received.String())
+	}
+	if status.status.BytesIn != int64(len(payload)) {
+		t.Fatalf("usage=%d, want admitted bytes %d", status.status.BytesIn, len(payload))
 	}
 }
 
