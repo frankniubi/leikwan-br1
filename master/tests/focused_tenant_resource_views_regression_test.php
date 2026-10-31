@@ -31,10 +31,10 @@ foreach ($contracts as $methodName => $contract) {
 $clientsStart = strpos($source, 'public function clientsPage(');
 $clientsEnd = strpos($source, 'public function sidecarsPage(', $clientsStart ?: 0);
 $clients = substr($source, $clientsStart ?: 0, ($clientsEnd ?: 0) - ($clientsStart ?: 0));
-// The Windows card leads with the no-GUI (CLI) service; the GUI installer and
-// update helper are collapsed under it. The tenant runtime-attestation refresh
+// Windows and macOS each render ONE card with two collapsed variants:
+// 无界面版 (CLI) and 图形界面版. The tenant runtime-attestation refresh
 // control is pinned by tenant_client_runtime_attestation_refresh_test.php.
-foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', "clientAppReleaseLabel('Windows', 'windows_client_app')", 'Windows · 无界面版 (CLI)', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token'] as $required) {
+foreach (['Linux (x86_64 / arm64)', '仅支持 Debian 11/12/13。', "clientAppReleaseLabel('Windows', 'windows_client_app')", '无界面版 (CLI)', '图形界面版', 'Android (Unstable)', '最大在线', '/tenant/clients/reset-token'] as $required) {
     if (!str_contains($clients, $required)) {
         throw new RuntimeException('tenant client install surface missing ' . $required);
     }

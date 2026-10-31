@@ -76,6 +76,10 @@ type RuntimeStatus struct {
 	PolicyExpiresAt        string `json:"policy_expires_at,omitempty"`
 	BytesIn                int64  `json:"bytes_in,omitempty"`
 	BytesOut               int64  `json:"bytes_out,omitempty"`
+	// QuotaRemainingBytes is the local limiter slice's remaining bytes. A host
+	// renews the lease when this gets low (or counts quota_exhausted stream
+	// ends) instead of letting active downloads pause on a drained slice.
+	QuotaRemainingBytes    int64  `json:"quota_remaining_bytes,omitempty"`
 	UDPActiveAssociations  int    `json:"udp_active_associations,omitempty"`
 	UDPPendingAssociations int    `json:"udp_pending_associations,omitempty"`
 	UDPQueueDrops          int64  `json:"udp_queue_drops,omitempty"`
@@ -230,6 +234,19 @@ func (writer *StatusWriter) AddUsage(bytesIn, bytesOut int) {
 	writer.update(func(status *RuntimeStatus) {
 		status.BytesIn += int64(maxInt(bytesIn, 0))
 		status.BytesOut += int64(maxInt(bytesOut, 0))
+	})
+}
+
+// UpdateQuotaRemaining records the local limiter slice's remaining bytes. The
+// policy watcher calls it on every tick while a policy is active; the writer
+// still coalesces writes, so this only reaches disk on the regular flush
+// cadence and only when the value moved.
+func (writer *StatusWriter) UpdateQuotaRemaining(remaining int64) {
+	writer.update(func(status *RuntimeStatus) {
+		if status.QuotaRemainingBytes == remaining {
+			return
+		}
+		status.QuotaRemainingBytes = remaining
 	})
 }
 

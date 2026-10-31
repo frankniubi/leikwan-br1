@@ -172,6 +172,13 @@ public interface IMacConnectionService : IAsyncDisposable
 
     /// <summary>Set when the relay's re-measured ceiling changes the live TUN MTU.</summary>
     bool IsNativeTunMtuPending => false;
+
+    /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained, so the caller renews the lease before active downloads pause
+    /// on the runtime's bounded refill wait. Defaults to false (unknown).
+    /// </summary>
+    bool IsNativeQuotaLow() => false;
     MacConnectionSelection Selection => MacConnectionSelection.Empty;
 
     Task InitializeAsync(CancellationToken ct = default);
