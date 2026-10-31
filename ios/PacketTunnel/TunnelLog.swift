@@ -72,11 +72,11 @@ final class TunnelLog {
                 return
             }
         }
-        guard let handle else { return }
-        _ = try? handle.write(contentsOf: data)
+        guard handle != nil else { return }
+        _ = try? handle?.write(contentsOf: data)
         // Rotate only when past the ceiling (checked per batch, not per line).
-        if let size = try? handle.seekToEnd(), size > maxFileBytes {
-            try? handle.close()
+        if let size = try? handle?.seekToEnd(), size > maxFileBytes {
+            try? handle?.close()
             handle = nil
             try? FileManager.default.removeItem(at: url)
         }
