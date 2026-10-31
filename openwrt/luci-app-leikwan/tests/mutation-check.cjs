@@ -21,7 +21,7 @@ const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'leikwan-mutation-'));
 const MUTATIONS = [
 	{
 		name: 'typo in a LuCI form type',
-		file: 'htdocs/luci-static/resources/view/leikwan/routing.js',
+		file: 'htdocs/luci-static/resources/view/leikwan/advanced.js',
 		apply: (src) => src.replace(/form\.Flag/g, 'form.Falg')
 	},
 	{
@@ -34,7 +34,7 @@ const MUTATIONS = [
 		// mutation is a no-op. This injects a statement that is guaranteed to
 		// throw the moment render() runs.
 		name: 'runtime error in the render path',
-		file: 'htdocs/luci-static/resources/view/leikwan/lines.js',
+		file: 'htdocs/luci-static/resources/view/leikwan/setup.js',
 		apply: (src) => src.replace(
 			/(render:\s*function\s*\([^)]*\)\s*\{)/,
 			'$1 injectedRenderFault();'
@@ -42,7 +42,7 @@ const MUTATIONS = [
 	},
 	{
 		name: 'view that offers the operator no action at all',
-		file: 'htdocs/luci-static/resources/view/leikwan/uplinks.js',
+		file: 'htdocs/luci-static/resources/view/leikwan/logs.js',
 		apply: (src) => src
 			.replace(/poll\.add\([^)]*\);?/g, '')
 			.replace(/E\('button'/g, "E('span'")
@@ -50,12 +50,19 @@ const MUTATIONS = [
 	{
 		name: 'menu entry pointing at a view that does not exist',
 		file: 'root/usr/share/luci/menu.d/luci-app-leikwan.json',
-		apply: (src) => src.replace('"path": "leikwan/uplinks"', '"path": "leikwan/uplinks-missing"')
+		apply: (src) => src.replace('"path": "leikwan/logs"', '"path": "leikwan/logs-missing"')
 	},
 	{
 		name: 'ACL that forgets to grant a method the views call',
 		file: 'root/usr/share/rpcd/acl.d/luci-app-leikwan.json',
-		apply: (src) => src.replace(/\n\t\t\t\t\t"forward_action",/, '')
+		apply: (src) => src.replace(/\n\t\t\t\t\t"register",/, '')
+	},
+	{
+		name: 'rpcd whitelist that keeps a removed option alive',
+		file: 'root/usr/libexec/rpcd/luci.leikwand',
+		apply: (src) => src.replace(
+			/\tenabled:/,
+			"\tmode: { type: 'enum', default: 'forward', values: [ 'forward' ] },\n\tenabled:")
 	}
 ];
 

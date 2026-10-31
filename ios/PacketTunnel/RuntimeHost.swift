@@ -5,6 +5,12 @@ import Libbox
 /// Hosts the forward runtimes in the tunnel process. Android runs each of
 /// these as a child process; here ingress/bond run on Rust threads
 /// (LeikwanRuntime) and ultra on the Go runtime shared with libbox.
+///
+/// An in-process runtime that exits on its own (a Go panic on a malformed
+/// datagram, a Rust listener thread dying) leaves this host with no entry and
+/// no process to guard: Android would restart the child (`GuardedProcessPool`),
+/// so the tunnel's watchdog does the same here — a periodic check re-launches
+/// any registered launch whose handle reports stopped, with a bounded backoff.
 final class RuntimeHost {
     private enum Handle {
         case native(Int64)
@@ -18,7 +24,12 @@ final class RuntimeHost {
 
     private let lock = NSLock()
     private var running: [Running] = []
+    private var restartCounts: [String: Int] = [:]
     private static var logSinkInstalled = false
+    /// Restart backoff bookkeeping (attempt index per runtime name).
+    private var lastRestartAt: [String: Date] = [:]
+    /// Deliberate stops (stop(named:)/stopAll) must not be resurrected.
+    private var deliberatelyStopped: Set<String> = []
 
     static func installLogSink() {
         guard !logSinkInstalled else { return }
@@ -37,6 +48,8 @@ final class RuntimeHost {
                 let handle = try Self.start(launch)
                 lock.lock()
                 running.append(Running(launch: launch, handle: handle))
+                restartCounts[launch.name] = 0
+                deliberatelyStopped.remove(launch.name)
                 lock.unlock()
                 TunnelLog.shared.write("runtime \(launch.name) started")
             } catch {
@@ -65,6 +78,8 @@ final class RuntimeHost {
                 let handle = try Self.start(launch)
                 lock.lock()
                 running.append(Running(launch: launch, handle: handle))
+                restartCounts[launch.name] = 0
+                deliberatelyStopped.remove(launch.name)
                 lock.unlock()
                 if let group = group {
                     startedByGroup[group, default: []].append(launch.name)
@@ -90,6 +105,7 @@ final class RuntimeHost {
         lock.lock()
         let stopping = running.reversed()
         running.removeAll()
+        for item in stopping { deliberatelyStopped.insert(item.launch.name) }
         lock.unlock()
         for item in stopping {
             switch item.handle {
@@ -107,6 +123,7 @@ final class RuntimeHost {
         lock.lock()
         let matching = running.filter { $0.launch.name == name }
         running.removeAll { $0.launch.name == name }
+        if !matching.isEmpty { deliberatelyStopped.insert(name) }
         lock.unlock()
         for item in matching {
             switch item.handle {
@@ -132,6 +149,49 @@ final class RuntimeHost {
         let item = running.first { $0.launch.name == name }
         lock.unlock()
         return item.map(Self.status)
+    }
+
+    /// Restarts any tracked runtime whose handle reports it stopped on its own (never one that
+    /// `stop(named:)`/`stopAll` deliberately stopped). Called periodically by the tunnel's
+    /// watchdog; Android parity for the in-process runtimes the child-process guard covers
+    /// there. Returns the names that were restarted.
+    @discardableResult
+    func restartStoppedRuntimes() -> [String] {
+        var restarted: [String] = []
+        let now = Date()
+        var pending: [(launch: RuntimeLaunch, error: String?)] = []
+        lock.lock()
+        for (index, item) in running.enumerated().reversed() {
+            if deliberatelyStopped.contains(item.launch.name) { continue }
+            let state = Self.status(item)
+            if state.running { restartCounts[item.launch.name] = 0; continue }
+            // Bounded backoff between restarts of the same runtime (1s, 2s, ... capped 30s),
+            // reset by a healthy start.
+            let attempt = restartCounts[item.launch.name, default: 0]
+            let delay = min(30.0, pow(2.0, Double(attempt)))
+            if let last = lastRestartAt[item.launch.name], now.timeIntervalSince(last) < delay {
+                continue
+            }
+            lastRestartAt[item.launch.name] = now
+            restartCounts[item.launch.name] = attempt + 1
+            running.remove(at: index)
+            pending.append((item.launch, state.error))
+        }
+        lock.unlock()
+        for item in pending.reversed() {
+            TunnelLog.shared.write("runtime \(item.launch.name) exited on its own (\(item.error ?? "no error")); restarting it", level: 2)
+            do {
+                let handle = try Self.start(item.launch)
+                lock.lock()
+                running.append(Running(launch: item.launch, handle: handle))
+                lock.unlock()
+                restarted.append(item.launch.name)
+                TunnelLog.shared.write("runtime \(item.launch.name) restarted")
+            } catch {
+                TunnelLog.shared.write("runtime \(item.launch.name) restart failed: \(error.localizedDescription)", level: 2)
+            }
+        }
+        return restarted
     }
 
     private static func status(_ item: Running) -> RuntimeStatus {

@@ -21,23 +21,13 @@ func readRandom(buf []byte) (int, error) { return rand.Read(buf) }
 func (a *Agent) reloadConfig() {
 	next := loadConfig()
 	a.mu.Lock()
-	previous := a.cfg
 	a.cfg = next
 	a.mu.Unlock()
 	a.panel.egress.setOverride(next.PanelEgressInterface)
-	a.log.Info("ctl", "configuration reloaded (mode=%s uplink=%v gateway=%v)",
-		next.Mode, next.UplinkEnabled, next.gatewayActive())
-	if previous.Mode != next.Mode {
-		a.log.Warn("ctl", "operating mode changed %s -> %s", previous.Mode, next.Mode)
-		// Leaving or entering forward service starts or stops ordinary forwards.
-		a.triggerReconcile("mode")
-	}
-	// Any gateway option may have changed; the gateway loop re-plans and only
+	a.log.Info("ctl", "configuration reloaded")
+	// The gateway option may have changed; the relay loop re-plans and only
 	// restarts what its new configuration actually differs in.
 	a.triggerGatewayReconcile()
-	if previous.UplinkEnabled != next.UplinkEnabled {
-		a.log.Warn("ctl", "uplink high availability %v -> %v; a service restart applies this change", previous.UplinkEnabled, next.UplinkEnabled)
-	}
 }
 
 // adoptCredentials persists a newly issued agent token and switches the running
@@ -63,32 +53,8 @@ func (a *Agent) adoptCredentials(token string, clientID int, clientName, email, 
 	a.panel.setToken(secrets.AgentToken, clientID)
 	a.log.Info("ctl", "device enrolled as client %d (%s) via %s", clientID, clientName, method)
 	a.triggerReconcile("enrolled")
-	if a.cfg.gatewayActive() {
-		a.triggerGatewayReconcile()
-	}
+	a.triggerGatewayReconcile()
 	return nil
-}
-
-// pairWithCode redeems a router pairing code issued by the tenant panel. It is
-// the fastest onboarding path: no password ever reaches the router.
-func (a *Agent) pairWithCode(code string) (int, error) {
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return 0, errPolicyMissing
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	response, err := a.panel.PairWithCode(ctx, code, a.deviceID, a.deviceNm)
-	if err != nil {
-		return 0, err
-	}
-	if !response.OK || strings.TrimSpace(response.AgentToken) == "" {
-		return 0, errPolicyMissing
-	}
-	if err := a.adoptCredentials(response.AgentToken, response.ClientID, response.ClientName, "", "pairing_code"); err != nil {
-		return 0, err
-	}
-	return response.ClientID, nil
 }
 
 func (a *Agent) eventRuntimeExit(forwardID int, failures int) {
@@ -111,7 +77,6 @@ type DiagnosticReport struct {
 	PanelTag      string            `json:"panel_platform_tag"`
 	Config        map[string]string `json:"effective_config"`
 	RuntimeBinary bool              `json:"runtime_present"`
-	SingBoxBinary bool              `json:"singbox_present"`
 	Checks        []DiagnosticCheck `json:"checks"`
 }
 
@@ -129,18 +94,11 @@ func (a *Agent) diagnose() DiagnosticReport {
 		Panel:         a.panel.endpointLabel(),
 		PanelTag:      a.panel.platform(),
 		RuntimeBinary: fileExists(a.cfg.RuntimeBin),
-		SingBoxBinary: fileExists(a.cfg.GatewaySingBoxBin),
 		Config: map[string]string{
-			"mode":            a.cfg.Mode,
 			"poll_interval":   itoa(a.cfg.PollIntervalSecs),
 			"heartbeat":       itoa(a.cfg.HeartbeatIntervalSecs),
 			"health_interval": itoa(a.cfg.HealthIntervalSecs),
 			"max_candidates":  itoa(a.cfg.MaxCandidates),
-			"uplink_enabled":  boolText(a.cfg.UplinkEnabled),
-			"uplink_scope":    a.cfg.UplinkScope,
-			"gateway_enabled": boolText(a.cfg.GatewayEnabled),
-			"gateway_scope":   a.cfg.GatewayRouteScope,
-			"gateway_policy":  a.cfg.GatewayRoutePolicy,
 		},
 	}
 	if raw, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
@@ -169,25 +127,14 @@ func (a *Agent) diagnose() DiagnosticReport {
 		add("forward_"+itoa(view.ForwardID), view.Status == "running" && view.Health != "unavailable",
 			view.Status+" / "+view.Health)
 	}
-	if a.cfg.gatewayActive() {
-		gateway := a.gatewayView()
-		add("gateway", gateway.Running, firstNonEmpty(gateway.LastError,
+	if gateway := a.gatewayView(); gateway.NativeGranted {
+		add("native_relay", gateway.Running, firstNonEmpty(gateway.LastError,
 			fmt.Sprintf("carrier #%d %s scope=%s policy=%s socks 127.0.0.1:%d", gateway.CarrierID, gateway.Direction,
 				gateway.RouteScope, gateway.RoutePolicy, gateway.SocksPort)))
-		add("gateway_native_lease", gateway.LeaseExpiry != "" && gateway.LeaseError == "",
+		add("native_lease", gateway.LeaseExpiry != "" && gateway.LeaseError == "",
 			firstNonEmpty(gateway.LeaseError, fmt.Sprintf("%d candidates, expires %s", gateway.Candidates, gateway.LeaseExpiry)))
-		add("gateway_relay_bypass", gateway.BypassError == "",
-			firstNonEmpty(gateway.BypassError, fmt.Sprintf("%d direct rules (pref %d)", gateway.BypassRules, gatewayBypassRulePref)))
-		add("gateway_rule_sets", gateway.RuleSets != "remote", firstNonEmpty(gateway.RuleSets, "not rendered yet"))
 	}
 	return report
-}
-
-func boolText(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
 }
 
 // submitDiagnostics answers a Panel diagnostics request. The response body is

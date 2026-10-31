@@ -10,7 +10,6 @@ if ! uci -q get leikwan.main >/dev/null 2>&1; then
 		set leikwan.main=leikwan
 		set leikwan.main.enabled='1'
 		set leikwan.main.panel_url='https://v3.leikwanhost.com'
-		set leikwan.main.mode='forward'
 		set leikwan.main.panel_egress_interface='auto'
 		commit leikwan
 	EOF

@@ -537,10 +537,10 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
      * the runtime receives resets its local limiter to this value and every
      * renewal re-slices from the reconciled remaining quota, so the slice only
      * has to outlast one renewal interval at the forward's top speed: it is
-     * never smaller than two renewal intervals at that speed (an unlimited
+     * never smaller than three renewal intervals at that speed (an unlimited
      * forward is assumed to run at ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS,
-     * default 1000). Default slice: max(1 GiB, rate * V) with a rate limit,
-     * 10 GiB without one (raised to the floor: ~56 GiB at 1000 Mbps).
+     * default 2500). Default slice: max(1 GiB, rate * V) with a rate limit,
+     * 10 GiB without one (raised to the floor: ~140 GiB at 2500 Mbps).
      * ULTRA_GRANT_QUOTA_SLICE_ENABLED=0 hands out the full remaining quota.
      */
     private function grantQuotaSliceBytes(int $quotaBytes, int $rateLimitMbps, int $validitySeconds): int
@@ -558,7 +558,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
                 : UltraMode::DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS;
         }
         $bytesPerSecond = $assumedMbps * 125000;
-        $floor = $bytesPerSecond * 2 * $this->renewIntervalSeconds($validitySeconds);
+        $floor = $bytesPerSecond * 3 * $this->renewIntervalSeconds($validitySeconds);
 
         $rawSlice = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_SLICE_KEY, ''));
         if ($rawSlice !== '' && preg_match('/^[0-9]+$/', $rawSlice) === 1 && (int) $rawSlice > 0) {

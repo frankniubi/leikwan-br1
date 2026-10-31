@@ -19,6 +19,8 @@ import (
 
 const testDirection = "CAN -> HKG"
 
+var allPolicies = []string{"restricted", "unrestricted"}
+
 func testCapability(unrestricted bool, scopes ...string) *NativeOutboundCapability {
 	if len(scopes) == 0 {
 		scopes = []string{"intl_only", "global"}
@@ -134,9 +136,6 @@ func TestGatewayPlanRefusesWhatThePanelDidNotGrant(t *testing.T) {
 func TestConfiguredCarrierMissingIsAnErrorInStatus(t *testing.T) {
 	now := time.Now()
 	cfg := defaultConfig()
-	cfg.Mode = "gateway"
-	cfg.GatewayEnabled = true
-	cfg.GatewaySingBoxBin = writeTempFile(t, "sing-box", "")
 	agent := newTestAgent(t, cfg)
 	agent.panel.setToken("token", 3)
 	agent.configLoaded = true
@@ -235,9 +234,6 @@ func TestNativeLeaseFramesCarryTheScopeDigestAsTargetDigest(t *testing.T) {
 	frame := frames[0]
 	if frame.TargetDigest != lease.ScopeDigest || frame.ScopeDigest != "" || frame.SessionTicket != "" || frame.DirectIPCidrs != nil {
 		t.Fatalf("runtime frame = %+v", frame)
-	}
-	if got := leaseBypassCIDRs([]LeaseFrame{lease}); strings.Join(got, ",") != "198.51.100.0/24,203.0.113.10/32" {
-		t.Fatalf("bypass set = %v", got)
 	}
 }
 
@@ -419,106 +415,6 @@ func TestGrantSurvivesNotModifiedLongPolls(t *testing.T) {
 	}
 }
 
-type fakeIP struct {
-	mu    sync.Mutex
-	calls []string
-	rules map[string]bool
-}
-
-func (f *fakeIP) run(_ time.Duration, name string, args ...string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	line := name + " " + strings.Join(args, " ")
-	f.calls = append(f.calls, line)
-	if len(args) >= 4 && args[1] == "rule" && args[2] == "del" && args[3] == "pref" {
-		// Flush: one rule per call, error when none are left.
-		for key := range f.rules {
-			if strings.HasPrefix(key, args[0]+" ") {
-				delete(f.rules, key)
-				return "", nil
-			}
-		}
-		return "", errors.New("no such rule")
-	}
-	if len(args) >= 5 && args[1] == "rule" {
-		key := args[0] + " " + args[4]
-		if args[2] == "add" {
-			f.rules[key] = true
-		} else {
-			delete(f.rules, key)
-		}
-	}
-	return "", nil
-}
-
-func withFakeIP(t *testing.T) *fakeIP {
-	t.Helper()
-	fake := &fakeIP{rules: map[string]bool{}}
-	original := runCommandFunc
-	runCommandFunc = fake.run
-	t.Cleanup(func() { runCommandFunc = original })
-	return fake
-}
-
-func TestBypassRoutesLifecycle(t *testing.T) {
-	fake := withFakeIP(t)
-	fake.rules["-4 192.0.2.99/32"] = true // left behind by a crashed predecessor
-	routes := newBypassRoutes()
-	routes.set("gateway", []string{"203.0.113.10/32"})
-	if err := routes.sync(); err != nil || len(fake.rules) != 1 {
-		t.Fatalf("an inactive set must not touch the kernel: %v %v", err, fake.rules)
-	}
-	if err := routes.activate(); err != nil {
-		t.Fatal(err)
-	}
-	if fake.rules["-4 192.0.2.99/32"] || !fake.rules["-4 203.0.113.10/32"] {
-		t.Fatalf("activate must flush stale rules and install the set: %v", fake.rules)
-	}
-	for _, call := range fake.calls {
-		if strings.Contains(call, " add ") && !strings.Contains(call, "lookup main pref 8970") {
-			t.Fatalf("rule must point at main at the reserved preference: %s", call)
-		}
-	}
-	// A rotation keeps the previous generation so its flows can drain.
-	routes.set("gateway", []string{"198.51.100.7/32"})
-	routes.set("forward:3", []string{"2001:db8::1/128"})
-	_ = routes.sync()
-	for _, want := range []string{"-4 203.0.113.10/32", "-4 198.51.100.7/32", "-6 2001:db8::1/128"} {
-		if !fake.rules[want] {
-			t.Fatalf("missing %s in %v", want, fake.rules)
-		}
-	}
-	routes.set("gateway", []string{"198.51.100.8/32"})
-	_ = routes.sync()
-	if fake.rules["-4 203.0.113.10/32"] {
-		t.Fatal("two generations back must be removed")
-	}
-	routes.deactivate()
-	if len(fake.rules) != 0 {
-		t.Fatalf("deactivate must remove every rule: %v", fake.rules)
-	}
-}
-
-func TestBypassCIDRNormalization(t *testing.T) {
-	cases := map[string]string{
-		"203.0.113.10":       "203.0.113.10/32",
-		"203.0.113.10/32":    "203.0.113.10/32",
-		"198.51.100.77/24":   "198.51.100.0/24",
-		"::ffff:203.0.113.1": "203.0.113.1/32",
-		"2001:db8::1":        "2001:db8::1/128",
-		"0.0.0.0/0":          "",
-		"10.0.0.0/4":         "",
-		"127.0.0.1":          "",
-		"0.0.0.0":            "",
-		"relay.example":      "",
-	}
-	for in, want := range cases {
-		got, ok := normalizeBypassCIDR(in)
-		if (want == "") == ok || got != want {
-			t.Fatalf("normalizeBypassCIDR(%q) = %q,%v want %q", in, got, ok, want)
-		}
-	}
-}
 
 // The relay's bytes are billed as usage of the native carrier, including the
 // last stretch before the relay stops.
@@ -547,7 +443,7 @@ func TestNativeRelayUsageIsReported(t *testing.T) {
 	writeStatus(1000, 200)
 	agent.collectUsage()
 	writeStatus(1500, 260)
-	manager.stopRelay("test") // must bill the final 500/60 before forgetting the relay
+	manager.stopSlot(&manager.primary, "test") // must bill the final 500/60 before forgetting the relay
 	pending := store.Usage().PendingUltra
 	if len(pending) != 2 || pending[0].ForwardID != 180 || pending[0].BytesIn != 1000 || pending[1].BytesIn != 500 || pending[1].BytesOut != 60 {
 		t.Fatalf("relay usage = %+v", pending)
@@ -557,13 +453,10 @@ func TestNativeRelayUsageIsReported(t *testing.T) {
 	}
 }
 
-// Gateway mode carries the LAN over the native carrier alone. The client's
-// ordinary forwards must not get a listener or a lease on the router: a
-// runtime left over from forward mode is stopped, and none is started.
-func TestGatewayModeDoesNotServeOrdinaryForwards(t *testing.T) {
+// Native carriers stay off the ordinary path entirely (no listener, no lease);
+// they remain available to the relay.
+func TestNativeForwardsStayAvailableToTheRelay(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.Mode = "gateway"
-	cfg.GatewayEnabled = true
 	cfg.RuntimeBin = "/nonexistent/ultra-client"
 	agent := newTestAgent(t, cfg)
 	agent.panel.setToken("token", 3)
@@ -574,20 +467,11 @@ func TestGatewayModeDoesNotServeOrdinaryForwards(t *testing.T) {
 	agent.runtimes[256] = &runtimeState{proc: &runtimeProcess{forwardID: 256}, forward: ordinary}
 
 	agent.reconcileNow(context.Background(), "test")
-	if len(agent.runtimes) != 0 {
-		t.Fatalf("gateway mode kept ordinary runtimes: %v", agent.runtimes)
-	}
 	if _, ok := agent.nativeForwards[325]; !ok {
-		t.Fatal("the native carrier must stay available to the gateway")
+		t.Fatal("the native carrier must stay available to the relay")
 	}
-
-	// Hybrid serves both again: reconcile attempts the ordinary forward (and
-	// fails here only because the test has no runtime binary).
-	agent.mu.Lock()
-	agent.cfg.Mode = "hybrid"
-	agent.mu.Unlock()
-	if !agent.config().forwardActive() {
-		t.Fatal("hybrid must serve ordinary forwards")
+	if _, ok := agent.forwards[325]; ok {
+		t.Fatal("a native carrier must never run on the ordinary path")
 	}
 }
 
@@ -673,8 +557,8 @@ func TestNativeRenewalWaitsForGrantRenewAfter(t *testing.T) {
 
 // A native renewal pulls a fresh grant, mints a new batch from its ticket and
 // delivers it to the relay that is already running, over its control socket.
-// The relay is not restarted and sing-box, which has its own process slot, is
-// not touched, so LAN sessions survive the rotation.
+// The relay is not restarted, so nothing the operator routes through the
+// facade notices the rotation.
 func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
 	now := time.Now()
 	var mu sync.Mutex
@@ -707,8 +591,6 @@ func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.PanelURL = server.URL
 	cfg.FallbackURL = ""
-	cfg.Mode = "gateway"
-	cfg.GatewayEnabled = true
 	agent := newTestAgent(t, cfg)
 	agent.panel.setToken("token", 3)
 
@@ -724,11 +606,8 @@ func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
 	relay := startTestChild(t)
 	relay.native = true
 	relay.paths = runtimePaths{dir: dir, controlSocket: control}
-	singbox := startTestChild(t)
 	manager.primary.relay = relay
 	manager.primary.relayKey = plan.key()
-	manager.singbox = singbox
-	manager.singboxGen = "unchanged"
 
 	for round := 1; round <= 2; round++ {
 		if err := manager.renewLease(context.Background(), &manager.primary, plan.carrierPlan); err != nil {
@@ -746,12 +625,6 @@ func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
 	}
 	if manager.primary.relay != relay || !relay.alive() {
 		t.Fatal("a renewal must reach the running relay, not replace it")
-	}
-	if manager.singbox != singbox || !singbox.alive() || manager.singboxGen != "unchanged" {
-		t.Fatal("a renewal must not touch sing-box")
-	}
-	if manager.split.relay != nil {
-		t.Fatal("the primary renewal must not use the split slot")
 	}
 	wantExpiry, _ := parseRFC3339(goodNativeLease(plan, now).ExpiresAt)
 	if !manager.primary.leaseExpiry.Equal(wantExpiry) || !manager.leaseValid(&manager.primary, time.Now()) {

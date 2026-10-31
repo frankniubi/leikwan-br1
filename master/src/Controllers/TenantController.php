@@ -1394,50 +1394,51 @@ final class TenantController extends BaseController
             . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
             . '<button class="button ghost" type="submit">Create enrollment code</button></form>';
 
-        // macOS: App (Apple Silicon) + no-GUI together; Windows + Windows no-GUI together; Docker standalone.
-        // All command <pre> blocks are collapsible via <details> so the page stays scannable.
+        // Windows and macOS each get ONE card with two symmetric collapsed
+        // variants: 无界面版 (CLI) and 有界面版 (GUI). Docker stands alone.
         $macosHeadlessCommand = $this->macosHeadlessInstallCommand($client);
         $windowsHeadlessCommand = $this->windowsHeadlessInstallCommand($client);
         $dockerCommand = $this->dockerClientInstallCommand($client);
         $dockerComposeSnippet = $this->dockerClientComposeInline($client);
 
-        // No-GUI (CLI) clients lead each desktop card; the GUI app is collapsed below.
         $macosGuiSectionRaw = $this->renderMacClientInstallSection();
+        $macosGuiVersion = $this->macosClientReleaseVersion();
         $macosGuiBlock = '';
         if ($macosGuiSectionRaw !== '') {
-            $macosGuiVersion = $this->macosClientReleaseVersion();
-            $macosGuiBlock = '<details style="margin-top:12px;"><summary>' . $this->platformIcon('macos')
-                . $this->escape('macOS' . ($macosGuiVersion !== '' ? ' ' . $macosGuiVersion : '') . ' · 图形界面版')
+            $macosGuiBlock = '<details style="margin-top:10px;"><summary>' . $this->platformIcon('macos')
+                . $this->escape('图形界面版' . ($macosGuiVersion !== '' ? ' · macOS ' . $macosGuiVersion : ''))
                 . '</summary>'
                 . $this->renderMacClientInstallBody()
                 . '</details>';
         }
         $macosSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('macos')
-            . $this->escape($this->clientAppReleaseLabel('macOS · 无界面版 (CLI)', 'macos_headless_installer')) . '</strong>'
-            . '<div class="muted">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . $this->escape($this->clientAppReleaseLabel('macOS', 'macos_headless_installer')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>无界面版 (CLI) · 一键安装命令</summary>'
+            . '<div class="muted" style="margin:6px 0;">适合服务器或不登录桌面的电脑：以 launchd 守护进程运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($macosHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 macOS 命令', $macosHeadlessCommand, 'secondary', '已复制', '复制失败')
             . '<a class="button secondary" href="' . $this->escape($this->macosHeadlessInstallerUrl()) . '">macOS 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-            . '</div>'
+            . '</div></details>'
             . $macosGuiBlock
             . '</section>';
 
         $windowsSection = '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows · 无界面版 (CLI)', 'windows_headless_client')) . '</strong>'
-            . '<div class="muted">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
+            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_headless_client')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>无界面版 (CLI) · 一键安装命令</summary>'
+            . '<div class="muted" style="margin:6px 0;">适合服务器或不登录桌面的电脑：以 Windows 系统服务运行，与图形版客户端使用同一内核和同一套更新校验。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($windowsHeadlessCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Windows 命令', $windowsHeadlessCommand, 'secondary', '已复制', '复制失败')
             . $this->renderCommandLink('下载 Windows 无界面版', $this->windowsHeadlessClientUrl(), 'secondary')
             . '<a class="button secondary" href="' . $this->escape($this->windowsHeadlessInstallerUrl()) . '">Windows 安装脚本</a>'
             . '<a class="button secondary" href="/knowledgebase?thread=no-gui-clients">使用说明</a>'
-            . '</div>'
-            . '<details style="margin-top:12px;"><summary>' . $this->platformIcon('windows')
-            . $this->escape($this->clientAppReleaseLabel('Windows', 'windows_client_app') . ' · 图形界面版') . '</summary>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>' . $this->platformIcon('windows')
+            . $this->escape('图形界面版 · ' . $this->clientAppReleaseLabel('Windows', 'windows_client_app')) . '</summary>'
             . '<div class="actions" style="margin-top:8px;">' . $this->renderCommandLink('下载安装包', $this->windowsClientAppUrl(), 'secondary') . '</div>'
             . '<div class="muted" style="margin:10px 0 6px;">' . $this->platformIcon('helper') . $this->escape($this->clientAppReleaseLabel('Windows 更新助手', 'windows_update_helper')) . '</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($this->windowsUpdateHelperCommand()) . '</pre>'
@@ -1451,7 +1452,7 @@ final class TenantController extends BaseController
             . $this->platformIcon('docker')
             . $this->escape($this->clientAppReleaseLabel('Docker · 全平台 (TCP+UDP)', 'docker_client_installer')) . '</strong>'
             . '<div class="muted">最纯粹的 TCP+UDP 转发容器，无 GUI、免 TUN：linux/amd64 与 linux/arm64 双架构，含私有 Registry（--image）与全平台宿主支持。</div>'
-            . '<details style="margin-top:10px;" open><summary>一键安装命令 · 复制即用</summary>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($dockerCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Docker 命令', $dockerCommand, 'secondary', '已复制', '复制失败')
@@ -1473,15 +1474,17 @@ final class TenantController extends BaseController
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('linux')
             . $this->escape($this->clientAppReleaseLabel('Linux (x86_64 / arm64)', 'client_agent_installer')) . '</strong>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($installCommand) . '</pre>'
             . '<div class="muted">同一条命令适用于 x86_64/amd64 与 aarch64/arm64，脚本会自动识别架构并校验所有产物哈希。仅支持 Debian 11/12/13。只能访问国内网络的机器也可以直接运行：连不上 Cloudflare 时会自动改用阿里云 CDN。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制命令', $installCommand, 'secondary', '已复制', '复制失败')
             . $resetForm
-            . '</div></section>'
+            . '</div></details></section>'
             . $windowsSection
             . $macosSection
             . $iosSection
+            . $this->tenantOpenwrtSection($client)
             // Docker installation is hidden until container runtime acceptance passes.
             . '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('android')
@@ -1650,6 +1653,89 @@ final class TenantController extends BaseController
             'SELECT status, expire_at FROM services WHERE user_id = :user_id',
             ['user_id' => $userId]
         );
+    }
+
+    /**
+     * OpenWrt card for the app center.
+     *
+     * The router edition (leikwand 1.2.0) onboards exactly like the headless
+     * clients: paste the panel-issued client id and agent token into LuCI (or
+     * run `leikwand ctl register` over SSH). The card renders the ipk install
+     * command for the router's architecture and a ready-made register command
+     * carrying this client's identity, so nothing has to be assembled by hand.
+     *
+     * Copy is Chinese like the rest of the app center and is not routed through
+     * the client-side i18n dictionary (see tenantIosSection for the reason).
+     *
+     * @param array<string, mixed> $client
+     */
+    private function tenantOpenwrtSection(array $client): string
+    {
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        $hasClient = $clientId > 0 && $agentToken !== '';
+        $masterUrl = $this->agentBaseUrl();
+        $ipkBase = rtrim($this->artifactBaseUrl(), '/') . '/artifacts/files/openwrt';
+
+        if ($hasClient) {
+            $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
+            $amd64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+            $arm64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+            // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
+            // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
+            // backend). Old devices get the core packages only — the SSH
+            // command-line journey (register/forwards/logs) works everywhere.
+            $legacyAmd64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.0-r1_x86_64.ipk') . $register;
+            $legacyArm64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.0-r1_aarch64_generic.ipk') . $register;
+        } else {
+            $amd64Command = $ipkBase . '/amd64/';
+            $arm64Command = $ipkBase . '/arm64/';
+        }
+
+        $description = $hasClient
+            ? '刷入固件或在现有 OpenWrt 23.05+ 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            : '先在下方创建客户端，再回来复制带身份的安装命令。';
+
+        return '<section class="tenant-client-install__platform" data-openwrt-install>'
+            . '<strong>' . $this->platformIcon('openwrt')
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.0)', 'openwrt_leikwand')) . '</strong>'
+            . '<div class="muted">' . $this->escape($description)
+            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . ($hasClient
+                ? '<details style="margin-top:10px;"><summary>OpenWrt 21.02 / 22.03 老设备（仅命令行，无网页界面）</summary>'
+                    . '<div class="muted" style="margin:6px 0;">这些版本的仓库没有 ucode，LuCI 集成无法运行；只装核心包，用 SSH 命令行动线，功能（转发监听 + 原生出口中继）与新版完全一致。</div>'
+                    . '<div class="muted">x86_64：</div>'
+                    . '<pre class="tenant-client-install__command">' . $this->escape($legacyAmd64Command) . '</pre>'
+                    . '<div class="muted">arm64：</div>'
+                    . '<pre class="tenant-client-install__command">' . $this->escape($legacyArm64Command) . '</pre>'
+                    . '<div class="actions">'
+                    . $this->renderCopyButton('复制 x86_64 命令', $legacyAmd64Command, 'secondary', '已复制', '复制失败')
+                    . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
+                    . '</div></details>'
+                : '')
+            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05+）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
+            . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
+            . '</section>';
     }
 
     /**

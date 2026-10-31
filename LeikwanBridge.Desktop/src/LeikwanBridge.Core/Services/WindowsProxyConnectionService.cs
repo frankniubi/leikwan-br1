@@ -52,6 +52,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
     public const string NativeOutboundDisplayName = "原生出口";
     public const string ProcessLostErrorCode = "proxy_process_lost";
 
+    /// <summary>
+    /// Local slice remainder below which a native lease is renewed early. At
+    /// the observed fleet ceiling (~2.5 Gbit/s) 2 GiB is ~7 s of drain time,
+    /// enough to cover one renewal-loop poll plus the refresh round trip
+    /// before the slice empties; the runtime's bounded copy pause (120 s) is
+    /// the last-resort backstop behind this.
+    /// </summary>
+    public const long NativeQuotaRenewalRemainingBytes = 2L * 1024 * 1024 * 1024;
+
     /// <summary>Minimum spacing between two live-MTU apply attempts.</summary>
     public static readonly TimeSpan MtuApplyDefaultInterval = TimeSpan.FromSeconds(60);
 
@@ -247,6 +256,24 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         => ObserveMeasuredPayloadCeiling(
             forwardId,
             UltraRuntimeStatus.ReadForwardPayloadCeiling(_runtimeDirectory, forwardId));
+
+    /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained. The host renews the lease on this signal instead of waiting for
+    /// the expiry window: a high-throughput download can exhaust a slice inside
+    /// one renewal interval, and a paused-then-dropped download is the reported
+    /// "large downloads interrupt" symptom. A snapshot without the field (older
+    /// runtime) or an idle connection reads as false, so the legacy expiry-only
+    /// cadence is unchanged there.
+    /// </summary>
+    public bool IsNativeQuotaLow()
+    {
+        if (_activeNativeLease is not { } lease
+            || _snapshot.State != WindowsProxyConnectionState.Connected)
+            return false;
+        return UltraRuntimeStatus.ReadForwardQuotaRemaining(_runtimeDirectory, lease.ForwardId)
+            is long remaining && remaining < NativeQuotaRenewalRemainingBytes;
+    }
 
     /// <summary>
     /// Applies the pending TUN MTU to the live connection.

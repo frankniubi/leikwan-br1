@@ -54,8 +54,12 @@ public sealed partial class UltraRuntimeFailureLog
     // (WSAECONNABORTED, the Windows form of a relay RST during a write),
     // broken_pipe (EPIPE) or stall (errRemoteWriteStall). eof and timeout are
     // ordinary target behaviour and are not treated as credential evidence.
+    // quota_exhausted is not a relay verdict at all: the local limiter drained
+    // its quota slice (inbound downloads land on stage=policy once the copy
+    // gives up its bounded refill wait). It means the grant needs a fresh
+    // slice now, which is exactly what a renewal delivers.
     private static readonly HashSet<string> CredentialSuspectStreamReasons =
-        new(StringComparer.Ordinal) { "reset", "aborted", "broken_pipe", "stall" };
+        new(StringComparer.Ordinal) { "reset", "aborted", "broken_pipe", "stall", "quota_exhausted" };
 
     private readonly ConcurrentDictionary<(int ForwardId, string Kind), Window> _windows = new();
     private readonly int _maxPerWindow;
@@ -106,7 +110,10 @@ public sealed partial class UltraRuntimeFailureLog
             return false;
         var message = StripGoLogTimestamp(line);
         var stage = StagePattern().Match(message);
-        if (!stage.Success || stage.Groups[1].Value is not ("remote_read" or "remote_write"))
+        // stage=policy is the local limiter (quota exhausted after the copy's
+        // refill wait gave up), not the relay or the target - a fresh slice
+        // ends it, so treat it as renewal evidence like the relay-side forms.
+        if (!stage.Success || stage.Groups[1].Value is not ("remote_read" or "remote_write" or "policy"))
             return false;
         var reason = ReasonPattern().Match(message);
         return reason.Success && CredentialSuspectStreamReasons.Contains(reason.Groups[1].Value);

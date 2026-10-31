@@ -217,13 +217,6 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 		return
 	}
 
-	// In hybrid mode the gateway TUN would otherwise capture this runtime's
-	// relay connections and push them through the native exit.
-	a.bypass.set(forwardBypassOwner(state.forward.ForwardID), leaseBypassCIDRs(response.Leases))
-	if err := a.bypass.sync(); err != nil {
-		a.log.Warn("lease", "forward %d relay bypass rules incomplete: %v", state.forward.ForwardID, err)
-	}
-
 	control := ultraControl{socketPath: state.proc.paths.controlSocket}
 	if err := waitForControlSocket(ctx, state.proc.paths.controlSocket, 15*time.Second); err != nil {
 		state.leaseFailures++
@@ -352,8 +345,6 @@ func policyGenerationOf(forward ForwardConfig) string {
 	return strings.ToLower(strings.TrimSpace(forward.UltraAccess.PolicyGeneration))
 }
 
-var errPolicyMissing = errors.New("ultra grant missing")
-
 // leaseRefusalHint adds operator context to the sealed-lease refusals. They
 // are otherwise handled like any other lease error: counted, backed off and
 // retried at the normal cadence. A key conflict deliberately does not rotate
@@ -383,5 +374,3 @@ func (a *Agent) noteUnsealFailures(scope string, forwardID int, response *LeaseR
 	a.log.Warn(scope, "forward %d: %d sealed lease(s) dropped (%s), %d usable: %v",
 		forwardID, len(response.UnsealFailures), codeLeaseUnsealFailed, len(response.Leases), response.UnsealFailures[0])
 }
-
-func forwardBypassOwner(forwardID int) string { return "forward:" + itoa(forwardID) }
