@@ -10,6 +10,14 @@ final class TunnelLog {
     private let queue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.log")
     private var lines: [String] = []
     private let capacity = 600
+    /// Batches file appends: coalesced lines are written once per flush window instead of one
+    /// open/seek/write/close per line (a busy second used to hit the file dozens of times).
+    private static let flushInterval: TimeInterval = 2.0
+    private static let maxFileBytes = 256 * 1024
+    private var pending: [String] = []
+    private var flushScheduled = false
+    private var fileHandle: FileHandle?
+
     private let formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
@@ -25,24 +33,52 @@ final class TunnelLog {
             if self.lines.count > self.capacity {
                 self.lines.removeFirst(self.lines.count - self.capacity)
             }
-            Self.appendToFile(line)
+            self.pending.append(line)
+            self.scheduleFlush()
         }
+    }
+
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        queue.asyncAfter(deadline: .now() + Self.flushInterval) { [weak self] in
+            self?.flush()
+        }
+    }
+
+    private func flush() {
+        flushScheduled = false
+        guard !pending.isEmpty else { return }
+        let data = Data(pending.joined(separator: "\n").appending("\n").utf8)
+        pending.removeAll()
+        Self.append(data, handle: &fileHandle)
     }
 
     /// Appends to the shared log file so the app can show what happened even when the
     /// tunnel process died during start (the in-memory ring dies with the process).
-    private static func appendToFile(_ line: String) {
+    private static func append(_ data: Data, handle: inout FileHandle?) {
         let url = AppGroup.tunnelLogURL
-        let data = Data((line + "\n").utf8)
-        if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > 256 * 1024 {
-            try? FileManager.default.removeItem(at: url)
+        if handle == nil {
+            if let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, size > maxFileBytes {
+                try? FileManager.default.removeItem(at: url)
+            }
+            if let existing = try? FileHandle(forWritingTo: url) {
+                _ = try? existing.seekToEnd()
+                handle = existing
+            } else {
+                try? data.write(to: url, options: [.atomic])
+                handle = try? FileHandle(forWritingTo: url)
+                _ = try? handle?.seekToEnd()
+                return
+            }
         }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url, options: [.atomic])
+        guard let handle else { return }
+        _ = try? handle.write(contentsOf: data)
+        // Rotate only when past the ceiling (checked per batch, not per line).
+        if let size = try? handle.seekToEnd(), size > maxFileBytes {
+            try? handle.close()
+            handle = nil
+            try? FileManager.default.removeItem(at: url)
         }
     }
 
