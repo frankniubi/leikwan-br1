@@ -1676,23 +1676,32 @@ final class TenantController extends BaseController
         $ipkBase = rtrim($this->artifactBaseUrl(), '/') . '/artifacts/files/openwrt';
 
         if ($hasClient) {
+            $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
             $amd64Command = 'opkg update && opkg install '
                 . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.0-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.0-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . ' && '
-                . 'leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
+                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
                 . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.0-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.0-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . ' && '
-                . 'leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
+                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+            // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
+            // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
+            // backend). Old devices get the core packages only — the SSH
+            // command-line journey (register/forwards/logs) works everywhere.
+            $legacyAmd64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.0-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.0-r1_x86_64.ipk') . $register;
+            $legacyArm64Command = 'opkg update && opkg install '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.0-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.0-r1_aarch64_generic.ipk') . $register;
         } else {
             $amd64Command = $ipkBase . '/amd64/';
             $arm64Command = $ipkBase . '/arm64/';
         }
 
         $description = $hasClient
-            ? '刷入固件或在现有 OpenWrt 24.10 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            ? '刷入固件或在现有 OpenWrt 23.05+ 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
             : '先在下方创建客户端，再回来复制带身份的安装命令。';
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
@@ -1700,12 +1709,24 @@ final class TenantController extends BaseController
             . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.0)', 'openwrt_leikwand')) . '</strong>'
             . '<div class="muted">' . $this->escape($description)
             . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
-            . '<details style="margin-top:10px;" open><summary>x86_64 / amd64 软路由</summary>'
+            . ($hasClient
+                ? '<details style="margin-top:10px;"><summary>OpenWrt 21.02 / 22.03 老设备（仅命令行，无网页界面）</summary>'
+                    . '<div class="muted" style="margin:6px 0;">这些版本的仓库没有 ucode，LuCI 集成无法运行；只装核心包，用 SSH 命令行动线，功能（转发监听 + 原生出口中继）与新版完全一致。</div>'
+                    . '<div class="muted">x86_64：</div>'
+                    . '<pre class="tenant-client-install__command">' . $this->escape($legacyAmd64Command) . '</pre>'
+                    . '<div class="muted">arm64：</div>'
+                    . '<pre class="tenant-client-install__command">' . $this->escape($legacyArm64Command) . '</pre>'
+                    . '<div class="actions">'
+                    . $this->renderCopyButton('复制 x86_64 命令', $legacyAmd64Command, 'secondary', '已复制', '复制失败')
+                    . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
+                    . '</div></details>'
+                : '')
+            . '<details style="margin-top:10px;" open><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
             . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备</summary>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05+）</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
