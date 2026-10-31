@@ -1451,7 +1451,7 @@ final class TenantController extends BaseController
             . $this->platformIcon('docker')
             . $this->escape($this->clientAppReleaseLabel('Docker · 全平台 (TCP+UDP)', 'docker_client_installer')) . '</strong>'
             . '<div class="muted">最纯粹的 TCP+UDP 转发容器，无 GUI、免 TUN：linux/amd64 与 linux/arm64 双架构，含私有 Registry（--image）与全平台宿主支持。</div>'
-            . '<details style="margin-top:10px;" open><summary>一键安装命令 · 复制即用</summary>'
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($dockerCommand) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 Docker 命令', $dockerCommand, 'secondary', '已复制', '复制失败')
@@ -1721,7 +1721,7 @@ final class TenantController extends BaseController
                     . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
                     . '</div></details>'
                 : '')
-            . '<details style="margin-top:10px;" open><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
+            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
