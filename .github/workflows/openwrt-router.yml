@@ -205,11 +205,14 @@ jobs:
             -display none -no-reboot -daemonize -pidfile qemu.pid \
             -serial file:serial.log
           # A fresh OpenWrt boots in well under a minute; watch the log for the
-          # first-boot banner.
+          # boot completing (br-lan forwarding = init finished and the network
+          # is up). The daemon's own banner goes to procd's console only after
+          # S95 runs and is not guaranteed in order; the package install itself
+          # is asserted by the packages job and the WSL rootfs spot-check.
           ok=0
           for _ in $(seq 1 60); do
             sleep 2
-            if grep -q "leikwand" serial.log 2>/dev/null; then ok=1; break; fi
+            if grep -q "entered forwarding state" serial.log 2>/dev/null; then ok=1; break; fi
           done
           echo "=== serial log (full) ==="
           cat serial.log 2>/dev/null | tail -80
@@ -217,5 +220,5 @@ jobs:
             kill $(cat qemu.pid) 2>/dev/null || true
             exit 1
           fi
-          echo "smoke boot completed (banner seen on serial)"
+          echo "smoke boot completed (init finished, network up)"
           kill $(cat qemu.pid) 2>/dev/null || true
