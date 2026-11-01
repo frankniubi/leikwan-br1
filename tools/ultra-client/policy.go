@@ -25,6 +25,11 @@ const (
 	// maxPolicyTTLSkew absorbs RFC 3339 second rounding and a small clock
 	// offset between the panel and this host on top of maxPolicyTTL.
 	maxPolicyTTLSkew           = 30 * time.Second
+
+	// maxLeaseGrace bounds how far past the Panel-issued expiry an installed
+	// grant may keep serving while the router cannot renew it. It is measured
+	// from the issued expiry, never from the previous extension.
+	maxLeaseGrace = 10 * time.Minute
 	maxQuotaBytes        int64 = 107374182400
 	maxRateMbps          int64 = 100000
 	selectionTierPaid          = "paid"
@@ -185,6 +190,16 @@ func (l *PolicyLimiter) Replace(rateMbps int64, quotaBytes int64, expiresAt time
 	l.generation = generation
 	l.revoked = false
 	return nil
+}
+
+// extendExpiry moves the expiry of the held generation without touching the
+// rate or quota state, so an extension cannot refill quota already consumed.
+func (l *PolicyLimiter) extendExpiry(generation string, until time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.generation == generation && until.After(l.expiresAt) {
+		l.expiresAt = until
+	}
 }
 
 func (l *PolicyLimiter) Revoke(generation string) {
@@ -385,6 +400,9 @@ type PolicyStore struct {
 	revocations           uint64
 	limiter               *PolicyLimiter
 	updates               chan struct{}
+	// graceBase is the Panel-issued expiry of the installed policy. Grace is
+	// always measured from it so repeated extensions cannot move the bound.
+	graceBase time.Time
 }
 
 func NewPolicyStore(config Config) *PolicyStore {
@@ -466,6 +484,7 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	s.seenGens[policy.PolicyGeneration] = struct{}{}
 	policyCopy := policy
 	s.policy = &policyCopy
+	s.graceBase = policy.ExpiresAt
 	s.candidates = make([]*ProviderLease, 0, len(leases))
 	selectedKey := providerLeaseIdentity(selected)
 	for index := range leases {
@@ -479,6 +498,56 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 		}
 	}
 	_ = s.limiter.Replace(policy.RateLimitMbps, policy.QuotaRemainingBytes, policy.ExpiresAt, policy.PolicyGeneration)
+	s.notifyLocked()
+	return nil
+}
+
+// ExtendGrace keeps the installed policy serving until until. It only moves the
+// validity of the grant and leases already held: no credential is accepted, the
+// limiter keeps its quota and rate state, and the bound is absolute, measured
+// from the Panel-issued expiry. Refused when the generation is not the one held
+// or the policy has already lapsed.
+func (s *PolicyStore) ExtendGrace(generation string, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.policy == nil || s.graceBase.IsZero() || s.policy.PolicyGeneration != generation {
+		return ErrPolicyExpired
+	}
+	if !s.policy.ExpiresAt.After(now) {
+		return ErrPolicyExpired
+	}
+	if !until.After(now) || until.After(s.graceBase.Add(maxLeaseGrace)) {
+		return ErrPolicyInvalid
+	}
+	if !until.After(s.policy.ExpiresAt) {
+		return nil
+	}
+	s.policy.ExpiresAt = until
+	for _, lease := range s.candidates {
+		if lease.ExpiresAt.Before(until) {
+			lease.ExpiresAt = until
+		}
+	}
+	s.limiter.extendExpiry(generation, until)
+	s.notifyLocked()
+	return nil
+}
+
+// StopGrace ends a grant that was being kept alive past its Panel expiry. It is
+// used when the Panel refuses the router explicitly. Unlike Revoke it does not
+// remember the generation, so a grant the Panel issues later can still install.
+func (s *PolicyStore) StopGrace(generation string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy == nil || s.policy.PolicyGeneration != generation {
+		return ErrPolicyExpired
+	}
+	s.wipeCandidatesLocked()
+	s.policy = nil
+	s.lease = nil
+	s.graceBase = time.Time{}
+	s.limiter.Revoke(generation)
 	s.notifyLocked()
 	return nil
 }

@@ -509,6 +509,49 @@ func (c *PanelClient) Probe(ctx context.Context) error {
 	return err
 }
 
+// downloadTimeout bounds one artifact download. The control-plane client's
+// 45s budget is sized for JSON, not a multi-megabyte ipk over a slow uplink.
+const downloadTimeout = 5 * time.Minute
+
+// Download fetches a Panel-relative artifact path (for example
+// "/artifacts/files/openwrt/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk")
+// into w, reading at most limit bytes. Only paths on the Panel itself are
+// accepted: the caller verifies the sha256 the same Panel published, so
+// letting the pull name an arbitrary host would add nothing but exposure.
+func (c *PanelClient) Download(ctx context.Context, path string, limit int64, w io.Writer) (int64, error) {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return 0, fmt.Errorf("artifact path %q is not panel-relative", path)
+	}
+	base := c.baseURL()
+	if base == "" {
+		return 0, errNoEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.headers(req)
+	req.Header.Set("Accept", "*/*")
+	client := &http.Client{Timeout: downloadTimeout, Transport: c.http.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.noteError(err)
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("artifact %s returned %d", path, resp.StatusCode)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("artifact %s exceeds %d bytes", path, limit)
+	}
+	return n, nil
+}
+
 // urlEncode escapes the small set of characters that appear in revisions.
 func urlEncode(value string) string {
 	var b strings.Builder

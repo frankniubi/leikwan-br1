@@ -54,6 +54,90 @@ func TestNativeSocks5ConnectRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// fakeStreamRelay answers every stream handshake with reply, then either holds
+// the connection (hold) or closes it after closeAfter.
+func fakeStreamRelay(t *testing.T, reply []byte, closeAfter time.Duration) (string, int) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				buffer := make([]byte, 512)
+				if _, err := conn.Read(buffer); err != nil {
+					return
+				}
+				_, _ = conn.Write(reply)
+				if closeAfter > 0 {
+					time.Sleep(closeAfter)
+					return
+				}
+				_, _ = io.Copy(io.Discard, conn)
+			}(conn)
+		}
+	}()
+	address := listener.Addr().(*net.TCPAddr)
+	return address.IP.String(), address.Port
+}
+
+// A relay that refuses a rotated credential answers 05 02 05 02 and closes a
+// second later. The dial must treat that as a candidate failure and land on a
+// sibling, instead of handing the dead stream to the SOCKS client (which saw
+// an empty reply on every request).
+func TestNativeStreamDialSkipsARelayThatRefusesTheCredential(t *testing.T) {
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	policy.Protocol = nativeSocks5Protocol
+	policy.Purpose = nativeSocks5Purpose
+	policy.Native = true
+	policy.Transport = "tcp+udp"
+	policy.TargetDigest = strings.Repeat("b", 64)
+	policy.Direction = "SHA -> TYO"
+	policy.RouteScope = "global"
+	policy.RoutePolicy = string(nativeRoutePolicyUnrestricted)
+	refusing := testLease(policy, strings.Repeat("c", 64))
+	refusing.Transport = policy.Transport
+	refusing.CandidateKeyHash = strings.Repeat("d", 64)
+	refusing.User = []byte("user-0123456789x")
+	refusing.Password = []byte("pass-0123456789x")
+	refusing.IP, refusing.Port = fakeStreamRelay(t, []byte{5, 2, 5, 2}, 200*time.Millisecond)
+	working := testLease(policy, strings.Repeat("e", 64))
+	working.Transport = policy.Transport
+	working.SelectionRef = "native-selection-reference-second"
+	working.CandidateKeyHash = strings.Repeat("f", 64)
+	working.User = []byte("user-0123456789y")
+	working.Password = []byte("pass-0123456789y")
+	working.IP, working.Port = fakeStreamRelay(t, []byte{5, 2, 1, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1}, 0)
+	store := NewPolicyStore(Config{ForwardID: policy.ForwardID, NativeSocks5: true, Target: "1.1.1.1:443", NativeRoutePolicy: nativeRoutePolicyUnrestricted})
+	if err := store.ReplaceBatch(policy, refusing, []ProviderLease{refusing, working}); err != nil {
+		t.Fatalf("replace batch: %v", err)
+	}
+	snapshot, ok := store.Snapshot()
+	if !ok {
+		t.Fatal("missing native snapshot")
+	}
+	connection, selected, err := dialNativeStreamWithCandidates(
+		context.Background(), store, snapshot, "1.1.1.1", 80, 3*time.Second,
+		func(lease ProviderLease, host string, port int, timeout time.Duration) (net.Conn, error) {
+			return dialNativeStreamConfig(Config{}, lease, host, port, timeout)
+		}, nil)
+	if err != nil {
+		t.Fatalf("native candidate dial: %v", err)
+	}
+	defer connection.Close()
+	defer selected.wipe()
+	if selected.CandidateKeyHash != working.CandidateKeyHash {
+		t.Fatalf("selected candidate %q, want the relay that accepted the credential", selected.CandidateKeyHash)
+	}
+}
+
 func TestNativeStreamCandidateDialRetriesSiblingAndReportsFailure(t *testing.T) {
 	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
 	policy.Protocol = nativeSocks5Protocol

@@ -153,6 +153,7 @@ func (a *Agent) submitDiagnostics(ctx context.Context, requestToken string) {
 	}
 	a.mu.Lock()
 	a.diagToken = ""
+	a.diagDoneToken = requestToken
 	a.mu.Unlock()
 	a.log.Info("diagnostics", "submitted diagnostics for panel request %s", shortRevision(requestToken))
 }

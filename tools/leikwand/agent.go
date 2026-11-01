@@ -22,6 +22,10 @@ type runtimeState struct {
 	policy   *UltraPolicy
 
 	leaseExpiry time.Time
+	// graceUntil is set while the runtime is serving the installed grant past
+	// its Panel expiry because the Panel could not be reached to renew it. Zero
+	// means the runtime holds no grace.
+	graceUntil time.Time
 	// renewNotBefore holds renewals back until the grant can be renewed.
 	renewNotBefore time.Time
 	leaseIDs       []string
@@ -81,11 +85,22 @@ type Agent struct {
 	lastPullErr  string
 	clientMeta   ClientMeta
 	diagToken    string
+	// diagDoneToken is the last request the router answered. The Panel keeps
+	// returning the token until its own result row clears it, so without this
+	// the same request would be re-run on every pull.
+	diagDoneToken string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
 	lastPullCode string
 	pullLimit    *panelError
+
+	// refusedGenerations holds grant generations the lease plane answered with
+	// policy_generation_invalid, keyed by forward. A refused generation is
+	// never retried and the next pull is a full one, so the forward picks up
+	// the rotated grant instead of sitting without a lease until the old
+	// grant's renew window opens.
+	refusedGenerations map[int]string
 
 	reconcile chan string
 	startedAt time.Time
@@ -110,21 +125,22 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 	panel.egress.log = log
 	panel.leaseKeys = newLeaseKeyStore(cfg.DataDir, log)
 	return &Agent{
-		cfg:              cfg,
-		store:            store,
-		secrets:          secrets,
-		panel:            panel,
-		deviceID:         deviceID,
-		deviceNm:         deviceNm,
-		log:              log,
-		runtimes:         map[int]*runtimeState{},
-		panelStopped:     map[int]string{},
-		forwards:         map[int]ForwardConfig{},
-		nativeForwards:   map[int]ForwardConfig{},
-		reconcile:        make(chan string, 16),
-		forceStatusFlush: make(chan struct{}, 1),
-		gatewaySignal:    make(chan struct{}, 1),
-		startedAt:        time.Now(),
+		cfg:                cfg,
+		store:              store,
+		secrets:            secrets,
+		panel:              panel,
+		deviceID:           deviceID,
+		deviceNm:           deviceNm,
+		log:                log,
+		runtimes:           map[int]*runtimeState{},
+		panelStopped:       map[int]string{},
+		forwards:           map[int]ForwardConfig{},
+		nativeForwards:     map[int]ForwardConfig{},
+		reconcile:          make(chan string, 16),
+		forceStatusFlush:   make(chan struct{}, 1),
+		gatewaySignal:      make(chan struct{}, 1),
+		startedAt:          time.Now(),
+		refusedGenerations: map[int]string{},
 	}
 }
 
@@ -288,6 +304,14 @@ func (a *Agent) freshPull(ctx context.Context) error {
 // forward's grant is past renew_after (or close to expiry) the next pull is a
 // full one. Native carriers are excluded; the gateway refreshes those itself.
 func (a *Agent) grantRefreshDue(now time.Time) bool {
+	a.mu.Lock()
+	pending := len(a.refusedGenerations) > 0
+	a.mu.Unlock()
+	if pending {
+		// A generation the lease plane refused cannot be renewed, so a 304
+		// would leave the forward dead until the old grant's renew window.
+		return true
+	}
 	next, ok := a.nextGrantRefresh()
 	return ok && !next.After(now)
 }
@@ -373,6 +397,13 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 
 	a.mu.Lock()
 	a.clientMeta = response.Client
+	// The Panel can only ask a router for diagnostics through the pull, and it
+	// answers by POSTing the report from the heartbeat loop. The token was
+	// parsed but never stored, so a console diagnostics request never ran on a
+	// router at all.
+	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
+		a.diagToken = token
+	}
 	a.lastPullAt = time.Now()
 	a.configLoaded = true
 	a.clearPullFailureLocked()

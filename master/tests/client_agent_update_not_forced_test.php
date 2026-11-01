@@ -72,4 +72,21 @@ if (preg_match("/^\\s{16}'desired_[a-z_]+' =>/m", $source) === 1) {
     fail('a desired_* field is emitted outside the request gate');
 }
 
+// Routers: the ipk URL rides inside the same gate, so a blank request blanks it too.
+$router = $desired + ['desired_agent_url' => '/artifacts/files/openwrt/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk'];
+if (ClientAgentController::desiredClientArtifacts(false, $router)['desired_agent_url'] !== '') {
+    fail('without a request the router must not be handed an ipk to install');
+}
+$gateAt = strpos($source, '...self::desiredClientArtifacts($updateRequested, [');
+$urlAt = strpos($source, "'desired_agent_url' =>");
+$gateEndAt = strpos($source, "'online_device_limit' =>");
+if ($gateAt === false || $urlAt === false || $gateEndAt === false || !($gateAt < $urlAt && $urlAt < $gateEndAt)) {
+    fail('desired_agent_url must be emitted inside the request gate');
+}
+// leikwand keeps a degraded "linux" platform tag for its process lifetime; its
+// User-Agent is what keeps it off the python agent's version and file.
+if (!str_contains($source, "str_starts_with(\$userAgent, 'leikwan-openwrt-agent/')")) {
+    fail('a router that degraded its platform tag must still be recognised as a router');
+}
+
 echo "ok\n";

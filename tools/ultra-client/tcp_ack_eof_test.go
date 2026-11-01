@@ -20,6 +20,55 @@ func TestStreamAckThenEOFIsHandshakeFailure(t *testing.T) {
 	}
 }
 
+// A relay that refuses the credential answers 05 02 05 02 and closes about a
+// second later. That must fail the handshake (so the dial falls back and then
+// fails over) instead of handing a dead stream to the application.
+func TestStreamReauthRequestThenEOFIsAuthenticationRejected(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	go func() {
+		defer server.Close()
+		server.Write([]byte{5, 2, 5, 2})
+	}()
+	if _, err := readStreamAcks(client); !errors.Is(err, errStreamAuthenticationRejected) {
+		t.Fatalf("readStreamAcks = %v, want errStreamAuthenticationRejected", err)
+	}
+	if !isRetryableHandshakeError(markHandshakePhase(errStreamAuthenticationRejected)) {
+		t.Fatal("a refused credential must stay retryable so the dial moves on")
+	}
+}
+
+// The older dialect that repeats the method selection is still accepted when
+// it confirms the target with a complete success frame.
+func TestStreamReauthAckWithSuccessFrameIsAccepted(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	payload := []byte("payload")
+	go func() {
+		_, _ = server.Write(append([]byte{5, 2, 5, 2, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1}, payload...))
+	}()
+	reader, err := readStreamAcks(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, got); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("payload after success frame = %q (%v), want %q", got, err, payload)
+	}
+}
+
+func TestStreamReauthAckWithFailureFrameIsCommandRejected(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	go func() {
+		defer server.Close()
+		server.Write([]byte{5, 2, 5, 2, 4, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+	}()
+	if _, err := readStreamAcks(client); !errors.Is(err, errStreamCommandRejected) {
+		t.Fatalf("readStreamAcks = %v, want errStreamCommandRejected", err)
+	}
+}
+
 func TestStreamAckWithShortPayloadThenEOFPreservesPayload(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
