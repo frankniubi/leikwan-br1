@@ -227,6 +227,7 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 		state.leaseFailures++
 		state.lastLeaseErr = redactSecrets(err.Error())
 		a.log.Warn("lease", "forward %d lease request failed (%d): %v%s", state.forward.ForwardID, state.leaseFailures, err, leaseRefusalHint(err))
+		a.noteGenerationRefused(state, err)
 		return
 	}
 	a.noteUnsealFailures("lease", state.forward.ForwardID, response)
@@ -279,6 +280,7 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	state.leaseInstalledAt = time.Now()
 
 	selected, _ := reply["policy_generation"].(string)
+	a.clearGenerationRefusal(state.forward.ForwardID, policyGenerationOf(state.forward))
 	a.log.Info("lease", "forward %d installed %d candidates, generation=%s expires=%s",
 		state.forward.ForwardID, len(response.Leases), shortRevision(selected), formatRFC3339(expiry))
 
@@ -369,6 +371,53 @@ func policyGenerationOf(forward ForwardConfig) string {
 // are otherwise handled like any other lease error: counted, backed off and
 // retried at the normal cadence. A key conflict deliberately does not rotate
 // the device key, which would only fight the legitimate holder of the pin.
+// generationRefused reports whether err is the lease plane refusing the grant
+// generation the request carried. Only that code means "fetch a new grant":
+// every other refusal describes the forward or the quota, which a pull cannot
+// change.
+func generationRefused(err error) bool {
+	var pe *panelError
+	return errors.As(err, &pe) && pe.Code == codePolicyGenerationInvalid
+}
+
+// noteGenerationRefused records a refused generation and makes the next pull a
+// full one. Without it the router keeps presenting a generation the Panel has
+// already retired, and its next full pull is up to a grant lifetime away: the
+// forward runs with no lease until then, which looks like the connection
+// dropping and returning. Mirrors the desktop's RecordRefusedPolicyGeneration.
+func (a *Agent) noteGenerationRefused(state *runtimeState, err error) {
+	if state == nil || !generationRefused(err) {
+		return
+	}
+	generation := policyGenerationOf(state.forward)
+	if generation == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.refusedGenerations == nil {
+		a.refusedGenerations = map[int]string{}
+	}
+	a.refusedGenerations[state.forward.ForwardID] = generation
+	a.mu.Unlock()
+
+	// The refused grant cannot renew, so drop the hold the lease loop keeps
+	// while it waits for renew_after; the fresh grant lifts it for real.
+	state.renewNotBefore = time.Time{}
+	a.log.Warn("lease", "forward %d grant generation %s was refused; pulling a fresh grant",
+		state.forward.ForwardID, shortRevision(generation))
+	a.triggerReconcile("generation_refused")
+}
+
+// clearGenerationRefusal forgets a refusal once the forward holds a different
+// generation, which is the grant that replaced the refused one.
+func (a *Agent) clearGenerationRefusal(forwardID int, generation string) {
+	a.mu.Lock()
+	if current, ok := a.refusedGenerations[forwardID]; ok && current != generation {
+		delete(a.refusedGenerations, forwardID)
+	}
+	a.mu.Unlock()
+}
+
 func leaseRefusalHint(err error) string {
 	var pe *panelError
 	if !errors.As(err, &pe) {

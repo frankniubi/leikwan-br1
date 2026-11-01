@@ -87,6 +87,13 @@ type Agent struct {
 	lastPullCode string
 	pullLimit    *panelError
 
+	// refusedGenerations holds grant generations the lease plane answered with
+	// policy_generation_invalid, keyed by forward. A refused generation is
+	// never retried and the next pull is a full one, so the forward picks up
+	// the rotated grant instead of sitting without a lease until the old
+	// grant's renew window opens.
+	refusedGenerations map[int]string
+
 	reconcile chan string
 	startedAt time.Time
 
@@ -110,21 +117,22 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 	panel.egress.log = log
 	panel.leaseKeys = newLeaseKeyStore(cfg.DataDir, log)
 	return &Agent{
-		cfg:              cfg,
-		store:            store,
-		secrets:          secrets,
-		panel:            panel,
-		deviceID:         deviceID,
-		deviceNm:         deviceNm,
-		log:              log,
-		runtimes:         map[int]*runtimeState{},
-		panelStopped:     map[int]string{},
-		forwards:         map[int]ForwardConfig{},
-		nativeForwards:   map[int]ForwardConfig{},
-		reconcile:        make(chan string, 16),
-		forceStatusFlush: make(chan struct{}, 1),
-		gatewaySignal:    make(chan struct{}, 1),
-		startedAt:        time.Now(),
+		cfg:                cfg,
+		store:              store,
+		secrets:            secrets,
+		panel:              panel,
+		deviceID:           deviceID,
+		deviceNm:           deviceNm,
+		log:                log,
+		runtimes:           map[int]*runtimeState{},
+		panelStopped:       map[int]string{},
+		forwards:           map[int]ForwardConfig{},
+		nativeForwards:     map[int]ForwardConfig{},
+		reconcile:          make(chan string, 16),
+		forceStatusFlush:   make(chan struct{}, 1),
+		gatewaySignal:      make(chan struct{}, 1),
+		startedAt:          time.Now(),
+		refusedGenerations: map[int]string{},
 	}
 }
 
@@ -288,6 +296,14 @@ func (a *Agent) freshPull(ctx context.Context) error {
 // forward's grant is past renew_after (or close to expiry) the next pull is a
 // full one. Native carriers are excluded; the gateway refreshes those itself.
 func (a *Agent) grantRefreshDue(now time.Time) bool {
+	a.mu.Lock()
+	pending := len(a.refusedGenerations) > 0
+	a.mu.Unlock()
+	if pending {
+		// A generation the lease plane refused cannot be renewed, so a 304
+		// would leave the forward dead until the old grant's renew window.
+		return true
+	}
 	next, ok := a.nextGrantRefresh()
 	return ok && !next.After(now)
 }
