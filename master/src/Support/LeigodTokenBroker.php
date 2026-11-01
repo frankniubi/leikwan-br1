@@ -65,10 +65,11 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         if ($clientId <= 0) {
             return [];
         }
-        $requested = $this->eligibleForwards(
-            (new ExternalUoTPool($this->config))->assign($clientId, $deviceId,
-                ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId))
-        );
+        $requested = $this->eligibleForwards($this->assignExternalUoT(
+            $clientId,
+            $deviceId,
+            ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId)
+        ));
         if ($requested === []) {
             return [];
         }
@@ -287,6 +288,36 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             // A cache write failure must not invalidate a fresh grant.
         }
         return $result;
+    }
+
+    /**
+     * Route each forward's external UoT sidecar through the pool one forward
+     * at a time. The pool fails closed when a forward's managed origin has no
+     * healthy node, and that must cost only that forward its grant. Assigned
+     * as one batch, a single late pool heartbeat withdrew every grant on the
+     * device, forwards that do not use the pool included, and a router whose
+     * carrier lost its grant in the middle of a renewal crashed on it.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<int, array<string, mixed>>
+     */
+    private function assignExternalUoT(int $clientId, string $deviceId, array $forwards): array
+    {
+        $pool = new ExternalUoTPool($this->config);
+        $assigned = [];
+        foreach ($forwards as $forward) {
+            try {
+                $assigned[] = $pool->assign($clientId, $deviceId, [$forward])[0];
+            } catch (ApiException $exception) {
+                error_log(sprintf(
+                    'ultra_grant_withheld client=%d forward=%d reason=%s',
+                    $clientId,
+                    is_array($forward) ? (int) ($forward['forward_id'] ?? $forward['id'] ?? 0) : 0,
+                    $exception->getMessage()
+                ));
+            }
+        }
+        return $assigned;
     }
 
     /** @param array<int, array<string, mixed>> $forwards @return array<string, array<string, mixed>> */

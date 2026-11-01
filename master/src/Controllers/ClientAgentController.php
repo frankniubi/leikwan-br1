@@ -1309,7 +1309,15 @@ final class ClientAgentController extends BaseController
                     $offlineValiditySeconds
                 )
                 : $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
-        } catch (\Throwable) {
+        } catch (\Throwable $throwable) {
+            // Every Ultra grant on this pull is withdrawn, so say why: this
+            // path was silent while it took a router's carriers down.
+            error_log(sprintf(
+                'ultra_grants_withdrawn client=%d error=%s: %s',
+                $clientId,
+                $throwable::class,
+                $throwable->getMessage()
+            ));
             return $policyV2 ? $this->scrubUltraForwards($forwards) : $forwards;
         }
         if ($grants === []) {
