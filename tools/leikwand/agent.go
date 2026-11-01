@@ -389,6 +389,13 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 
 	a.mu.Lock()
 	a.clientMeta = response.Client
+	// The Panel can only ask a router for diagnostics through the pull, and it
+	// answers by POSTing the report from the heartbeat loop. The token was
+	// parsed but never stored, so a console diagnostics request never ran on a
+	// router at all.
+	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" {
+		a.diagToken = token
+	}
 	a.lastPullAt = time.Now()
 	a.configLoaded = true
 	a.clearPullFailureLocked()

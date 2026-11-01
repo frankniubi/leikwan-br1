@@ -115,3 +115,30 @@ func TestGenerationRefusalTriggersAFullPull(t *testing.T) {
 		t.Fatalf("since_revision after refusal = %q, want a full pull", got)
 	}
 }
+
+// The Panel can only request diagnostics through the pull. The token was
+// parsed into ClientMeta but never stored, so a console diagnostics request
+// never ran on a router: the panel stayed at "requested" for ever.
+func TestPullStoresDiagnosticsToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"ok": true, "config_revision": "rev-1", "forwards": []any{},
+			"client": map[string]any{"id": 1, "diag_request_token": "tok-abc"},
+		})
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	a := newTestAgent(t, cfg)
+	a.panel = newPanelClient(cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
+	if err := a.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	a.mu.Lock()
+	token := a.diagToken
+	a.mu.Unlock()
+	if token != "tok-abc" {
+		t.Fatalf("diagToken = %q, want tok-abc", token)
+	}
+}
