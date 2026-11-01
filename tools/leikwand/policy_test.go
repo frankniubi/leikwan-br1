@@ -66,6 +66,16 @@ func TestValidatePolicyRejectsNarrowedGrants(t *testing.T) {
 	}
 }
 
+// A pull can carry a forward without ultra_access. That must be an ordinary
+// failure, not a nil dereference: a panic in the gateway loop took a router
+// down until procd gave up restarting it.
+func TestValidatePolicyRejectsAMissingGrant(t *testing.T) {
+	forward := ForwardConfig{ForwardID: 7, Target: "example.com:443"}
+	if got := validatePolicy(nil, forward, time.Now()); got != "no_grant" {
+		t.Fatalf("validatePolicy(nil) = %q, want no_grant", got)
+	}
+}
+
 func TestAcceptForwardSelectsOnlyUltraForwards(t *testing.T) {
 	base := ForwardConfig{ForwardID: 1, BackendMode: "ultra", ServiceStatus: "active", ClientMode: "single"}
 	if !acceptForward(base) {

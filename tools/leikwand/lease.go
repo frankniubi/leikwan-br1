@@ -123,6 +123,12 @@ func minTime(a, b time.Time) time.Time {
 // validatePolicy mirrors the desktop client's UltraPolicy validation. A grant
 // that fails any check must not be used, and must not be silently downgraded.
 func validatePolicy(policy *UltraPolicy, forward ForwardConfig, now time.Time) string {
+	// The Panel omits ultra_access for a forward it cannot grant on this pull
+	// (e.g. no fresh line material). That is a pending grant, not a
+	// revocation: callers keep what they hold and retry.
+	if policy == nil {
+		return "no_grant"
+	}
 	if !strings.EqualFold(strings.TrimSpace(policy.Protocol), "leikwan-ultra-policy-v2") {
 		return "protocol"
 	}

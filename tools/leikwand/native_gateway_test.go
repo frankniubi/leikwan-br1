@@ -639,6 +639,65 @@ func TestNativeRenewalReachesTheRunningRelay(t *testing.T) {
 	}
 }
 
+// A renewal pull that carries the carrier without ultra_access must fail like
+// any other refused renewal: no panic, the running relay keeps its current
+// lease, and the next reconcile retries. This is the router outage of
+// 2026-11-01 (validatePolicy(nil) in renewLease, then a procd crash loop).
+func TestNativeRenewalSurvivesAMissingGrant(t *testing.T) {
+	now := time.Now()
+	plan := testPlan(t, defaultConfig(), testCapability(false))
+	leases := 0
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/client/configs/pull":
+			forward := testCarrierForwards(now)[180]
+			forward.UltraAccess = nil
+			writeJSON(t, w, map[string]any{"ok": true, "config_revision": "rev-1",
+				"forwards": []any{forward}, "native_outbound": testCapability(false)})
+		case "/api/client/ultra/lease":
+			leases++
+			writeJSON(t, w, map[string]any{"ok": true, "leases": []LeaseFrame{goodNativeLease(plan, now)}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	cfg.FallbackURL = ""
+	agent := newTestAgent(t, cfg)
+	agent.panel.setToken("token", 3)
+
+	manager := newGatewayManager(agent)
+	relay := startTestChild(t)
+	relay.native = true
+	held := now.Add(2 * time.Minute)
+	manager.primary.relay = relay
+	manager.primary.relayKey = plan.key()
+	manager.primary.leaseExpiry = held
+
+	err := manager.renewLease(context.Background(), &manager.primary, plan.carrierPlan)
+	if err == nil || !strings.Contains(err.Error(), "no_grant") {
+		t.Fatalf("renewLease error = %v, want a no_grant refusal", err)
+	}
+	mu.Lock()
+	minted := leases
+	mu.Unlock()
+	if minted != 0 {
+		t.Fatalf("a lease was requested without a grant (%d requests)", minted)
+	}
+	if manager.primary.relay != relay || !relay.alive() {
+		t.Fatal("a missing grant must not stop the relay")
+	}
+	if !manager.primary.leaseExpiry.Equal(held) || !manager.leaseValid(&manager.primary, time.Now()) {
+		t.Fatal("the lease already held must stay in force until it expires")
+	}
+}
+
 // TestHelperProcessSleep is the child startTestChild runs: alive() needs a
 // real process, and nothing in these tests may signal the test binary itself.
 func TestHelperProcessSleep(t *testing.T) {
