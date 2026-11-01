@@ -228,6 +228,8 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 		state.lastLeaseErr = redactSecrets(err.Error())
 		a.log.Warn("lease", "forward %d lease request failed (%d): %v%s", state.forward.ForwardID, state.leaseFailures, err, leaseRefusalHint(err))
 		a.noteGenerationRefused(state, err)
+		a.stopRuntimeGrace(state, err)
+		a.extendRuntimeGrace(state, err)
 		return
 	}
 	a.noteUnsealFailures("lease", state.forward.ForwardID, response)
@@ -278,6 +280,7 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	// health loop uses this timestamp to distinguish "no grant yet" from
 	// "listener lost".
 	state.leaseInstalledAt = time.Now()
+	state.graceUntil = time.Time{}
 
 	selected, _ := reply["policy_generation"].(string)
 	a.clearGenerationRefusal(state.forward.ForwardID, policyGenerationOf(state.forward))
