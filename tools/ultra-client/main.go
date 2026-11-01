@@ -328,6 +328,23 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
 			return nil, errStreamAuthenticationRejected
 		}
+		if bytes.Equal(second, []byte{5, 2}) {
+			// A second method selection is the relay asking to authenticate
+			// again: it refused the credential (seen live when a line's
+			// credential was rotated before its material expired). The relay
+			// then closes about a second later without attaching a target.
+			// Accept the reply only when a complete success frame follows, as
+			// the first implementation required; otherwise this dead stream
+			// reached the application, which saw an empty reply and never
+			// moved to another candidate.
+			final := make([]byte, 10)
+			if _, err := io.ReadFull(reader, final); err != nil || !validLegacyStreamFinal(final) {
+				return nil, errStreamAuthenticationRejected
+			}
+			if final[2] == 0 {
+				return nil, errStreamCommandRejected
+			}
+		}
 		if bytes.Equal(second, []byte{1, 0}) {
 			optionalDeadline := time.Now().Add(100 * time.Millisecond)
 			if optionalDeadline.After(deadline) {
