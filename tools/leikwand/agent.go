@@ -22,6 +22,10 @@ type runtimeState struct {
 	policy   *UltraPolicy
 
 	leaseExpiry time.Time
+	// graceUntil is set while the runtime is serving the installed grant past
+	// its Panel expiry because the Panel could not be reached to renew it. Zero
+	// means the runtime holds no grace.
+	graceUntil time.Time
 	// renewNotBefore holds renewals back until the grant can be renewed.
 	renewNotBefore time.Time
 	leaseIDs       []string
@@ -81,6 +85,10 @@ type Agent struct {
 	lastPullErr  string
 	clientMeta   ClientMeta
 	diagToken    string
+	// diagDoneToken is the last request the router answered. The Panel keeps
+	// returning the token until its own result row clears it, so without this
+	// the same request would be re-run on every pull.
+	diagDoneToken string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -393,7 +401,7 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	// answers by POSTing the report from the heartbeat loop. The token was
 	// parsed but never stored, so a console diagnostics request never ran on a
 	// router at all.
-	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" {
+	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
 		a.diagToken = token
 	}
 	a.lastPullAt = time.Now()

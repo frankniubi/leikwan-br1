@@ -193,6 +193,10 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		return
 	}
 	defer clearBytes(payload)
+	if reply, handled := handleControlCommand(payload, server.store); handled {
+		_ = writeJSONFrame(file, reply)
+		return
+	}
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
 	if err == nil {
 		leases, err = applyCandidateQuarantine(server.config, leases, time.Now(), server.status)

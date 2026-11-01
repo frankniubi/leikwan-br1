@@ -135,7 +135,23 @@ func (c ultraControl) sendLeaseBatch(ctx context.Context, leases []LeaseFrame) (
 	if len(payload) == 0 || len(payload) > maxControlPayload {
 		return nil, errors.New("lease batch exceeds control frame limit")
 	}
+	return c.exchange(ctx, payload)
+}
 
+// sendCommand sends an out-of-band instruction (grace extension or stop) on the
+// same socket. The runtime answers with the same ok/error envelope.
+func (c ultraControl) sendCommand(ctx context.Context, command map[string]any) (map[string]any, error) {
+	payload, err := json.Marshal(command)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 || len(payload) > maxControlPayload {
+		return nil, errors.New("control command exceeds control frame limit")
+	}
+	return c.exchange(ctx, payload)
+}
+
+func (c ultraControl) exchange(ctx context.Context, payload []byte) (map[string]any, error) {
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
 	if err != nil {
