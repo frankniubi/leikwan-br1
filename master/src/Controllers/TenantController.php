@@ -1658,7 +1658,7 @@ final class TenantController extends BaseController
     /**
      * OpenWrt card for the app center.
      *
-     * The router edition (leikwand 1.2.1) onboards exactly like the headless
+     * The router edition (leikwand 1.2.2) onboards exactly like the headless
      * clients: paste the panel-issued client id and agent token into LuCI (or
      * run `leikwand ctl register` over SSH). The card renders the ipk install
      * command for the router's architecture and a ready-made register command
@@ -1680,23 +1680,23 @@ final class TenantController extends BaseController
         if ($hasClient) {
             $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
             $amd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.1-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.1-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.2-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.2-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.1-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.2-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
             // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
             // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
             // backend). Old devices get the core packages only — the SSH
             // command-line journey (register/forwards/logs) works everywhere.
             $legacyAmd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.1-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.1-r1_x86_64.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.2-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.2-r1_x86_64.ipk') . $register;
             $legacyArm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.1-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.1-r1_aarch64_generic.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.2-r1_aarch64_generic.ipk') . $register;
         } else {
             $amd64Command = $ipkBase . '/amd64/';
             $arm64Command = $ipkBase . '/arm64/';
@@ -1708,7 +1708,7 @@ final class TenantController extends BaseController
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
-            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.1)', 'openwrt_leikwand')) . '</strong>'
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.2)', 'openwrt_leikwand')) . '</strong>'
             . '<div class="muted">' . $this->escape($description)
             . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
             . ($hasClient

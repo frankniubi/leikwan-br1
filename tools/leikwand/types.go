@@ -37,6 +37,7 @@ type ClientMeta struct {
 	UpdateRequestToken string          `json:"agent_update_request_token"`
 	DesiredAgentVer    string          `json:"desired_agent_version"`
 	DesiredAgentSHA    string          `json:"desired_agent_sha256"`
+	DesiredAgentURL    string          `json:"desired_agent_url"`
 	DesiredUltraVer    string          `json:"desired_ultra_runtime_version"`
 	DesiredUltraSHA    string          `json:"desired_ultra_runtime_sha256"`
 	OnlineDeviceLimit  int             `json:"online_device_limit"`
