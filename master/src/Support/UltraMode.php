@@ -50,14 +50,22 @@ final class UltraMode
     /**
      * Quota slice of a long grant: the most an offline device can overspend.
      * ULTRA_GRANT_QUOTA_SLICE_BYTES overrides the computed default, but never
-     * below the renewal-safety floor (2 renew intervals at the forward's rate).
+     * below the renewal-safety floor (3 renew intervals at the forward's rate:
+     * one interval covers the drain, the other two absorb renewal jitter and
+     * one failed renewal round trip).
      */
     public const GRANT_QUOTA_SLICE_ENABLED_KEY = 'ULTRA_GRANT_QUOTA_SLICE_ENABLED';
     public const GRANT_QUOTA_SLICE_KEY = 'ULTRA_GRANT_QUOTA_SLICE_BYTES';
     public const GRANT_QUOTA_UNLIMITED_RATE_KEY = 'ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS';
     public const MIN_GRANT_QUOTA_SLICE_BYTES = 1073741824;
     public const DEFAULT_UNLIMITED_RATE_QUOTA_SLICE_BYTES = 10737418240;
-    public const DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS = 1000;
+    /**
+     * Assumed top speed of an unlimited forward when sizing its slice. The
+     * observed fleet ceiling is ~2.5 Gbit/s (multi-gigabit plan lines), so the
+     * old 1000 assumption under-sized slices and let fast downloads drain them
+     * mid-flight before the next renewal.
+     */
+    public const DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS = 2500;
     /** How long before material expiry the panel asks the source agent for fresh material. */
     public const MATERIAL_REFRESH_WINDOW_KEY = 'ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS';
     public const DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS = 600;

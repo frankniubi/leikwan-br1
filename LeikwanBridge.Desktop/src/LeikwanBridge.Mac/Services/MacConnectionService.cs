@@ -100,6 +100,58 @@ public sealed class MacConnectionService : IMacConnectionService
             && _snapshot.State == MacConnectionState.Connected;
 
     /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained, so the caller renews the lease before active downloads pause
+    /// on the runtime's bounded refill wait. A snapshot without the field
+    /// (older runtime) reads as false, keeping the expiry-only cadence.
+    /// </summary>
+    public bool IsNativeQuotaLow()
+    {
+        if (_activeNativeLease is not { } lease
+            || _snapshot.State != MacConnectionState.Connected)
+            return false;
+        return MacUltraRuntimeStatusReader.FindNativeRelayStatusPath(_paths.RuntimeDirectory, lease.ForwardId)
+            is { } statusPath
+            && ReadQuotaRemaining(statusPath) is long remaining
+            && remaining < NativeQuotaRenewalRemainingBytes;
+    }
+
+    /// <summary>
+    /// Local slice remainder below which a native lease is renewed early; see
+    /// <see cref="IsNativeQuotaLow"/>. Matches the Windows value: ~7 s of drain
+    /// time at the observed fleet ceiling, plus the refresh round trip.
+    /// </summary>
+    public const long NativeQuotaRenewalRemainingBytes = 2L * 1024 * 1024 * 1024;
+
+    /// <summary>Reads "quota_remaining_bytes" from one status snapshot; null when absent or malformed.</summary>
+    private static long? ReadQuotaRemaining(string statusPath)
+    {
+        try
+        {
+            var info = new FileInfo(statusPath);
+            if (!info.Exists || info.Length is <= 0 or > 64 * 1024)
+                return null;
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(statusPath));
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("quota_remaining_bytes", out var element)
+                || element.ValueKind != System.Text.Json.JsonValueKind.Number
+                || !element.TryGetInt64(out var value)
+                || value < 0)
+                return null;
+            return value;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Text.Json.JsonException
+            or InvalidOperationException
+            or FormatException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Payload ceiling the native relay published for the live association, or 0 while no
     /// native connection is up or the runtime has not measured one yet.
     /// </summary>

@@ -328,6 +328,23 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
 			return nil, errStreamAuthenticationRejected
 		}
+		if bytes.Equal(second, []byte{5, 2}) {
+			// A second method selection is the relay asking to authenticate
+			// again: it refused the credential (seen live when a line's
+			// credential was rotated before its material expired). The relay
+			// then closes about a second later without attaching a target.
+			// Accept the reply only when a complete success frame follows, as
+			// the first implementation required; otherwise this dead stream
+			// reached the application, which saw an empty reply and never
+			// moved to another candidate.
+			final := make([]byte, 10)
+			if _, err := io.ReadFull(reader, final); err != nil || !validLegacyStreamFinal(final) {
+				return nil, errStreamAuthenticationRejected
+			}
+			if final[2] == 0 {
+				return nil, errStreamCommandRejected
+			}
+		}
 		if bytes.Equal(second, []byte{1, 0}) {
 			optionalDeadline := time.Now().Add(100 * time.Millisecond)
 			if optionalDeadline.After(deadline) {
@@ -818,7 +835,11 @@ func copyOutboundStagedWithDeadline(destination net.Conn, source net.Conn, limit
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
-			if err := limiter.Consume(count); err != nil {
+			// A drained quota slice pauses the copy instead of ending the
+			// stream: the host refills the slice on the next lease delivery,
+			// and killing a mid-flight download here read as "large downloads
+			// drop". Revocation/expiry still ends the copy immediately.
+			if err := limiter.WaitQuota(count, quotaExhaustedWaitBound); err != nil {
 				return total, err, "policy"
 			}
 			status.AddUsage(0, count)
@@ -878,7 +899,10 @@ func copyInboundObserved(destination net.Conn, source net.Conn, limiter *PolicyL
 		observation.ReadError = readErr
 		if count > 0 {
 			observation.ReadBytes += int64(count)
-			if err := limiter.Consume(count); err != nil {
+			// Mirrors copyOutboundStagedWithDeadline: a drained slice pauses
+			// the download instead of tearing down the stream; only an
+			// authorization stop (ErrPolicyStopped) or the wait bound ends it.
+			if err := limiter.WaitQuota(count, quotaExhaustedWaitBound); err != nil {
 				observation.PolicyError = err
 				return observation
 			}
@@ -1770,6 +1794,9 @@ func watchRuntimePolicyStatus(ctx context.Context, cancel context.CancelFunc, st
 			lapsed = false
 			lastExpiry = view.ExpiresAt
 			status.UpdatePolicyState(policyStateActive, view.ExpiresAt)
+			// Publish the local slice so the host can renew before a
+			// high-throughput download drains it and pauses mid-flight.
+			status.UpdateQuotaRemaining(store.Limiter().QuotaRemaining())
 			return false
 		}
 		if view.Held && view.ExpiresAt.After(lastExpiry) {

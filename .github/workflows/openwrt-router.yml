@@ -52,9 +52,9 @@ jobs:
       - name: Build both binaries
         run: |
           cd tools/leikwand
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.agentVersion=1.2.5-ci" -o /tmp/leikwand .
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.agentVersion=1.2.6-ci" -o /tmp/leikwand .
           cd ../ultra-client
-          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=1.2.5-ci" -o /tmp/ultra-client .
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=1.2.6-ci" -o /tmp/ultra-client .
       - name: Run integration suite
         run: tools/leikwand/integration/run_integration.sh /tmp/leikwand /tmp/ultra-client
 
@@ -132,7 +132,7 @@ jobs:
       - name: Build firmware image
         run: |
           export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' | head -1)")
-          export LEIKWAND_VERSION=1.2.5
+          export LEIKWAND_VERSION=1.2.6
           # uutils coreutils: the ImageBuilder's own scripts may also probe for
           # GNU wording; make sure the diagnostics survive the run either way.
           ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib || {
@@ -171,7 +171,7 @@ jobs:
       - name: Build smoke firmware (leikwan packages preinstalled)
         run: |
           export LEIKWAN_IPK_DIR="$PWD/ipks"
-          export LEIKWAND_VERSION=1.2.5
+          export LEIKWAND_VERSION=1.2.6
           ./openwrt/image/build-image.sh amd64 ~/leikwan-build/ib
       - name: Boot the image in QEMU and verify the install
         run: |

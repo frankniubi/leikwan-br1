@@ -83,6 +83,19 @@ public sealed class UltraRuntimeFailureLogTests
     }
 
     [Theory]
+    // A drained local quota slice ends a stream at stage=policy reason=quota_exhausted.
+    // It is not a relay verdict, but it is exactly what a lease renewal fixes, so
+    // it must drive the failure-driven renewal like the relay-side forms do.
+    [InlineData("2026/10/26 12:00:00 tcp stream ended forward_id=332 direction=downstream stage=policy reason=quota_exhausted generation=g selection_ref=r duration_ms=90000 bytes=2500000000")]
+    [InlineData("2026/10/26 12:00:00 tcp stream ended forward_id=332 direction=upstream stage=policy reason=quota_exhausted generation=g")]
+    public void QuotaExhaustedStreamEndsDriveRenewal(string line)
+    {
+        var kind = UltraRuntimeFailureLog.Classify(line);
+        Assert.Equal("tcp_stream_ended", kind);
+        Assert.True(UltraRuntimeFailureLog.IsCredentialSuspect(kind!, line));
+    }
+
+    [Theory]
     // Ordinary target behaviour, or failures that say nothing about the relay credential.
     [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=remote_read reason=timeout generation=g")]
     [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=remote_read reason=io_error generation=g")]
@@ -90,6 +103,8 @@ public sealed class UltraRuntimeFailureLogTests
     [InlineData("2026/09/24 17:02:22 tcp stream had no downstream bytes forward_id=243 selection_ref=r remote_stopped_first=true")]
     [InlineData("2026/09/24 00:10:01 udp candidate failed forward_id=170 selection_ref=r generation=g attempt=1 reason=timeout")]
     [InlineData("2026/09/24 00:10:01 runtime stopped: policy expired")]
+    // An authorization stop is not refillable, so it must not read as renewal evidence.
+    [InlineData("2026/09/24 17:02:22 tcp stream ended forward_id=243 direction=downstream stage=policy reason=policy_expired generation=g")]
     public void OtherFailuresAreNotCredentialSuspect(string line)
     {
         var kind = UltraRuntimeFailureLog.Classify(line);
