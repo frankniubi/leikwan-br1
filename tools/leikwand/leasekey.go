@@ -45,6 +45,13 @@ const (
 	codeLeaseKeyInvalid        = "lease_key_invalid"
 	codeLeaseSealingRequired   = "lease_sealing_required"
 	codeLeaseDeviceKeyConflict = "lease_device_key_conflict"
+
+	// codePolicyGenerationInvalid is the Panel refusing a grant generation the
+	// lease plane no longer honours. The generation rotates whenever the line
+	// material behind a forward rotates (credential and relays change
+	// together), so a router holding the previous one must fetch a new grant
+	// instead of retrying the dead value.
+	codePolicyGenerationInvalid = "policy_generation_invalid"
 )
 
 func leaseKeyPath(dataDir string) string { return filepath.Join(dataDir, leaseKeyFileName) }
