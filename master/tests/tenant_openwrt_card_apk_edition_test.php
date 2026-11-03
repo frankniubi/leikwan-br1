@@ -95,6 +95,23 @@ namespace {
     if (strpos($html, 'data-openwrt-universal') > strpos($html, 'OpenWrt 25.12+（apk 包管理器）')) {
         failOpenwrtCard('the one-line installer must render before the per-version commands');
     }
+    // Collapsed like the Linux / Windows / macOS cards: between the card title
+    // and the first <details> there is no command, only the title.
+    $cardStart = strpos($html, 'data-openwrt-install');
+    $firstDetails = strpos($html, '<details', (int) $cardStart);
+    if ($cardStart === false || $firstDetails === false
+        || str_contains(substr($html, $cardStart, $firstDetails - $cardStart), 'tenant-client-install__command')) {
+        failOpenwrtCard('the OpenWrt card must keep every command inside a collapsed <details>');
+    }
+    foreach (['<summary>一键安装命令 · 复制即用</summary><pre class="tenant-client-install__command" data-openwrt-universal>',
+        '<summary>查看版本 · 自动识别固件与架构</summary><pre class="tenant-client-install__command" data-openwrt-versions>'] as $needle) {
+        if (!str_contains($html, $needle)) {
+            failOpenwrtCard("collapsed section missing: $needle");
+        }
+    }
+    if (str_contains($html, '<details open')) {
+        failOpenwrtCard('the OpenWrt sections must start closed');
+    }
     // The version report sits next to the installer and needs no credentials:
     // it is the same answer on every router, whatever the firmware. The
     // anonymous-card assertions live with the other $anon checks below.

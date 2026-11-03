@@ -1745,25 +1745,29 @@ final class TenantController extends BaseController
             . ' && sh /tmp/leikwan-versions.sh --panel ' . $this->shellQuote($artifactBase);
 
         $description = $hasClient
-            ? '在路由器 SSH 里运行下面这一条命令即可：脚本自动识别固件版本（apk / opkg）、CPU 架构（x86_64 / arm64）以及是否带 LuCI，校验软件包哈希后安装，并直接绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
-            : '下面的命令只安装软件；先在下方创建客户端，再回来复制带身份的安装命令即可一步绑定。';
+            ? '在路由器 SSH 里运行上面这一条命令即可：脚本自动识别固件版本（apk / opkg）、CPU 架构（x86_64 / arm64）以及是否带 LuCI，校验软件包哈希后安装，并直接绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            : '上面的命令只安装软件；先在下方创建客户端，再回来复制带身份的安装命令即可一步绑定。';
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
             . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.6)', 'openwrt_leikwand')) . '</strong>'
-            . '<div class="muted">' . $this->escape($description)
-            . ' 支持 OpenWrt 21.02 – 25.12+ 及 ImmortalWrt 等衍生固件；固件也可从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载。</div>'
-            . '<div class="muted" style="margin:8px 0 4px;">一键安装（自动识别版本）：</div>'
+            // Collapsed like the other platforms: the title stays visible, every
+            // command opens on demand.
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
             . '<pre class="tenant-client-install__command" data-openwrt-universal>' . $this->escape($universalCommand) . '</pre>'
+            . '<div class="muted">' . $this->escape($description)
+            . ' 支持 OpenWrt 21.02 – 25.12+ 及 ImmortalWrt 等衍生固件；固件也可从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载。'
+            . '面板地址：<code>' . $this->escape($masterUrl) . '</code> · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制安装命令', $universalCommand, 'secondary', '已复制', '复制失败')
             . '<a class="button secondary" href="' . $this->escape($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh')) . '">安装脚本</a>'
-            . '</div>'
-            . '<div class="muted" style="margin:10px 0 4px;">查看版本（已安装 / 正在运行 / 面板已发布，自动识别固件与架构；<code>--check</code> 有更新时退出码为 1）：</div>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>查看版本 · 自动识别固件与架构</summary>'
             . '<pre class="tenant-client-install__command" data-openwrt-versions>' . $this->escape($versionsCommand) . '</pre>'
+            . '<div class="muted">列出已安装 / 正在运行 / 面板已发布的版本；加 <code>--check</code> 时有更新则退出码为 1。</div>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制版本命令', $versionsCommand, 'secondary', '已复制', '复制失败')
-            . '</div>'
+            . '</div></details>'
             . '<details style="margin-top:10px;"><summary>手动安装（按固件版本选择命令）</summary>'
             . '<div class="muted" style="margin:6px 0;">一键脚本不可用时使用。OpenWrt 25.12 及以后用 apk 命令；23.05–24.10 用 opkg 命令；每组适用于 x86_64 软路由与 arm64 设备。'
             . 'arm64 设备若提示 “incompatible with the architectures configured” 或 “uninstallable … arch: aarch64_generic”，说明固件架构是 aarch64_cortex-a53 之类的具体型号，请改用上面的一键脚本，它会自动登记 aarch64_generic 架构。</div>'
@@ -1801,8 +1805,6 @@ final class TenantController extends BaseController
                     . '</div></details>'
                 : '')
             . '</details>'
-            . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
-            . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
             . '</section>';
     }
 
