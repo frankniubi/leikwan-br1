@@ -1,11 +1,14 @@
 #!/bin/sh
-# Build the Leikwan OpenWrt packages (ipk) for one target architecture.
+# Build the Leikwan OpenWrt packages for one target architecture.
 #
 # Usage:  ./build.sh <amd64|arm64> [sdk-dir]
 #
 # The script cross-compiles the two Go programs with CGO_ENABLED=0, stages them
 # into the package directories, then hands off to the OpenWrt SDK. It never
 # modifies the SDK tree outside build_dir/staging_dir/bin.
+#
+# The output format follows the SDK: a 24.10 SDK emits .ipk (opkg edition),
+# a 25.12+ SDK emits .apk (apk edition). The package sources are identical.
 set -eu
 
 ARCH="${1:-amd64}"
@@ -50,7 +53,7 @@ for pkg in leikwand leikwan-runtime luci-app-leikwan; do
 	cp -a "$HERE/$pkg" "$SDK/package/leikwan/"
 done
 
-echo "==> building ipk with the SDK"
+echo "==> building packages with the SDK"
 cd "$SDK"
 # GitHub's ubuntu-24.04 image ships uutils coreutils: /usr/bin/install reports
 # "install (uutils coreutils) 0.10.0" with no "GNU" substring, so the SDK's
@@ -79,4 +82,12 @@ make package/leikwan/leikwan-runtime/compile V=s
 make package/leikwan/luci-app-leikwan/compile V=s
 
 echo "==> packages"
-find "$SDK/bin" -name '*.ipk' -newermt '-1 hour' -print | sort
+# ipk SDKs emit .ipk; apk SDKs (25.12+) emit .apk. Whichever appears is the
+# edition this SDK produces — a missing file of the expected flavour is a
+# build failure the caller should see, so both are listed, not matched.
+find "$SDK/bin" \( -name '*.ipk' -o -name '*.apk' \) -newermt '-1 hour' -print | sort
+count=$(find "$SDK/bin" \( -name 'leikwand_*.ipk' -o -name 'leikwand_*.apk' \) -newermt '-1 hour' | wc -l)
+if [ "$count" -lt 1 ]; then
+	echo "no leikwand package produced; the SDK run failed silently" >&2
+	exit 1
+fi

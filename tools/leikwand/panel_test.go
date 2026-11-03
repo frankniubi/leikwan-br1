@@ -223,6 +223,14 @@ func TestPanelSendsDeviceIdentityHeaders(t *testing.T) {
 	if captured.Get("X-Client-Version") == "" || captured.Get("X-Device-Architecture") == "" {
 		t.Fatal("version/architecture headers are missing")
 	}
+	// The flavour header is always present (possibly empty on a dev box) so
+	// the Panel can route updates to apk or opkg firmware.
+	if _, ok := captured["X-Device-Package-Manager"]; !ok {
+		t.Fatal("package-manager flavour header is missing")
+	}
+	if got := captured.Get("X-Device-Package-Manager"); got != packageManagerFlavour() {
+		t.Fatalf("X-Device-Package-Manager = %q, want %q", got, packageManagerFlavour())
+	}
 }
 
 // The lease response is consumed by ultra-client, so the decode has to be

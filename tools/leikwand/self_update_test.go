@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,16 +74,17 @@ func TestMaybeSelfUpdateRespectsCooldown(t *testing.T) {
 	selfUpdate.mu.Unlock()
 }
 
-func TestStartSelfUpdateSkippedWithoutOpkg(t *testing.T) {
-	// startSelfUpdate must fail cleanly (not panic) where opkg does not exist,
-	// which is the case on every non-OpenWrt dev box.
-	if _, err := exec.LookPath("opkg"); err == nil {
-		t.Skip("opkg exists on this machine; nothing to assert")
+func TestStartSelfUpdateSkippedWithoutInstaller(t *testing.T) {
+	// startSelfUpdate must fail cleanly (not panic) where neither package
+	// manager exists, which is the case on every non-OpenWrt dev box.
+	hasApk, hasOpkg := installerAvailability()
+	if hasApk || hasOpkg {
+		t.Skip("a package manager exists on this machine; nothing to assert")
 	}
 	a := &Agent{}
 	_, err := a.startSelfUpdate(context.Background(), selfUpdateTarget{version: "9.9.9"})
-	if err == nil || !strings.Contains(err.Error(), "opkg") {
-		t.Fatalf("error should name opkg, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "apk") && !strings.Contains(err.Error(), "opkg") {
+		t.Fatalf("error should name a package manager, got: %v", err)
 	}
 }
 

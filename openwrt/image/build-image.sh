@@ -1,13 +1,15 @@
 #!/bin/bash
 # Build a pre-installed OpenWrt firmware image that already contains the
 # Leikwan convergence app, so a router can be flashed and come up enrolled-
-# ready without an opkg step.
+# ready without a package-manager step.
 #
 # Usage: ./build-image.sh <amd64|arm64> [imagebuilder-dir]
 #
-# Required: the three ipk packages must already have been built (see
+# Required: the three packages must already have been built (see
 # ../build-ipk.sh); pass their directory through LEIKWAN_IPK_DIR or let this
-# script look in the SDK's bin/packages output.
+# script look in the SDK's bin/packages output. The ImageBuilder decides the
+# format: a 24.10 ImageBuilder consumes .ipk (opkg edition), a 25.12+
+# ImageBuilder consumes .apk (apk edition). Both are staged the same way.
 set -euo pipefail
 
 ARCH="${1:-amd64}"
@@ -26,27 +28,34 @@ if [ ! -f "$IB/Makefile" ]; then
 	exit 2
 fi
 
-# Locate the packages we just built.
-if [ -z "$IPK_DIR" ]; then
+# Locate the packages we just built. The flavour follows the SDK that made
+# them: .ipk from 24.10 and earlier, .apk from 25.12 on.
+PKG_EXT=""
+if [ -n "$IPK_DIR" ]; then
+	if ls "$IPK_DIR"/leikwand_*.apk >/dev/null 2>&1; then PKG_EXT="apk"
+	elif ls "$IPK_DIR"/leikwand_*.ipk >/dev/null 2>&1; then PKG_EXT="ipk"
+	fi
+else
 	for candidate in "$HOME/leikwan-build/sdk/bin/packages"/*/base; do
-		if ls "$candidate"/leikwand_*.ipk >/dev/null 2>&1; then IPK_DIR="$candidate"; break; fi
+		if ls "$candidate"/leikwand_*.apk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="apk"; break; fi
+		if ls "$candidate"/leikwand_*.ipk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="ipk"; break; fi
 	done
 fi
-if [ -z "$IPK_DIR" ] || ! ls "$IPK_DIR"/leikwand_*.ipk >/dev/null 2>&1; then
-	echo "leikwand ipk not found; run ../build-ipk.sh first or set LEIKWAN_IPK_DIR" >&2
+if [ -z "$IPK_DIR" ] || [ -z "$PKG_EXT" ]; then
+	echo "leikwand package not found; run ../build-ipk.sh first or set LEIKWAN_IPK_DIR" >&2
 	exit 2
 fi
-echo "==> using packages from $IPK_DIR"
+echo "==> using $PKG_EXT packages from $IPK_DIR"
 
 # ImageBuilder only sees local packages through a repository entry, so publish
 # the build output as one and refresh the index.
 # ImageBuilder already declares its own packages/ directory as a repository
 # ("file:packages"). That is the only directory its package_index target
-# indexes, so the built ipks are staged there rather than in a new repo.
+# indexes, so the built packages are staged there rather than in a new repo.
 LOCAL_REPO="$IB/packages"
 rm -rf "$LOCAL_REPO"
 mkdir -p "$LOCAL_REPO"
-for pattern in 'leikwand_*.ipk' 'leikwan-runtime_*.ipk' 'luci-app-leikwan_*.ipk'; do
+for pattern in "leikwand_*.$PKG_EXT" "leikwan-runtime_*.$PKG_EXT" "luci-app-leikwan_*.$PKG_EXT"; do
 	matched=0
 	for file in "$IPK_DIR"/$pattern; do
 		[ -f "$file" ] || continue
@@ -58,12 +67,12 @@ for pattern in 'leikwand_*.ipk' 'leikwan-runtime_*.ipk' 'luci-app-leikwan_*.ipk'
 		exit 2
 	fi
 done
-ls -1 "$LOCAL_REPO"/*.ipk
+ls -1 "$LOCAL_REPO"/*."$PKG_EXT"
 
 # Restore the stock repository list. ImageBuilder appends its own local
-# "file:packages" entry while generating the opkg config, so a repositories.conf
-# that accumulated entries across runs produces duplicate src declarations and
-# makes opkg abort the package list.
+# "file:packages" entry while generating the package-manager config, so a
+# repositories.conf that accumulated entries across runs produces duplicate
+# src declarations and makes the package manager abort the package list.
 if [ -f "$IB/repositories.conf.example" ]; then
 	cp "$IB/repositories.conf.example" "$IB/repositories.conf"
 fi
@@ -86,18 +95,20 @@ if old in src:
 PY
 fi
 
-# The local index is signed, and opkg verifies it against the image keyring.
-# A freshly unpacked ImageBuilder ships no key pair and no keyring entry, so
-# both are created here; without them the build fails with an opaque
-# "Signature check failed" followed by "Cannot install package leikwand".
+# The local index is signed, and the image's package manager verifies it
+# against the image keyring. A freshly unpacked ImageBuilder ships no key pair
+# and no keyring entry, so both are created here; without them the build fails
+# with an opaque "Signature check failed" followed by "Cannot install package
+# leikwand". The same usign key flow covers opkg (keys/<fingerprint>) and apk
+# (keys/<fingerprint> under /etc/apk/keys in the image) ImageBuilders.
 USIGN="$IB/staging_dir/host/bin/usign"
 if [ -x "$USIGN" ]; then
 	if [ ! -f "$IB/key-build" ]; then
 		( cd "$IB" && "$USIGN" -G -s key-build -p key-build.pub -c "leikwan image build" ) >/dev/null 2>&1 || true
 	fi
 	if [ -f "$IB/key-build.pub" ]; then
-		# The keyring filename is the key fingerprint, which is what opkg
-		# matches the signature against.
+		# The keyring filename is the key fingerprint, which is what the
+		# package manager matches the signature against.
 		FINGERPRINT=$("$USIGN" -F -p "$IB/key-build.pub" 2>/dev/null | awk '{print $1}')
 		if [ -n "$FINGERPRINT" ]; then
 			mkdir -p "$IB/keys"
@@ -107,15 +118,24 @@ if [ -x "$USIGN" ]; then
 	fi
 fi
 
-# opkg needs the generated index next to the ipks. The step is checked: a
-# silent failure here shows up much later as "Cannot install package leikwand".
+# The package manager needs the generated index next to the packages. The step
+# is checked: a silent failure here shows up much later as "Cannot install
+# package leikwand". opkg ImageBuilders produce Packages/Packages.gz; apk
+# ImageBuilders (25.12+) produce APKINDEX.tar.gz or packages.adb.
 ( cd "$IB" && make package_index ) || {
 	echo "could not generate the local package index" >&2
 	exit 2
 }
-if [ ! -f "$LOCAL_REPO/Packages" ] && [ ! -f "$LOCAL_REPO/Packages.gz" ]; then
-	echo "local package index is missing from $LOCAL_REPO" >&2
-	exit 2
+if [ "$PKG_EXT" = "apk" ]; then
+	if [ ! -f "$LOCAL_REPO/APKINDEX.tar.gz" ] && [ ! -f "$LOCAL_REPO/packages.adb" ]; then
+		echo "local apk index is missing from $LOCAL_REPO" >&2
+		exit 2
+	fi
+else
+	if [ ! -f "$LOCAL_REPO/Packages" ] && [ ! -f "$LOCAL_REPO/Packages.gz" ]; then
+		echo "local package index is missing from $LOCAL_REPO" >&2
+		exit 2
+	fi
 fi
 
 # UCI defaults baked into the image. Only onboarding-neutral values: the panel

@@ -59,25 +59,53 @@ jobs:
         run: tools/leikwand/integration/run_integration.sh /tmp/leikwand /tmp/ultra-client
 
   packages:
-    name: OpenWrt ${{ matrix.arch }} ipk + firmware
+    name: OpenWrt ${{ matrix.edition }} ${{ matrix.arch }} packages + firmware
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          # opkg edition: OpenWrt 23.05/24.10 era, .ipk output. Kept for the
+          # installed base — apk-based releases cannot consume these, and the
+          # 21.02/22.03 legacy card depends on them too.
+          - edition: opkg
+            arch: amd64
+            ext: ipk
             sdk-dir: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64
             sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
             ib-dir: openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64
             ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst
             ib-target: x86/64
             ib-profile: generic
-          - arch: arm64
+          - edition: opkg
+            arch: arm64
+            ext: ipk
             sdk-dir: openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64
             sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
             ib-dir: openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64
             ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64.tar.zst
+            ib-target: armsr/armv8
+            ib-profile: generic
+          # apk edition: OpenWrt 25.12+, .apk output. The same package sources
+          # build under the 25.12 SDK; the SDK's buildroot emits apk packages
+          # and an APKINDEX-style feed instead of ipks.
+          - edition: apk
+            arch: amd64
+            ext: apk
+            sdk-dir: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-25.12.6-x86-64.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/openwrt-imagebuilder-25.12.6-x86-64.Linux-x86_64.tar.zst
+            ib-target: x86/64
+            ib-profile: generic
+          - edition: apk
+            arch: arm64
+            ext: apk
+            sdk-dir: openwrt-sdk-25.12.6-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/openwrt-sdk-25.12.6-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-25.12.6-armsr-armv8.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/openwrt-imagebuilder-25.12.6-armsr-armv8.Linux-x86_64.tar.zst
             ib-target: armsr/armv8
             ib-profile: generic
     steps:
@@ -99,7 +127,7 @@ jobs:
           curl -fsSL "${{ matrix.sdk-url }}" -o sdk.tar.zst
           tar --zstd -xf sdk.tar.zst -C ~/leikwan-build
           mv ~/leikwan-build/${{ matrix.sdk-dir }} ~/leikwan-build/sdk
-      - name: Build ipks
+      - name: Build packages
         run: |
           export PATH=/usr/local/go/bin:$PATH
           ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk || {
@@ -111,16 +139,22 @@ jobs:
             echo "PATH=$PATH"
             exit 1
           }
-      - name: Collect ipks
+      - name: Collect packages
         run: |
-          mkdir -p artifacts/ipk-${{ matrix.arch }}
-          find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' -o -name 'leikwan-runtime_*.ipk' -o -name 'luci-app-leikwan_*.ipk' \
-            | xargs -I{} cp {} artifacts/ipk-${{ matrix.arch }}/
-          ls -la artifacts/ipk-${{ matrix.arch }}/
+          mkdir -p artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}
+          find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.${{ matrix.ext }}' -o -name 'leikwan-runtime_*.${{ matrix.ext }}' -o -name 'luci-app-leikwan_*.${{ matrix.ext }}' \
+            | xargs -I{} cp {} artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          ls -la artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          # The 25.12 SDK also emits the feed index for its output packages;
+          # ship it alongside the apks so the panel can serve a real feed.
+          for idx in APKINDEX.tar.gz packages.adb; do
+            found=$(find ~/leikwan-build/sdk/bin/packages -name "$idx" | head -1)
+            if [ -n "$found" ]; then cp "$found" artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/; fi
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: openwrt-ipks-${{ matrix.arch }}
-          path: artifacts/ipk-${{ matrix.arch }}/
+          name: openwrt-${{ matrix.edition }}-pkgs-${{ matrix.arch }}
+          path: artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
           if-no-files-found: error
       - name: Install ImageBuilder
         run: |
@@ -131,7 +165,7 @@ jobs:
           mv ~/leikwan-build/${{ matrix.ib-dir }} ~/leikwan-build/ib
       - name: Build firmware image
         run: |
-          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.ipk' | head -1)")
+          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name "leikwand_*.${{ matrix.ext }}" | head -1)")
           export LEIKWAND_VERSION=1.2.6
           # uutils coreutils: the ImageBuilder's own scripts may also probe for
           # GNU wording; make sure the diagnostics survive the run either way.
@@ -142,17 +176,17 @@ jobs:
           }
       - name: Collect firmware
         run: |
-          mkdir -p artifacts/firmware-${{ matrix.arch }}
-          find ~/leikwan-build/ib/bin/targets -type f \( -name '*.img.gz' -o -name 'manifest' -o -name '*.manifest' \) -exec cp {} artifacts/firmware-${{ matrix.arch }}/ \;
-          ls -la artifacts/firmware-${{ matrix.arch }}/
+          mkdir -p artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}
+          find ~/leikwan-build/ib/bin/targets -type f \( -name '*.img.gz' -o -name 'manifest' -o -name '*.manifest' \) -exec cp {} artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/ \;
+          ls -la artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/
       - uses: actions/upload-artifact@v4
         with:
-          name: openwrt-firmware-${{ matrix.arch }}
-          path: artifacts/firmware-${{ matrix.arch }}/
+          name: openwrt-firmware-${{ matrix.edition }}-${{ matrix.arch }}
+          path: artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/
           if-no-files-found: error
 
   smoke:
-    name: One-shot install smoke (QEMU x86_64)
+    name: One-shot install smoke (QEMU x86_64, opkg edition)
     needs: [packages]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -160,7 +194,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: openwrt-ipks-amd64
+          name: openwrt-opkg-pkgs-amd64
           path: ipks
       - name: Install ImageBuilder
         run: |

@@ -856,8 +856,16 @@ final class ClientAgentController extends BaseController
             || $platform === 'router'
             || str_starts_with($userAgent, 'leikwan-openwrt-agent/');
         $snapshotPlatform = $routerAgent ? 'openwrt' : $platform;
+        // leikwand names its package-manager flavour so the pull can serve the
+        // matching update edition: apk (.apk, OpenWrt 25.12+) or opkg (.ipk).
+        // Anything else — older leikwand, other callers — keeps the opkg
+        // edition, which is what the installed base runs.
+        $packageFlavour = strtolower(trim((string) ($request->header('x-device-package-manager') ?? '')));
+        if ($packageFlavour !== 'apk') {
+            $packageFlavour = '';
+        }
 
-        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform);
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform, $packageFlavour);
         $configRevision = (string) $snapshot['config_revision'];
         $forceApply = (bool) $snapshot['force_apply'];
 
@@ -866,7 +874,7 @@ final class ClientAgentController extends BaseController
             $deadline = microtime(true) + $waitSeconds;
             while (microtime(true) < $deadline) {
                 usleep(500000);
-                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform, $packageFlavour);
                 if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
                     break;
                 }
@@ -1030,7 +1038,8 @@ final class ClientAgentController extends BaseController
         ?array $deviceSession,
         array $client,
         string $runtimeArchitecture = 'amd64',
-        string $platform = ''
+        string $platform = '',
+        string $packageFlavour = ''
     ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
@@ -1040,15 +1049,26 @@ final class ClientAgentController extends BaseController
             $clientAgentKey = 'client_agent';
             $clientAgent = $this->artifactMetadata($clientAgentKey);
         }
-        // OpenWrt agents self-update through opkg, so the version they compare
-        // against is the packaged leikwand ipk, not the python client-agent.
-        // The router checks DesiredAgentVer against its own agentVersion and
-        // installs the named ipk after verifying its sha256. Without a leikwand
-        // entry it gets nothing: the python agent is not an ipk it can install.
+        // OpenWrt agents self-update through their package manager, so the
+        // version they compare against is the packaged leikwand file, not the
+        // python client-agent. The router checks DesiredAgentVer against its
+        // own agentVersion and installs the named package after verifying its
+        // sha256. Without a leikwand entry it gets nothing: the python agent
+        // is not a package it can install. Two editions coexist: opkg
+        // (.ipk, 23.05/24.10) and apk (.apk, 25.12+); the router names its
+        // flavour in X-Device-Package-Manager and falls back to the opkg
+        // edition when the header or the apk manifest entry is absent.
         if (str_starts_with($platform, 'openwrt') || $platform === 'router') {
             $leikwandArch = $runtimeArchitecture === 'arm64' ? 'aarch64_generic' : 'x86_64';
             $clientAgentKey = 'openwrt_leikwand_' . $leikwandArch;
             $clientAgent = $this->artifactMetadata($clientAgentKey);
+            if ($packageFlavour === 'apk') {
+                $apkEntry = $this->artifactMetadata('openwrt_leikwand_apk_' . $leikwandArch);
+                if ($apkEntry !== []) {
+                    $clientAgentKey = 'openwrt_leikwand_apk_' . $leikwandArch;
+                    $clientAgent = $apkEntry;
+                }
+            }
         }
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');

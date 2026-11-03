@@ -22,25 +22,35 @@ import (
 // "desired" fields are empty unless an update was requested from the console,
 // which keeps the no-forced-updates rule intact.
 //
-// The routers in the field installed leikwand from a URL, not from an opkg
-// feed, so "opkg install leikwand" has nothing to resolve. The pull therefore
-// names the ipk (desired_agent_url, Panel-relative) and its sha256; the daemon
-// downloads it to tmpfs, verifies the hash, and hands the local file to opkg.
-// Only when the Panel names no file does it fall back to the feed.
+// The routers in the field installed leikwand from a URL, not from a package
+// feed, so "opkg/apk install leikwand" has nothing to resolve. The pull
+// therefore names the package file (desired_agent_url, Panel-relative) and
+// its sha256; the daemon downloads it to tmpfs, verifies the hash, and hands
+// the local file to the system package manager. Only when the Panel names no
+// file does it fall back to the feed.
 //
-// opkg runs in its own session with output to a file, never on a pipe owned by
-// this process: the ipk postinst restarts leikwand, and an opkg still writing
-// to a dead parent's pipe would die of SIGPIPE half way through configuring.
+// Two package-manager generations coexist in the field: OpenWrt 23.05/24.10
+// with opkg (.ipk) and OpenWrt 25.12+ with apk (.apk). The installer is
+// chosen by what the downloaded file is — the Panel serves each router the
+// flavour its firmware consumes — with apk preferred when both tools exist.
+//
+// The package manager runs in its own session with output to a file, never
+// on a pipe owned by this process: the package postinst restarts leikwand,
+// and an installer still writing to a dead parent's pipe would die of
+// SIGPIPE half way through configuring.
 
 const (
 	// selfUpdateCooldown guards against download/feed flaps: one attempt per
 	// 30 minutes.
 	selfUpdateCooldown = 30 * time.Minute
-	// selfUpdateMaxBytes caps the ipk download; leikwand ipks are ~3 MiB.
+	// selfUpdateMaxBytes caps the package download; leikwand packages are
+	// ~3 MiB.
 	selfUpdateMaxBytes = 32 << 20
 )
 
-// Paths live in tmpfs so a failed update leaves nothing on flash.
+// Paths live in tmpfs so a failed update leaves nothing on flash. The staged
+// suffix follows the downloaded flavour so the installer sees a name it
+// accepts.
 var (
 	selfUpdatePackagePath = "/tmp/leikwand-update.ipk"
 	selfUpdateLogPath     = "/tmp/leikwand-update.log"
@@ -117,19 +127,19 @@ func (a *Agent) maybeSelfUpdate(ctx context.Context) {
 		return
 	}
 	a.finishSelfUpdate("started")
-	a.log.Info("update", "opkg started (log %s); procd restarts the daemon into %s", selfUpdateLogPath, target.version)
+	a.log.Info("update", "installer started (log %s); procd restarts the daemon into %s", selfUpdateLogPath, target.version)
 
-	// Reap opkg. On success the postinst restart ends this process first, so
-	// reaching the end of Wait means the install did not take.
+	// Reap the installer. On success the postinst restart ends this process
+	// first, so reaching the end of Wait means the install did not take.
 	go func() {
 		waitErr := cmd.Wait()
 		tail := logTail(selfUpdateLogPath, 512)
 		if waitErr != nil {
-			a.finishSelfUpdate("failed: opkg: " + waitErr.Error())
-			a.log.Warn("update", "opkg install failed: %v: %s", waitErr, tail)
+			a.finishSelfUpdate("failed: installer: " + waitErr.Error())
+			a.log.Warn("update", "install failed: %v: %s", waitErr, tail)
 			return
 		}
-		a.log.Warn("update", "opkg finished but the daemon was not restarted: %s", tail)
+		a.log.Warn("update", "installer finished but the daemon was not restarted: %s", tail)
 	}()
 }
 
@@ -140,14 +150,23 @@ func (a *Agent) finishSelfUpdate(result string) {
 	selfUpdate.mu.Unlock()
 }
 
-// startSelfUpdate stages the package and launches opkg detached.
+// startSelfUpdate stages the package and launches the system package manager
+// detached. The flavour of the downloaded file picks the installer: a .apk
+// goes to apk (OpenWrt 25.12+), everything else to opkg (23.05/24.10). The
+// Panel serves each router the flavour its firmware consumes, so the suffix
+// is authoritative; the file's first bytes are sniffed as a cross-check
+// because opkg aborts on an apk and vice versa.
 func (a *Agent) startSelfUpdate(ctx context.Context, target selfUpdateTarget) (*exec.Cmd, error) {
-	if _, err := exec.LookPath("opkg"); err != nil {
-		return nil, fmt.Errorf("opkg not available: %w", err)
+	hasApk, hasOpkg := installerAvailability()
+	if !hasApk && !hasOpkg {
+		return nil, errors.New("neither apk nor opkg is available")
 	}
 	if target.url == "" {
 		// Older Panel: no file named, so only a configured feed can help.
-		return startDetachedOpkg(`opkg update && opkg install --force-reinstall leikwand`)
+		if hasApk {
+			return startDetachedInstaller(`apk update && apk add --no-progress leikwand`)
+		}
+		return startDetachedInstaller(`opkg update && opkg install --force-reinstall leikwand`)
 	}
 	if !isHex64(target.sha256) {
 		return nil, errors.New("panel named an update package without a sha256")
@@ -155,7 +174,48 @@ func (a *Agent) startSelfUpdate(ctx context.Context, target selfUpdateTarget) (*
 	if err := a.downloadVerified(ctx, target.url, target.sha256, selfUpdatePackagePath); err != nil {
 		return nil, err
 	}
-	return startDetachedOpkg(`opkg install --force-reinstall "$1"; status=$?; rm -f "$1"; exit $status`, selfUpdatePackagePath)
+	useApk := hasApk && selfUpdateIsApk(target.url)
+	if useApk && !hasApk {
+		return nil, errors.New("the update package is an apk but apk is not available")
+	}
+	if !useApk && !hasOpkg {
+		return nil, errors.New("the update package is an ipk but opkg is not available")
+	}
+	if useApk {
+		return startDetachedInstaller(`apk add --allow-untrusted --no-progress "$1"; status=$?; rm -f "$1"; exit $status`, selfUpdatePackagePath)
+	}
+	return startDetachedInstaller(`opkg install --force-reinstall "$1"; status=$?; rm -f "$1"; exit $status`, selfUpdatePackagePath)
+}
+
+// installerAvailability reports which package managers exist on this box,
+// checked once per call so a manager installed later is still picked up.
+func installerAvailability() (hasApk, hasOpkg bool) {
+	_, apkErr := exec.LookPath("apk")
+	_, opkgErr := exec.LookPath("opkg")
+	return apkErr == nil, opkgErr == nil
+}
+
+// packageManagerFlavour names the update flavour this box consumes, for the
+// Panel's X-Device-Package-Manager header. apk (25.12+) outranks opkg when
+// both are present, matching startSelfUpdate's routing; the empty string
+// means neither was found and the Panel keeps serving the opkg edition.
+func packageManagerFlavour() string {
+	hasApk, hasOpkg := installerAvailability()
+	switch {
+	case hasApk:
+		return "apk"
+	case hasOpkg:
+		return "opkg"
+	default:
+		return ""
+	}
+}
+
+// selfUpdateIsApk decides the flavour of a Panel-relative update URL by its
+// extension. The hash was verified on download, so the name is only routing.
+func selfUpdateIsApk(url string) bool {
+	dot := strings.LastIndex(url, ".")
+	return dot >= 0 && strings.EqualFold(url[dot+1:], "apk")
 }
 
 // downloadVerified writes the artifact to dst only if its sha256 matches.
@@ -184,9 +244,10 @@ func (a *Agent) downloadVerified(ctx context.Context, url, wantSHA, dst string) 
 	return os.Rename(partial, dst)
 }
 
-// startDetachedOpkg runs script under /bin/sh in its own session with stdio on
-// files, so the postinst restarting leikwand cannot take opkg down with it.
-func startDetachedOpkg(script string, args ...string) (*exec.Cmd, error) {
+// startDetachedInstaller runs script under /bin/sh in its own session with
+// stdio on files, so the postinst restarting leikwand cannot take the
+// installer down with it.
+func startDetachedInstaller(script string, args ...string) (*exec.Cmd, error) {
 	logFile, err := os.OpenFile(selfUpdateLogPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -197,7 +258,7 @@ func startDetachedOpkg(script string, args ...string) (*exec.Cmd, error) {
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = detachedProcAttr()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start opkg: %w", err)
+		return nil, fmt.Errorf("start installer: %w", err)
 	}
 	return cmd, nil
 }
