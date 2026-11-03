@@ -37,6 +37,8 @@ jobs:
         run: node openwrt/luci-app-leikwan/tests/run-tests.cjs
       - name: LuCI mutation check
         run: node openwrt/luci-app-leikwan/tests/mutation-check.cjs
+      - name: One-line installer (install-openwrt.sh) unit test
+        run: bash install/tests/test_install_openwrt.sh
 
   integration:
     name: End-to-end integration (real daemon + real runtime)
@@ -289,6 +291,12 @@ jobs:
         with:
           name: openwrt-${{ matrix.edition }}-pkgs-${{ matrix.arch }}
           path: pkgs
+      # The arm64 packages exercise the installer's architecture handling on
+      # this x86 router (aarch64_generic is not in its architecture list).
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-${{ matrix.edition }}-pkgs-arm64
+          path: pkgs-arm64
       - name: Host tooling
         run: |
           sudo apt-get update -qq
@@ -305,7 +313,8 @@ jobs:
           ./openwrt/tests/router-vm-e2e.sh \
             --edition ${{ matrix.edition }} \
             --release ${{ matrix.release }} \
-            --image-dir "$PWD/pkgs"
+            --image-dir "$PWD/pkgs" \
+            --arm64-dir "$PWD/pkgs-arm64"
       - name: Collect evidence on failure
         if: failure()
         uses: actions/upload-artifact@v4

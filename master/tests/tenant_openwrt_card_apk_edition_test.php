@@ -77,6 +77,24 @@ namespace {
             failOpenwrtCard("missing $why: $needle");
         }
     }
+    // The one-line installer comes first and carries the client identity; the
+    // per-version commands are the manual fallback after it.
+    $universal = "sh /tmp/leikwan-install.sh --panel &#039;";
+    foreach ([
+        '/artifacts/install-openwrt.sh' => 'installer URL',
+        'wget -qO /tmp/leikwan-install.sh' => 'wget download of the installer',
+        '|| curl -fsSL -o /tmp/leikwan-install.sh' => 'curl fallback for the installer',
+        $universal => 'installer run with the panel address',
+        "--client-id 7 --agent-token &#039;tok-123&#039;" => 'installer registers the client',
+        '手动安装' => 'manual fallback section',
+    ] as $needle => $why) {
+        if (!str_contains($html, $needle)) {
+            failOpenwrtCard("missing $why: $needle");
+        }
+    }
+    if (strpos($html, 'data-openwrt-universal') > strpos($html, 'OpenWrt 25.12+（apk 包管理器）')) {
+        failOpenwrtCard('the one-line installer must render before the per-version commands');
+    }
     // Both apk architecture variants must carry the runtime and LuCI packages too.
     foreach (['/apk/amd64/leikwan-runtime-1.2.6-r1.apk', '/apk/arm64/leikwan-runtime-1.2.6-r1.apk',
         '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk', '/apk/arm64/luci-app-leikwan-1.1.1-r1.apk'] as $needle) {
@@ -112,6 +130,41 @@ namespace {
     }
     if (!str_contains($anon, '/apk/amd64/') || !str_contains($anon, '/apk/arm64/')) {
         failOpenwrtCard('the anonymous card must still point at both apk directories');
+    }
+    if (!str_contains($anon, $universal) || str_contains($anon, '--client-id')) {
+        failOpenwrtCard('the anonymous card must offer the installer without credentials');
+    }
+
+    // The installer and its manifest are served by the panel, uncached.
+    $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
+    foreach (['/artifacts/install-openwrt.sh', '/artifacts/openwrt-packages.txt'] as $route) {
+        if (!str_contains($bootstrap, "'" . $route . "'")) {
+            failOpenwrtCard("route missing: $route");
+        }
+    }
+    // Every format x architecture x package has exactly one manifest entry,
+    // which is what the installer requires.
+    $manifest = (string) file_get_contents(__DIR__ . '/../../install/openwrt-packages.txt');
+    $entries = [];
+    foreach (preg_split('/\R/', $manifest) as $line) {
+        if (trim($line) === '' || str_starts_with(ltrim($line), '#')) {
+            continue;
+        }
+        if (preg_match('/^([0-9a-f]{64})  (\S+)$/', $line, $m) !== 1) {
+            failOpenwrtCard("malformed manifest line: $line");
+        }
+        $entries[] = $m[2];
+    }
+    foreach (['amd64/', 'arm64/', 'apk/amd64/', 'apk/arm64/'] as $prefix) {
+        $sep = str_starts_with($prefix, 'apk/') ? '-' : '_';
+        foreach (['leikwand', 'leikwan-runtime', 'luci-app-leikwan'] as $name) {
+            $hits = array_filter($entries, static fn(string $p): bool =>
+                str_starts_with($p, $prefix) && !str_contains(substr($p, strlen($prefix)), '/')
+                && preg_match('/^' . preg_quote($name . $sep, '/') . '\d/', substr($p, strlen($prefix))) === 1);
+            if (count($hits) !== 1) {
+                failOpenwrtCard("manifest needs exactly one $prefix$name entry, found " . count($hits));
+            }
+        }
     }
 
     echo "ok\n";

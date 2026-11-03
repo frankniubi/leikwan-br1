@@ -1668,6 +1668,8 @@ final class TenantController extends BaseController
      * Two package generations coexist: OpenWrt 25.12+ dropped opkg for apk,
      * so those routers get `apk add --allow-untrusted` with .apk files, while
      * 23.05–24.10 and the 21.02/22.03 legacy lines keep the opkg .ipk path.
+     * The card leads with install/install-openwrt.sh, which picks the right
+     * one on the router itself; the per-version commands are the fallback.
      *
      * Copy is Chinese like the rest of the app center and is not routed through
      * the client-side i18n dictionary (see tenantIosSection for the reason).
@@ -1722,15 +1724,37 @@ final class TenantController extends BaseController
             $arm64ApkCommand = $ipkBase . '/apk/arm64/';
         }
 
+        // One command for every firmware: install-openwrt.sh detects apk vs
+        // opkg, x86_64 vs aarch64 and whether LuCI can run, verifies every
+        // package against the panel manifest and registers the router. The
+        // per-version commands below stay as a manual fallback.
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $installerUrl = $this->shellQuote($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh'));
+        $universalCommand = '{ wget -qO /tmp/leikwan-install.sh ' . $installerUrl
+            . ' || curl -fsSL -o /tmp/leikwan-install.sh ' . $installerUrl . '; }'
+            . ' && sh /tmp/leikwan-install.sh --panel ' . $this->shellQuote($artifactBase);
+        if ($hasClient) {
+            $universalCommand .= ' --client-id ' . $clientId . ' --agent-token ' . $this->shellQuote($agentToken);
+        }
+
         $description = $hasClient
-            ? '刷入固件，或在现有 OpenWrt 上安装对应的三个软件包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。OpenWrt 25.12 及以后用 apk 命令（第一组）；23.05–24.10 用 opkg 命令（第二组）。'
-            : '先在下方创建客户端，再回来复制带身份的安装命令。';
+            ? '在路由器 SSH 里运行下面这一条命令即可：脚本自动识别固件版本（apk / opkg）、CPU 架构（x86_64 / arm64）以及是否带 LuCI，校验软件包哈希后安装，并直接绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            : '下面的命令只安装软件；先在下方创建客户端，再回来复制带身份的安装命令即可一步绑定。';
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
             . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.6)', 'openwrt_leikwand')) . '</strong>'
             . '<div class="muted">' . $this->escape($description)
-            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；每组命令适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . ' 支持 OpenWrt 21.02 – 25.12+ 及 ImmortalWrt 等衍生固件；固件也可从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载。</div>'
+            . '<div class="muted" style="margin:8px 0 4px;">一键安装（自动识别版本）：</div>'
+            . '<pre class="tenant-client-install__command" data-openwrt-universal>' . $this->escape($universalCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制安装命令', $universalCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh')) . '">安装脚本</a>'
+            . '</div>'
+            . '<details style="margin-top:10px;"><summary>手动安装（按固件版本选择命令）</summary>'
+            . '<div class="muted" style="margin:6px 0;">一键脚本不可用时使用。OpenWrt 25.12 及以后用 apk 命令；23.05–24.10 用 opkg 命令；每组适用于 x86_64 软路由与 arm64 设备。'
+            . 'arm64 设备若提示 “incompatible with the architectures configured” 或 “uninstallable … arch: aarch64_generic”，说明固件架构是 aarch64_cortex-a53 之类的具体型号，请改用上面的一键脚本，它会自动登记 aarch64_generic 架构。</div>'
             . '<details style="margin-top:10px;"><summary>OpenWrt 25.12+（apk 包管理器）· x86_64 / amd64</summary>'
             . '<div class="muted" style="margin:6px 0;">OpenWrt 25.12 起系统包管理器从 opkg 换成了 apk，无法安装 .ipk 包；这些版本请用下面的 apk 命令安装 .apk 包。功能与 opkg 版完全一致。</div>'
             . '<pre class="tenant-client-install__command">' . $this->escape($amd64ApkCommand) . '</pre>'
@@ -1764,6 +1788,7 @@ final class TenantController extends BaseController
                     . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
                     . '</div></details>'
                 : '')
+            . '</details>'
             . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
             . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
             . '</section>';

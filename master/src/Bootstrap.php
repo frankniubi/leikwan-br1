@@ -466,6 +466,8 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
         $this->router->add('GET', '/artifacts/install-docker-client.sh', [$artifacts, 'installDockerClient']);
+        $this->router->add('GET', '/artifacts/install-openwrt.sh', [$artifacts, 'installOpenwrt']);
+        $this->router->add('GET', '/artifacts/openwrt-packages.txt', [$artifacts, 'openwrtPackages']);
         $this->router->add('GET', '/artifacts/docker-client/docker-compose.yml', [$artifacts, 'dockerClientCompose']);
         $this->router->add('GET', '/artifacts/docker-client/Dockerfile', [$artifacts, 'dockerClientDockerfile']);
         $this->router->add('GET', '/artifacts/docker-client/fetch-artifacts.py', [$artifacts, 'dockerClientFetchArtifacts']);

@@ -381,6 +381,25 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-docker-client.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    /**
+     * The OpenWrt installer and its package manifest change with every router
+     * release, so neither may be cached the way the versioned artifacts are:
+     * a stale manifest would pin routers to the previous packages.
+     */
+    public function installOpenwrt(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-openwrt.sh', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
+    public function openwrtPackages(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/openwrt-packages.txt', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
     public function dockerClientCompose(Request $request, array $params): Response
     {
         return $this->serveRepoFile('deploy/docker-client/docker-compose.yml', 'text/plain; charset=utf-8', $request);
