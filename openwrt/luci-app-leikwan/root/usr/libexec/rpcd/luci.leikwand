@@ -202,9 +202,19 @@ function agentPresent() {
 	return (st != null && st.type == 'file');
 }
 
+// shellQuote() wraps one argument in single quotes for /bin/sh. Inside single
+// quotes nothing is special except the quote itself, which is closed, escaped
+// and reopened ('\''), so any value — URL, token, device name — passes intact.
+function shellQuote(value) {
+	return "'" + replace(value, "'", "'\\''") + "'";
+}
+
 // ctl() runs one control command and returns { ok, data } / { ok, error }.
-// The argument vector form of fs.popen() is used on purpose: no shell is
-// involved, so values such as passwords or URLs need no quoting.
+// fs.popen() is given a quoted command string, not an argument vector: the
+// ucode shipped with OpenWrt 25.12 (2026.01.x) rejects the array form with
+// "Invalid argument", which made every call report agent_unavailable and the
+// web UI show a running daemon as stopped. The string form works on 23.05,
+// 24.10 and 25.12 alike.
 function ctl(command, params) {
 	let argv = [ BIN, 'ctl', command ];
 	let proc = null;
@@ -230,7 +240,7 @@ function ctl(command, params) {
 	}
 
 	try {
-		proc = fs.popen(argv, 'r');
+		proc = fs.popen(join(' ', map(argv, shellQuote)) + ' 2>/dev/null', 'r');
 	}
 	catch (e) {
 		return err('agent_unavailable');
