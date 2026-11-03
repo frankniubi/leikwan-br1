@@ -1,0 +1,42 @@
+{
+  "archive": {
+    "name": "macos-client-test.tar",
+    "sha256": "90e31926d8b7c0f5cc1e63310dbd4683445e4fb91f41f236893526d918117e36",
+    "size_bytes": 149616640
+  },
+  "files": [
+    {
+      "name": "leikwan-bridge-arm64-metadata.json",
+      "sha256": "324136cd88d8b25bbc98487131870962b6f62303f27bd28c4ffb6662940db2ef",
+      "size_bytes": 3834
+    },
+    {
+      "name": "leikwan-bridge-arm64.dmg",
+      "sha256": "6b8179844cb297a9a0ebaf657c28ec5e73c52c7fe517dadd113a7578f3ce34a1",
+      "size_bytes": 79141588
+    },
+    {
+      "name": "leikwan-bridge-update-arm64.zip",
+      "sha256": "08d2049f733ab95a28e797a51bd08d8bd4fe067e0e9e0b7a79a24c1f0a4a3dd4",
+      "size_bytes": 70457175
+    },
+    {
+      "name": "macos-client-combined-metadata.json",
+      "sha256": "e97b28b12c078881d8d663801506c819bdc87ff202171be3611efd2b7176b9c7",
+      "size_bytes": 2947
+    }
+  ],
+  "parts": [
+    {
+      "name": "macos-client-test.tar.part-000",
+      "sha256": "4290c5c0a8a07d20fbf1d540cde01d8b268e84f5ee5a186c02f2f501a4cb5204",
+      "size_bytes": 83886080
+    },
+    {
+      "name": "macos-client-test.tar.part-001",
+      "sha256": "c6cd08e701f1e7713f7c87a5d9f4647c0ae9e929186e6e6523ca16a3d6e9120a",
+      "size_bytes": 65730560
+    }
+  ],
+  "source_commit": "aa315f49a16593baaf01716b586654e90ad0b634"
+}
