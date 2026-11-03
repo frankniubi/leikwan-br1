@@ -36,7 +36,7 @@ cleanup() {
 	# Keep the evidence: a failing integration run is worthless without the
 	# daemon's own view of what happened.
 	mkdir -p "$ART"
-	for f in daemon.log panel.log relay.log echo.log; do
+	for f in daemon.log panel.log relay.log echo.log usage.jsonl usage_totals.json; do
 		[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$ART/$f"
 	done
 	for f in status.json status2.json forwards.json forwards2.json diag.json; do
@@ -140,6 +140,17 @@ cat > "$ROOT/leikwan.uci" <<EOF
 config leikwan 'main'
 	option enabled '1'
 	option panel_url 'http://127.0.0.1:$PANEL_PORT'
+	# Never let a test reach the production fallback panel: it ships in the
+	# binary, and one transport hiccup against the mock would send it a fake
+	# token (the real panel answers 401, which reads like an auth bug). A
+	# closed port keeps the failure local and visible.
+	option fallback_panel_url 'http://127.0.0.1:1'
+	# The mock panel is on loopback. The Panel egress pin would bind panel
+	# sockets to the physical WAN, and a device-bound dial to 127.0.0.1 cannot
+	# succeed, so the daemon would fall through to its production fallback URL
+	# and see a 401. A router in service never points at loopback, so disabling
+	# the pin here tests the daemon rather than an impossible deployment.
+	option panel_egress_interface 'none'
 	# router edition: no mode option
 	option poll_interval '2'
 	option heartbeat_interval '2'
@@ -278,6 +289,74 @@ step "heartbeat reporting"
 wait_for 20 test -f "$STATE/last_heartbeat.json" && ok "heartbeat reached the panel" || bad "no heartbeat received"
 HB="$STATE/last_heartbeat.json"
 [ "$(jsonq "$HB" "bool(d['agent_version'])")" = "True" ] && ok "heartbeat carries the agent version" || bad "agent_version missing"
+
+step "usage accounting"
+# The traffic above was real; the panel must be billed for it, and a snapshot
+# must never be counted twice (the agent only clears its queue on the ack).
+wait_for 20 test -s "$STATE/usage.jsonl" && ok "usage snapshots reached the panel" || bad "no usage reached the panel"
+USAGE_SUM=$(python3 -c "
+import json,sys
+total=0
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    total+=int(item.get('bytes_in',0))+int(item.get('bytes_out',0))
+print(total)" "$STATE/usage.jsonl" 2>/dev/null)
+[ "${USAGE_SUM:-0}" -gt 0 ] && ok "billed bytes are non-zero ($USAGE_SUM)" || bad "usage totals are zero"
+DUPES=$(python3 -c "
+import json,sys
+seen=set(); dupes=0
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    key=(item.get('forward_id'), item.get('sequence'))
+    if key in seen: dupes+=1
+    seen.add(key)
+print(dupes)" "$STATE/usage.jsonl" 2>/dev/null)
+[ "${DUPES:-0}" = "0" ] && ok "no usage snapshot was billed twice" || bad "$DUPES duplicate usage snapshots"
+
+step "configuration sync: a line rotation reaches the runtime"
+# A new policy generation is the panel's line rotation. The agent must ask for
+# fresh leases under it, and traffic must keep flowing across the change.
+NEWGEN=$(printf 'b%.0s' $(seq 1 64))
+echo "$NEWGEN" > "$STATE/policy_generation"
+ROTATED=0
+for _ in $(seq 1 40); do
+	# Every request is appended: the "last" file is overwritten by the next
+	# refresh, which is why the generation has to be searched for, not read
+	# from one snapshot.
+	if grep -q "\"policy_generation\": \"$NEWGEN\"" "$STATE/lease_requests.jsonl" 2>/dev/null; then ROTATED=1; break; fi
+	sleep 1
+done
+[ "$ROTATED" = "1" ] && ok "agent requested leases under the new generation" || bad "rotation never reached the panel"
+RESP=$(forward_echo "$LISTEN_PORT" "after-rotation")
+case "$RESP" in echo:*) ok "traffic kept flowing across the rotation" ;; *) bad "traffic broke on rotation ($RESP)" ;; esac
+
+step "panel unreachable: the installed grant keeps serving"
+# A 503 from every endpoint is what a router sees when the panel is down.
+# Nothing on the data path depends on it, so an existing lease must keep
+# serving; only a *refusal* may stop traffic.
+echo "1" > "$STATE/offline"
+OFFLINE_SEEN=0
+for _ in $(seq 1 30); do
+	ctl status > "$ROOT/status_offline.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status_offline.json" "bool(d['data']['last_pull_error'])")" = "True" ]; then OFFLINE_SEEN=1; break; fi
+	sleep 1
+done
+[ "$OFFLINE_SEEN" = "1" ] && ok "agent reports the panel as unreachable" || bad "outage was not noticed"
+RESP=$(forward_echo "$LISTEN_PORT" "during-outage")
+case "$RESP" in echo:*) ok "traffic kept flowing while the panel was unreachable" ;; *) bad "traffic dropped during the outage ($RESP)" ;; esac
+kill -0 "$DAEMON_PID" 2>/dev/null && ok "daemon survived the outage" || bad "daemon died during the outage"
+
+step "panel recovery"
+rm -f "$STATE/offline"
+RECOVERED=0
+for _ in $(seq 1 40); do
+	ctl status > "$ROOT/status_recovered.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status_recovered.json" "d['data']['last_pull_error']")" = "" ]; then RECOVERED=1; break; fi
+	sleep 1
+done
+[ "$RECOVERED" = "1" ] && ok "agent reconnected to the panel" || bad "agent never reconnected"
+RESP=$(forward_echo "$LISTEN_PORT" "after-recovery")
+case "$RESP" in echo:*) ok "traffic flows after recovery" ;; *) bad "traffic did not recover ($RESP)" ;; esac
 
 step "layer-1 high availability: runtime death is recovered"
 ULTRA_PID=$(runtime_pids "$ULTRA" | head -1)
