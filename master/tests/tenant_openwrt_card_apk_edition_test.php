@@ -59,7 +59,10 @@ namespace {
     $html = $render($controller, ['id' => 7, 'agent_token' => 'tok-123']);
     foreach ([
         'cd /tmp &amp;&amp; { command -v curl &gt;/dev/null &amp;&amp; curl -fsSL' => 'apk download stage (apk cannot take HTTPS URLs directly)',
-        '|| wget -q ' => 'wget fallback for images without curl',
+        '|| wget -q -O ' => 'wget fallback for images without curl',
+        "-o &#039;leikwand-1.2.6-r1.apk&#039; " => 'each file is saved under its own name',
+        "-o &#039;leikwan-runtime-1.2.6-r1.apk&#039; " => 'runtime is saved under its own name',
+        "-o &#039;luci-app-leikwan-1.1.1-r1.apk&#039; " => 'luci app is saved under its own name',
         'apk add --allow-untrusted' => 'apk install command',
         '/apk/amd64/leikwand-1.2.6-r1.apk' => 'amd64 apk file URL',
         '/apk/arm64/leikwand-1.2.6-r1.apk' => 'arm64 apk file URL',

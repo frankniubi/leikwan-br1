@@ -262,3 +262,60 @@ jobs:
           fi
           echo "smoke boot completed (init finished, network up)"
           kill $(cat qemu.pid) 2>/dev/null || true
+
+  router-vm:
+    # The end-to-end test: a stock OpenWrt image, the panel's install command,
+    # registration through rpcd, a real forwarding path, usage, line rotation,
+    # a panel outage, relay failover, an unattended reboot and a clean removal.
+    # Runs both editions because the install path and the package manager
+    # differ; the daemon and the runtime are the same build.
+    name: Router VM end-to-end (${{ matrix.edition }} on ${{ matrix.release }})
+    needs: [packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: apk
+            release: "25.12.6"
+            arch: amd64
+          - edition: opkg
+            release: "24.10.4"
+            arch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-${{ matrix.edition }}-pkgs-${{ matrix.arch }}
+          path: pkgs
+      - name: Host tooling
+        run: |
+          sudo apt-get update -qq
+          # qemu-system-x86 (TCG: the runner has no /dev/kvm), e2fsprogs for
+          # the offline rootfs resize, sfdisk for the partition table, and the
+          # ssh client the harness drives the router with.
+          sudo apt-get install -y -qq qemu-system-x86 e2fsprogs fdisk dosfstools \
+            curl python3 openssh-client
+          qemu-system-x86_64 --version | head -1
+          command -v debugfs resize2fs sfdisk
+      - name: Router end-to-end
+        run: |
+          chmod +x openwrt/tests/router-vm-e2e.sh
+          ./openwrt/tests/router-vm-e2e.sh \
+            --edition ${{ matrix.edition }} \
+            --release ${{ matrix.release }} \
+            --image-dir "$PWD/pkgs"
+      - name: Collect evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: router-vm-${{ matrix.edition }}-failure
+          path: |
+            /tmp/leikwan-vm-*/serial.log
+            /tmp/leikwan-vm-*/daemon.log
+            /tmp/leikwan-vm-*/syslog.log
+            /tmp/leikwan-vm-*/panel-state/
+            /tmp/leikwan-vm-*/panel.log
+            /tmp/leikwan-vm-*/relay*.log
+          if-no-files-found: ignore

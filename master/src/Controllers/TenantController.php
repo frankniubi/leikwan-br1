@@ -1783,15 +1783,18 @@ final class TenantController extends BaseController
      */
     private function apkInstallCommand(string $dirUrl, array $files): string
     {
-        $urls = [];
+        // One download per file: `curl -O` names only the URL that follows it,
+        // so a single curl call with several URLs leaves all but the last file
+        // unsaved. Each file is fetched in its own step instead.
+        $downloads = [];
         foreach ($files as $file) {
-            $urls[] = $dirUrl . '/' . $file;
+            $url = $this->shellQuote($dirUrl . '/' . $file);
+            $downloads[] = '{ command -v curl >/dev/null && curl -fsSL -o ' . $this->shellQuote($file) . ' ' . $url
+                . ' || wget -q -O ' . $this->shellQuote($file) . ' ' . $url . '; }';
         }
         $quotedFiles = implode(' ', array_map([$this, 'shellQuote'], $files));
-        $quotedUrls = implode(' ', array_map([$this, 'shellQuote'], $urls));
         return 'cd /tmp && '
-            . '{ command -v curl >/dev/null && curl -fsSL ' . $quotedUrls . ' -O'
-            . ' || wget -q ' . $quotedUrls . '; } && '
+            . implode(' && ', $downloads) . ' && '
             . 'apk add --allow-untrusted ' . $quotedFiles;
     }
 
