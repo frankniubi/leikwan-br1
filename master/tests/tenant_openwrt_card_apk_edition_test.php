@@ -79,6 +79,26 @@ namespace {
         }
     }
 
+    // The sections are ordered newest firmware first: 25.12+ apk, then
+    // 23.05-24.10 opkg, then the 21.02/22.03 legacy CLI-only line.
+    $order = [
+        'OpenWrt 25.12+（apk 包管理器）· x86_64',
+        'OpenWrt 25.12+（apk 包管理器）· arm64',
+        'OpenWrt 23.05 – 24.10，opkg）</summary><pre class="tenant-client-install__command">' . 'opkg',
+        'OpenWrt 21.02 / 22.03',
+    ];
+    $lastPos = -1;
+    foreach ($order as $marker) {
+        $pos = strpos($html, $marker);
+        if ($pos === false) {
+            failOpenwrtCard("section marker not found: $marker");
+        }
+        if ($pos < $lastPos) {
+            failOpenwrtCard("sections must render newest firmware first: $marker appears out of order");
+        }
+        $lastPos = $pos;
+    }
+
     // Without a client identity: directory URLs only, no register suffix.
     $anon = $render($controller, ['id' => 0, 'agent_token' => '']);
     if (str_contains($anon, 'leikwand ctl register')) {

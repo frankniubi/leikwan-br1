@@ -1742,6 +1742,16 @@ final class TenantController extends BaseController
             . '<div class="actions">'
             . $this->renderCopyButton('复制 arm64 命令', $arm64ApkCommand, 'secondary', '已复制', '复制失败')
             . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05 – 24.10，opkg）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05 – 24.10，opkg）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
             . ($hasClient
                 ? '<details style="margin-top:10px;"><summary>OpenWrt 21.02 / 22.03 老设备（仅命令行，无网页界面）</summary>'
                     . '<div class="muted" style="margin:6px 0;">这些版本的仓库没有 ucode，LuCI 集成无法运行；只装核心包，用 SSH 命令行动线，功能（转发监听 + 原生出口中继）与新版完全一致。</div>'
@@ -1754,16 +1764,6 @@ final class TenantController extends BaseController
                     . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
                     . '</div></details>'
                 : '')
-            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05 – 24.10，opkg）</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
-            . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05 – 24.10，opkg）</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
-            . '</div></details>'
             . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
             . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
             . '</section>';
