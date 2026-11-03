@@ -203,26 +203,39 @@ fi
 # --- install ---------------------------------------------------------------
 
 # The arm64 packages are built for aarch64_generic, while most aarch64 routers
-# declare a CPU-specific architecture (aarch64_cortex-a53, ...). The binaries are
-# static and run on every aarch64 CPU, so the package architecture is accepted
-# for this one transaction when the firmware does not already list it.
+# declare a CPU-specific architecture (aarch64_cortex-a53, ...). Both package
+# managers refuse a package whose architecture the firmware does not list. The
+# binaries are static and run on every aarch64 CPU, so the package architecture
+# is added to the firmware's list — persistently, because the agent's own
+# self-update installs the next release the same way. Verified on stock images:
+#   - apk:  an extra line in /etc/apk/arch (`apk --arch` does not help: it
+#           still rejects the file);
+#   - opkg: /etc/opkg/leikwan-arch.conf repeating the firmware's list plus the
+#           package arch. Any `arch` line replaces opkg's built-in list, which is
+#           why the existing entries are carried over (`--add-arch` alone drops
+#           them and makes every installed package invalid).
 if [ "$PM" = apk ]; then
-	set -- add --allow-untrusted
-	if [ -f "$ROOT/etc/apk/arch" ] && ! grep -qx "$PKG_ARCH" "$ROOT/etc/apk/arch"; then
-		for a in $(cat "$ROOT/etc/apk/arch"); do set -- --arch "$a" "$@"; done
-		set -- --arch "$PKG_ARCH" "$@"
-		log "accepting package architecture $PKG_ARCH alongside $(tr '\n' ' ' < "$ROOT/etc/apk/arch")"
+	ARCH_FILE="$ROOT/etc/apk/arch"
+	if [ -f "$ARCH_FILE" ] && ! grep -qx "$PKG_ARCH" "$ARCH_FILE"; then
+		log "firmware architecture is $(tr '\n' ' ' < "$ARCH_FILE"); adding $PKG_ARCH to $ARCH_FILE"
+		echo "$PKG_ARCH" >> "$ARCH_FILE" || die "cannot update $ARCH_FILE"
 	fi
 	# shellcheck disable=SC2086
-	apk "$@" $FILES || die "apk could not install the packages"
+	apk add --allow-untrusted $FILES || die "apk could not install the packages"
 else
-	set -- install
-	if ! opkg print-architecture 2>/dev/null | awk '{print $2}' | grep -qx "$PKG_ARCH"; then
-		set -- --add-arch "$PKG_ARCH:200" "$@"
-		log "accepting package architecture $PKG_ARCH for this install"
+	ARCHES=$(opkg print-architecture 2>/dev/null)
+	if ! echo "$ARCHES" | awk '{print $2}' | grep -qx "$PKG_ARCH"; then
+		ARCH_CONF="$ROOT/etc/opkg/leikwan-arch.conf"
+		log "firmware architectures: $(echo "$ARCHES" | awk '{printf "%s ", $2}'); adding $PKG_ARCH in $ARCH_CONF"
+		mkdir -p "$ROOT/etc/opkg"
+		{
+			echo "# Added by the Leikwan installer: the aarch64 agent is built for $PKG_ARCH."
+			echo "$ARCHES" | grep '^arch '
+			echo "arch $PKG_ARCH 5"
+		} > "$ARCH_CONF" || die "cannot write $ARCH_CONF"
 	fi
 	# shellcheck disable=SC2086
-	opkg "$@" $FILES || die "opkg could not install the packages"
+	opkg install $FILES || die "opkg could not install the packages"
 fi
 
 # The package's postinst enables and starts the service. Make sure of it: an

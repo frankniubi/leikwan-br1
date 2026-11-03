@@ -108,22 +108,30 @@ echo "== opkg, aarch64, no ucode (21.02/22.03 style), CPU-specific arch"
 new_root opkg-arm opkg
 STUB_ARCHES="all noarch aarch64_cortex-a53" run aarch64
 [ "$RC" = 0 ] && ok "exit 0" || bad "exit $RC: $OUT"
-called "opkg --add-arch aarch64_generic:200 install .*/leikwand_1.2.6-r1_aarch64_generic.ipk .*/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk$" \
-	&& ok "opkg installs the arm64 core ipks with the aarch64_generic override" || bad "opkg call: $(cat "$CALLS")"
+called "opkg install .*/leikwand_1.2.6-r1_aarch64_generic.ipk .*/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk$" \
+	&& ok "opkg installs the arm64 core ipks" || bad "opkg call: $(cat "$CALLS")"
+called "add-arch" && bad "never --add-arch: it replaces the firmware's list" || ok "no --add-arch"
+CONF="$ROOT/etc/opkg/leikwan-arch.conf"
+grep -qx "arch aarch64_cortex-a53 10" "$CONF" 2>/dev/null && grep -qx "arch all 10" "$CONF" && grep -qx "arch aarch64_generic 5" "$CONF" \
+	&& ok "arch.conf keeps the firmware's list and adds aarch64_generic" || bad "arch conf: $(cat "$CONF" 2>/dev/null)"
 called "luci-app-leikwan" && bad "no LuCI app without ucode" || ok "no LuCI app without ucode"
 called "ctl register" && bad "no register without credentials" || ok "no register without credentials"
 
 echo "== opkg, aarch64, arch already listed"
 new_root opkg-arm-generic opkg
 STUB_ARCHES="all noarch aarch64_generic" run aarch64 --no-luci
-called "opkg install " && ! called "--add-arch" && ok "no override when aarch64_generic is listed" || bad "opkg call: $(cat "$CALLS")"
+called "opkg install " && [ ! -e "$ROOT/etc/opkg/leikwan-arch.conf" ] && ok "no arch change when aarch64_generic is listed" || bad "opkg call: $(cat "$CALLS")"
 
 echo "== apk, aarch64, CPU-specific arch"
 new_root apk-arm apk
 echo aarch64_cortex-a53 > "$ROOT/etc/apk/arch"
 run aarch64
-called "apk --arch aarch64_generic --arch aarch64_cortex-a53 add --allow-untrusted .*/apk/arm64/\|apk --arch aarch64_generic --arch aarch64_cortex-a53 add --allow-untrusted .*leikwand-1.2.6-r1.apk" \
-	&& ok "apk accepts aarch64_generic next to the firmware arch" || bad "apk call: $(cat "$CALLS")"
+called "apk add --allow-untrusted .*leikwand-1.2.6-r1.apk" && ! called "--arch" \
+	&& ok "apk installs the arm64 apks" || bad "apk call: $(cat "$CALLS")"
+[ "$(cat "$ROOT/etc/apk/arch")" = "aarch64_cortex-a53"$'\n'"aarch64_generic" ] \
+	&& ok "/etc/apk/arch keeps the firmware arch and adds aarch64_generic" || bad "apk arch: $(cat "$ROOT/etc/apk/arch")"
+run aarch64
+[ "$(grep -c aarch64_generic "$ROOT/etc/apk/arch")" = 1 ] && ok "a second run does not add it twice" || bad "duplicate arch lines"
 
 echo "== the manifest picks the current version, not an older file on disk"
 new_root opkg-x86 opkg

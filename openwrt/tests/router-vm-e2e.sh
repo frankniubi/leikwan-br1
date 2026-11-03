@@ -15,7 +15,7 @@
 # the artifacts are served from the host through QEMU's user network.
 #
 # Usage: router-vm-e2e.sh --edition apk|opkg --image-dir <dir with leikwand*>
-#                         [--version 25.12.6] [--keep]
+#                         [--arm64-dir <dir>] [--release 25.12.6] [--keep]
 # The image directory is a package directory from the CI packages job (or a
 # local SDK output). The stock firmware comes from downloads.openwrt.org.
 
@@ -23,6 +23,10 @@ set -uo pipefail
 
 EDITION=apk
 IMAGE_DIR=""
+# Optional arm64 packages of the same edition: the CPU-specific-architecture
+# phase installs them on this x86 router to exercise the installer's arch
+# handling with the real aarch64_generic packages.
+ARM64_DIR=""
 RELEASE=""
 KEEP=0
 HOST_FWD=2422
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--edition) EDITION="$2"; shift 2 ;;
 		--image-dir) IMAGE_DIR="$2"; shift 2 ;;
+		--arm64-dir) ARM64_DIR="$2"; shift 2 ;;
 		--release) RELEASE="$2"; shift 2 ;;
 		--keep) KEEP=1; shift ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -237,6 +242,16 @@ mkdir -p "$WORK/www/artifacts/files/openwrt/$PKG_SUBDIR"
 for f in $PKG_FILES; do cp "$IMAGE_DIR/$f" "$WORK/www/artifacts/files/openwrt/$PKG_SUBDIR/"; done
 (cd "$WORK/www/artifacts/files/openwrt" && for f in $PKG_FILES; do sha256sum "$PKG_SUBDIR/$f"; done) \
 	> "$WORK/www/artifacts/openwrt-packages.txt"
+if [ -n "$ARM64_DIR" ]; then
+	if [ "$EDITION" = "apk" ]; then ARM_SUBDIR="apk/arm64"; else ARM_SUBDIR="arm64"; fi
+	mkdir -p "$WORK/www/artifacts/files/openwrt/$ARM_SUBDIR"
+	for name in leikwand leikwan-runtime; do
+		f=$(cd "$ARM64_DIR" && ls ${name}[_-][0-9]*.$EXT 2>/dev/null | head -1)
+		[ -n "$f" ] || { echo "missing arm64 $name in $ARM64_DIR"; exit 2; }
+		cp "$ARM64_DIR/$f" "$WORK/www/artifacts/files/openwrt/$ARM_SUBDIR/"
+		(cd "$WORK/www/artifacts/files/openwrt" && sha256sum "$ARM_SUBDIR/$f") >> "$WORK/www/artifacts/openwrt-packages.txt"
+	done
+fi
 cp "$REPO/install/install-openwrt.sh" "$WORK/www/artifacts/install-openwrt.sh"
 python3 -m http.server "$ART_PORT" --bind 0.0.0.0 --directory "$WORK/www" >"$WORK/art.log" 2>&1 &
 ART_PID=$!
@@ -617,40 +632,46 @@ echo "$UNINSTALL" | grep -q 'exit=0' && ok "packages removed" || bad "uninstall 
 vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && bad "daemon still running after removal" || ok "daemon stopped with the package"
 vm 'test -e /usr/bin/leikwand && echo present' | grep -q present && bad "binary left behind" || ok "binary removed"
 
-step "a firmware with a CPU-specific architecture"
-# Most aarch64 routers declare aarch64_cortex-a53 (or similar) while the arm64
-# packages are aarch64_generic. Reproduce that here: the firmware's arch list
-# loses x86_64, and the installer must still install by accepting the package
-# architecture for its one transaction.
-if [ "$EDITION" = "apk" ]; then
-	vm 'cp /etc/apk/arch /tmp/apk-arch.keep && echo x86_64_cpu > /etc/apk/arch'
-	SIM=$(vm 'cat /etc/apk/arch')
-	[ "$SIM" = "x86_64_cpu" ] && ok "firmware arch is now CPU-specific ($SIM)" || bad "could not change /etc/apk/arch"
+step "arm64 packages on a firmware that does not list aarch64_generic"
+# Most aarch64 routers declare a CPU-specific architecture (aarch64_cortex-a53,
+# ...) while the arm64 packages are aarch64_generic, and both apk and opkg
+# refuse a package whose architecture the firmware does not list. This x86
+# router lists neither, so installing the real arm64 packages here (the build
+# forced with LEIKWAN_MACHINE) reproduces exactly that refusal. The installer
+# must add the architecture persistently, and a plain package-manager install
+# afterwards — the agent's self-update path — must work without its help. The
+# arm64 binary cannot run on x86, so the service itself is not asserted.
+if [ -z "$ARM64_DIR" ]; then
+	echo "  (skipped: no --arm64-dir)"
 else
-	vm_script <<'ARCHSIM'
-cp /etc/opkg.conf /tmp/opkg.conf.keep
-sed -i '/^arch /d' /etc/opkg.conf
-printf 'arch all 1\narch noarch 1\narch x86_64_cpu 10\n' >> /etc/opkg.conf
-ARCHSIM
-	SIM=$(vm 'opkg print-architecture')
-	echo "$SIM" | grep -q 'x86_64_cpu' && ! echo "$SIM" | grep -qw 'x86_64' \
-		&& ok "firmware arch is now CPU-specific" || bad "could not change the opkg arch list: $SIM"
-fi
-# /tmp was wiped by the reboot, so this fetches the installer again.
-OUT=$(run_remote "$INSTALLER_CMD")
-echo "$OUT" | sed 's/^/    | /'
-echo "$OUT" | grep -q 'installer-exit=0' && ok "installer succeeded on the CPU-specific firmware" || bad "installer failed on the CPU-specific firmware"
-echo "$OUT" | grep -q 'accepting package architecture x86_64' && ok "installer accepted the package architecture" || bad "no architecture override was applied"
-vm 'test -x /usr/bin/leikwand && echo present' | grep -q present && ok "leikwand installed through the override" || bad "leikwand not installed"
-for _ in $(seq 1 20); do
-	vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && break
-	sleep 2
-done
-vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && ok "service runs after the override install" || bad "service not running"
-if [ "$EDITION" = "apk" ]; then
-	vm 'cp /tmp/apk-arch.keep /etc/apk/arch; apk del luci-app-leikwan >/dev/null 2>&1; apk del leikwand leikwan-runtime >/dev/null 2>&1'
-else
-	vm 'cp /tmp/opkg.conf.keep /etc/opkg.conf; opkg remove luci-app-leikwan >/dev/null 2>&1; opkg remove leikwand leikwan-runtime >/dev/null 2>&1'
+	if [ "$EDITION" = "apk" ]; then
+		vm 'grep -qx aarch64_generic /etc/apk/arch' && bad "firmware already lists aarch64_generic" || ok "firmware does not list aarch64_generic"
+	else
+		vm 'opkg print-architecture' | grep -qw aarch64_generic && bad "firmware already lists aarch64_generic" || ok "firmware does not list aarch64_generic"
+	fi
+	ARM_CMD="{ wget -qO /tmp/leikwan-install.sh '$PANEL_LOCAL/artifacts/install-openwrt.sh' || curl -fsSL -o /tmp/leikwan-install.sh '$PANEL_LOCAL/artifacts/install-openwrt.sh'; } && LEIKWAN_MACHINE=aarch64 sh /tmp/leikwan-install.sh --panel '$PANEL_LOCAL' --no-luci; echo installer-exit=\$?"
+	OUT=$(run_remote "$ARM_CMD")
+	echo "$OUT" | sed 's/^/    | /'
+	echo "$OUT" | grep -q 'installer-exit=0' && ok "installer installed the aarch64_generic packages" || bad "installer failed on the arch mismatch"
+	echo "$OUT" | grep -q 'adding aarch64_generic' && ok "installer added the package architecture" || bad "no architecture was added"
+	if [ "$EDITION" = "apk" ]; then
+		vm 'apk info -e leikwand' | grep -q leikwand && ok "apk lists leikwand as installed" || bad "leikwand not installed"
+		vm 'grep -qx aarch64_generic /etc/apk/arch && echo kept' | grep -q kept && ok "/etc/apk/arch keeps aarch64_generic" || bad "arch not persisted"
+		SELF=$(run_remote "cd /tmp && wget -qO self.apk '$PANEL_LOCAL/artifacts/files/openwrt/apk/arm64/$(cd "$ARM64_DIR" && ls leikwand-[0-9]*.apk | head -1)' && apk add --allow-untrusted /tmp/self.apk >/dev/null 2>&1; echo self-exit=\$?")
+	else
+		vm 'opkg status leikwand' | grep -q 'Status:.* installed' && ok "opkg lists leikwand as installed" || bad "leikwand not installed"
+		vm 'opkg print-architecture' | grep -qw aarch64_generic && ok "opkg keeps aarch64_generic configured" || bad "arch not persisted"
+		vm 'opkg print-architecture' | grep -qw x86_64 && ok "the firmware's own architecture is still listed" || bad "the firmware arch was dropped"
+		SELF=$(run_remote "cd /tmp && wget -qO self.ipk '$PANEL_LOCAL/artifacts/files/openwrt/arm64/$(cd "$ARM64_DIR" && ls leikwand_[0-9]*.ipk | head -1)' && opkg install --force-reinstall /tmp/self.ipk >/dev/null 2>&1; echo self-exit=\$?")
+	fi
+	echo "$SELF" | grep -q 'self-exit=0' && ok "a plain reinstall works afterwards (self-update path)" || bad "plain reinstall failed: $SELF"
+	if [ "$EDITION" = "apk" ]; then
+		vm 'apk del leikwand leikwan-runtime >/dev/null 2>&1; sed -i "/^aarch64_generic$/d" /etc/apk/arch'
+	else
+		vm 'opkg remove leikwand leikwan-runtime >/dev/null 2>&1; rm -f /etc/opkg/leikwan-arch.conf'
+	fi
+	OTHERS=$(vm "$([ "$EDITION" = apk ] && echo 'apk info -e busybox' || echo 'opkg status busybox')")
+	echo "$OTHERS" | grep -q 'busybox\|installed' && ok "the firmware's own packages are untouched" || bad "firmware packages affected: $OTHERS"
 fi
 
 step "result"
