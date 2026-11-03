@@ -101,8 +101,7 @@ fi
 # against the image keyring. A freshly unpacked ImageBuilder ships no key pair
 # and no keyring entry, so both are created here; without them the build fails
 # with an opaque "Signature check failed" followed by "Cannot install package
-# leikwand". The same usign key flow covers opkg (keys/<fingerprint>) and apk
-# (keys/<fingerprint> under /etc/apk/keys in the image) ImageBuilders.
+# leikwand".
 USIGN="$IB/staging_dir/host/bin/usign"
 if [ -x "$USIGN" ]; then
 	if [ ! -f "$IB/key-build" ]; then
@@ -116,6 +115,29 @@ if [ -x "$USIGN" ]; then
 			mkdir -p "$IB/keys"
 			cp "$IB/key-build.pub" "$IB/keys/$FINGERPRINT"
 			echo "==> trusting the build key $FINGERPRINT"
+		fi
+	fi
+fi
+
+# apk ImageBuilders (25.12+) sign the local index with an OpenSSL EC key pair
+# in keys/ instead: local-private-key.pem / local-public-key.pem, prime256v1,
+# each carrying an "untrusted comment:" header line (the format apk's key
+# loader expects). `make image` would create them in its _check_keys step,
+# but `make package_index` runs without it and mkndx then fails on a missing
+# --sign key — silently, because the target swallows its own errors. Create
+# the pair here exactly as the ImageBuilder itself would.
+if [ "$PKG_EXT" = "apk" ]; then
+	OPENSSL="$IB/staging_dir/host/bin/openssl"
+	if [ ! -s "$IB/keys/local-private-key.pem" ] || [ ! -s "$IB/keys/local-public-key.pem" ]; then
+		mkdir -p "$IB/keys"
+		if "$OPENSSL" ecparam -name prime256v1 -genkey -noout -out "$IB/keys/local-private-key.pem" 2>/dev/null \
+			&& sed -i '1s/^/untrusted comment: Local build key\n/' "$IB/keys/local-private-key.pem" \
+			&& "$OPENSSL" ec -in "$IB/keys/local-private-key.pem" -pubout > "$IB/keys/local-public-key.pem" 2>/dev/null \
+			&& sed -i '1s/^/untrusted comment: Local build key\n/' "$IB/keys/local-public-key.pem"; then
+			echo "==> generated the local apk signing key"
+		else
+			echo "could not generate the apk signing key with $OPENSSL" >&2
+			exit 2
 		fi
 	fi
 fi
