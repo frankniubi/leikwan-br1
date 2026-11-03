@@ -82,11 +82,12 @@ make package/leikwan/leikwan-runtime/compile V=s
 make package/leikwan/luci-app-leikwan/compile V=s
 
 echo "==> packages"
-# ipk SDKs emit .ipk; apk SDKs (25.12+) emit .apk. Whichever appears is the
-# edition this SDK produces — a missing file of the expected flavour is a
-# build failure the caller should see, so both are listed, not matched.
+# ipk SDKs emit .ipk (name_version-r1_arch.ipk); apk SDKs (25.12+) emit .apk
+# (name-version-r1.apk — hyphenated, no arch suffix). Whichever appears is the
+# edition this SDK produced, so both are listed, and the sanity check accepts
+# either naming to catch a silent SDK failure.
 find "$SDK/bin" \( -name '*.ipk' -o -name '*.apk' \) -newermt '-1 hour' -print | sort
-count=$(find "$SDK/bin" \( -name 'leikwand_*.ipk' -o -name 'leikwand_*.apk' \) -newermt '-1 hour' | wc -l)
+count=$(find "$SDK/bin" \( -name 'leikwand_*.ipk' -o -name 'leikwand-*.apk' \) -newermt '-1 hour' | wc -l)
 if [ "$count" -lt 1 ]; then
 	echo "no leikwand package produced; the SDK run failed silently" >&2
 	exit 1

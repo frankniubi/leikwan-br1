@@ -29,16 +29,18 @@ if [ ! -f "$IB/Makefile" ]; then
 fi
 
 # Locate the packages we just built. The flavour follows the SDK that made
-# them: .ipk from 24.10 and earlier, .apk from 25.12 on.
+# them: .ipk from 24.10 and earlier (leikwand_<ver>_<arch>.ipk), .apk from
+# 25.12 on (leikwand-<ver>.apk — hyphenated, no arch suffix), so the probes
+# accept either spelling per extension.
 PKG_EXT=""
 if [ -n "$IPK_DIR" ]; then
-	if ls "$IPK_DIR"/leikwand_*.apk >/dev/null 2>&1; then PKG_EXT="apk"
-	elif ls "$IPK_DIR"/leikwand_*.ipk >/dev/null 2>&1; then PKG_EXT="ipk"
+	if ls "$IPK_DIR"/leikwand[-_]*.apk >/dev/null 2>&1; then PKG_EXT="apk"
+	elif ls "$IPK_DIR"/leikwand[-_]*.ipk >/dev/null 2>&1; then PKG_EXT="ipk"
 	fi
 else
 	for candidate in "$HOME/leikwan-build/sdk/bin/packages"/*/base; do
-		if ls "$candidate"/leikwand_*.apk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="apk"; break; fi
-		if ls "$candidate"/leikwand_*.ipk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="ipk"; break; fi
+		if ls "$candidate"/leikwand[-_]*.apk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="apk"; break; fi
+		if ls "$candidate"/leikwand[-_]*.ipk >/dev/null 2>&1; then IPK_DIR="$candidate"; PKG_EXT="ipk"; break; fi
 	done
 fi
 if [ -z "$IPK_DIR" ] || [ -z "$PKG_EXT" ]; then
@@ -55,7 +57,7 @@ echo "==> using $PKG_EXT packages from $IPK_DIR"
 LOCAL_REPO="$IB/packages"
 rm -rf "$LOCAL_REPO"
 mkdir -p "$LOCAL_REPO"
-for pattern in "leikwand_*.$PKG_EXT" "leikwan-runtime_*.$PKG_EXT" "luci-app-leikwan_*.$PKG_EXT"; do
+for pattern in "leikwand[-_]*.$PKG_EXT" "leikwan-runtime[-_]*.$PKG_EXT" "luci-app-leikwan[-_]*.$PKG_EXT"; do
 	matched=0
 	for file in "$IPK_DIR"/$pattern; do
 		[ -f "$file" ] || continue

@@ -142,9 +142,15 @@ jobs:
       - name: Collect packages
         run: |
           mkdir -p artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}
-          find ~/leikwan-build/sdk/bin/packages -name 'leikwand_*.${{ matrix.ext }}' -o -name 'leikwan-runtime_*.${{ matrix.ext }}' -o -name 'luci-app-leikwan_*.${{ matrix.ext }}' \
+          # opkg names use leikwand_<ver>_<arch>.ipk; apk names are
+          # leikwand-<ver>.apk (hyphenated, no arch), so both spellings are
+          # collected per flavour.
+          find ~/leikwan-build/sdk/bin/packages -name 'leikwand*.${{ matrix.ext }}' -o -name 'leikwan-runtime*.${{ matrix.ext }}' -o -name 'luci-app-leikwan*.${{ matrix.ext }}' \
             | xargs -I{} cp {} artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
           ls -la artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          if ! ls artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/leikwand*.${{ matrix.ext }} >/dev/null 2>&1; then
+            echo "leikwand ${{ matrix.ext }} package missing" >&2; exit 1
+          fi
           # The 25.12 SDK also emits the feed index for its output packages;
           # ship it alongside the apks so the panel can serve a real feed.
           for idx in APKINDEX.tar.gz packages.adb; do
@@ -165,7 +171,7 @@ jobs:
           mv ~/leikwan-build/${{ matrix.ib-dir }} ~/leikwan-build/ib
       - name: Build firmware image
         run: |
-          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name "leikwand_*.${{ matrix.ext }}" | head -1)")
+          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand*.${{ matrix.ext }}' | head -1)")
           export LEIKWAND_VERSION=1.2.6
           # uutils coreutils: the ImageBuilder's own scripts may also probe for
           # GNU wording; make sure the diagnostics survive the run either way.
