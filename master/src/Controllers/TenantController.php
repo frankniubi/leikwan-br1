@@ -1660,9 +1660,14 @@ final class TenantController extends BaseController
      *
      * The router edition (leikwand 1.2.6) onboards exactly like the headless
      * clients: paste the panel-issued client id and agent token into LuCI (or
-     * run `leikwand ctl register` over SSH). The card renders the ipk install
-     * command for the router's architecture and a ready-made register command
-     * carrying this client's identity, so nothing has to be assembled by hand.
+     * run `leikwand ctl register` over SSH). The card renders the install
+     * command for the router's architecture, firmware generation and a
+     * ready-made register command carrying this client's identity, so nothing
+     * has to be assembled by hand.
+     *
+     * Two package generations coexist: OpenWrt 25.12+ dropped opkg for apk,
+     * so those routers get `apk add --allow-untrusted` with .apk files, while
+     * 23.05–24.10 and the 21.02/22.03 legacy lines keep the opkg .ipk path.
      *
      * Copy is Chinese like the rest of the app center and is not routed through
      * the client-side i18n dictionary (see tenantIosSection for the reason).
@@ -1687,6 +1692,19 @@ final class TenantController extends BaseController
                 . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+            // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
+            // .ipk files: those routers install .apk packages instead. The
+            // panel's own download is hash-pinned and served over HTTPS, so
+            // --allow-untrusted only skips feed-index signing, which a
+            // direct file install does not have anyway.
+            $amd64ApkCommand = 'apk add --allow-untrusted '
+                . $this->shellQuote($ipkBase . '/apk/amd64/leikwand-1.2.6-r1.apk') . ' '
+                . $this->shellQuote($ipkBase . '/apk/amd64/leikwan-runtime-1.2.6-r1.apk') . ' '
+                . $this->shellQuote($ipkBase . '/apk/amd64/luci-app-leikwan-1.1.0-r1.apk') . $register;
+            $arm64ApkCommand = 'apk add --allow-untrusted '
+                . $this->shellQuote($ipkBase . '/apk/arm64/leikwand-1.2.6-r1.apk') . ' '
+                . $this->shellQuote($ipkBase . '/apk/arm64/leikwan-runtime-1.2.6-r1.apk') . ' '
+                . $this->shellQuote($ipkBase . '/apk/arm64/luci-app-leikwan-1.1.0-r1.apk') . $register;
             // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
             // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
             // backend). Old devices get the core packages only — the SSH
@@ -1700,17 +1718,30 @@ final class TenantController extends BaseController
         } else {
             $amd64Command = $ipkBase . '/amd64/';
             $arm64Command = $ipkBase . '/arm64/';
+            $amd64ApkCommand = $ipkBase . '/apk/amd64/';
+            $arm64ApkCommand = $ipkBase . '/apk/arm64/';
         }
 
         $description = $hasClient
-            ? '刷入固件或在现有 OpenWrt 23.05+ 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            ? '刷入固件，或在现有 OpenWrt 上安装对应的三个软件包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。OpenWrt 25.12 及以后用 apk 命令（第一组）；23.05–24.10 用 opkg 命令（第二组）。'
             : '先在下方创建客户端，再回来复制带身份的安装命令。';
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
             . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.6)', 'openwrt_leikwand')) . '</strong>'
             . '<div class="muted">' . $this->escape($description)
-            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；每组命令适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . '<details style="margin-top:10px;"><summary>OpenWrt 25.12+（apk 包管理器）· x86_64 / amd64</summary>'
+            . '<div class="muted" style="margin:6px 0;">OpenWrt 25.12 起系统包管理器从 opkg 换成了 apk，无法安装 .ipk 包；这些版本请用下面的 apk 命令安装 .apk 包。功能与 opkg 版完全一致。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64ApkCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64ApkCommand, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>OpenWrt 25.12+（apk 包管理器）· arm64 / aarch64</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64ApkCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64ApkCommand, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
             . ($hasClient
                 ? '<details style="margin-top:10px;"><summary>OpenWrt 21.02 / 22.03 老设备（仅命令行，无网页界面）</summary>'
                     . '<div class="muted" style="margin:6px 0;">这些版本的仓库没有 ucode，LuCI 集成无法运行；只装核心包，用 SSH 命令行动线，功能（转发监听 + 原生出口中继）与新版完全一致。</div>'
@@ -1723,12 +1754,12 @@ final class TenantController extends BaseController
                     . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
                     . '</div></details>'
                 : '')
-            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
+            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05 – 24.10，opkg）</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
             . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05+）</summary>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05 – 24.10，opkg）</summary>'
             . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
             . '<div class="actions">'
             . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')

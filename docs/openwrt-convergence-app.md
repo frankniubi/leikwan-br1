@@ -1,6 +1,6 @@
 # OpenWrt 会聚 App — 设计与运维手册
 
-> 交付物：`openwrt/`（三个 opkg 包 + 固件构建脚本）、`tools/leikwand/`（守护进程源码与测试）、
+> 交付物：`openwrt/`（三个软件包，同一份源码出 opkg `.ipk` 与 apk `.apk` 两种格式 + 固件构建脚本）、`tools/leikwand/`（守护进程源码与测试）、
 > `master/`（面板的增量改造）。
 >
 > **leikwand 1.2（router edition）**：动线与其他平台的客户端对齐——粘贴面板签发的
@@ -189,8 +189,10 @@ leikwand ctl sign_out
 - **运行时控制套接字**只接受同 uid 的本地连接，父目录强制 0700。
 - **LuCI 从不回显令牌**，日志与诊断输出在写入前统一脱敏（Bearer/token/password/agent_token）。
 - **面板是唯一权威。** 授权被撤销时立即停止转发，不做"降级继续跑"。
-- **opkg 是唯一的运行时更新权威。** 守护进程只比对面板期望的哈希并报告漂移，
-  不自己下载替换二进制 —— 一台盒子上不能有两个更新器。
+- **系统包管理器是唯一的运行时更新权威。** 守护进程只比对面板期望的哈希并报告漂移，
+  不自己下载替换二进制 —— 一台盒子上不能有两个更新器。23.05–24.10 上权威是 opkg，
+  25.12+ 上是 apk；守护进程自更新时按下载文件的后缀（`.apk`/`.ipk`）选择安装器，
+  并通过 `X-Device-Package-Manager` 告知面板该下发哪种格式。
 
 ## 9. 面板侧改动（全部为增量）
 
@@ -260,11 +262,13 @@ leikwand ctl sign_out
 - **IPv6**：转发监听由运行时决定；原生中继与桌面一致只收 IPv4 目标。
 - **运行时尚未在面板发布 OpenWrt 制品**，所以 `runtime_drift` 通常为"未知"。
   在面板补上 `ultra_client_runtime_linux_amd64_* / _linux_arm64_*` 之前，
-  运行时通过 `opkg upgrade leikwan-runtime` 更新。
+  运行时通过包管理器更新（23.05–24.10：`opkg upgrade leikwan-runtime`；
+  25.12+：`apk upgrade leikwan-runtime`，或重跑面板卡片上的 apk 安装命令）。
 
 ## 12. 首次上真机的建议顺序
 
-1. 在**非生产**路由器上 `opkg install` 三个包，确认 `/etc/init.d/leikwand status` 正常。
+1. 在**非生产**路由器上安装三个包（23.05–24.10：`opkg install`；25.12+：
+   `apk add --allow-untrusted`，命令见面板下载卡片），确认 `/etc/init.d/leikwand status` 正常。
 2. `leikwand selftest`，确认运行时存在、目录权限正确。
 3. 用面板凭据上线，`leikwand ctl status` 应显示 `enrolled: true`。
 4. **先只开一条 forward 线路**，`leikwand ctl forwards` 看 `health` 与 `rtt_ms`；
@@ -274,4 +278,5 @@ leikwand ctl sign_out
    与 `native_lease` 应为 ok；`curl --socks5 127.0.0.1:2080 https://ifconfig.me`
    应返回线路出口地址。
 
-回滚：`opkg remove luci-app-leikwan leikwan-runtime leikwand` 彻底移除。
+回滚：`opkg remove luci-app-leikwan leikwan-runtime leikwand`（25.12+：
+`apk del luci-app-leikwan leikwan-runtime leikwand`）彻底移除。

@@ -428,6 +428,16 @@
     "size_bytes": 2592277,
     "version": "1.2.6"
   },
+  "openwrt_leikwand_apk_aarch64_generic": {
+    "architecture": "arm64",
+    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.6-r1.apk",
+    "format": "openwrt-apk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.6-r1.apk",
+    "sha256": "",
+    "size_bytes": 0,
+    "version": "1.2.6"
+  },
   "openwrt_leikwand_x86_64": {
     "architecture": "amd64",
     "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.6-r1_x86_64.ipk",
@@ -436,6 +446,16 @@
     "path": "public/artifacts/openwrt/amd64/leikwand_1.2.6-r1_x86_64.ipk",
     "sha256": "9d78fb9f3e163774c94f47eb844b4e68d8b9012aed5fa44bfde75aaf8d8b112d",
     "size_bytes": 2863896,
+    "version": "1.2.6"
+  },
+  "openwrt_leikwand_apk_x86_64": {
+    "architecture": "amd64",
+    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.6-r1.apk",
+    "format": "openwrt-apk",
+    "package": "leikwand",
+    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.6-r1.apk",
+    "sha256": "",
+    "size_bytes": 0,
     "version": "1.2.6"
   },
   "retired_runtime_030b48158478": {

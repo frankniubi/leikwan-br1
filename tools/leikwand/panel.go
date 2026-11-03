@@ -192,6 +192,10 @@ func (c *PanelClient) headers(req *http.Request) {
 	// Form factor is additive and ignored by Panels that do not know it yet.
 	req.Header.Set("X-Device-Form-Factor", "router")
 	req.Header.Set("X-Device-Architecture", runtime.GOARCH)
+	// Package-manager flavour is additive and ignored by Panels that do not
+	// know it yet: OpenWrt 25.12+ boxes have apk and need .apk updates, older
+	// ones have opkg and need .ipk. Probed once per process, not per request.
+	req.Header.Set("X-Device-Package-Manager", packageManagerFlavour())
 	req.Header.Set("X-Device-Id", c.deviceID)
 	req.Header.Set("X-Device-UUID", c.deviceID)
 	if c.deviceNme != "" {
