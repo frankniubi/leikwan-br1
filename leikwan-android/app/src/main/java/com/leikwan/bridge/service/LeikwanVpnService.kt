@@ -11,12 +11,17 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.R
+import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
+import com.leikwan.bridge.ui.shared.deviceLimitMessage
 import io.nekohasekai.libbox.CommandClient
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -42,10 +47,19 @@ import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import java.net.InetAddress
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val TAG = "LeikwanVpnService"
 private const val CHANNEL_ID = "leikwan_vpn"
 private const val NOTIFICATION_ID = 1
+private const val RECOVERY_FAILED_NOTIFICATION_ID = 2
 
 class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler {
 
@@ -53,10 +67,16 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
     private val networkMonitor by lazy {
-        AndroidNetworkMonitor(this) { network ->
-            setUnderlyingNetworks(network?.let { arrayOf(it) })
-        }
+        AndroidNetworkMonitor(this, onUnderlyingNetwork = { network ->
+            applyUnderlyingNetworks(network)
+        })
     }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var recoveryJob: Job? = null
+    /** Wi-Fi <-> cellular switch recovery (see [onDefaultInterfaceChanged]). */
+    private var switchRecoveryJob: Job? = null
+    @Volatile private var lastDefaultInterfaceName: String? = null
 
 
     companion object {
@@ -65,6 +85,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         var isRunning: Boolean = false
             private set
         var configJson: String? = null
+        /** True while this service rebuilds a connection Android killed (see [VpnRecovery]). */
+        @Volatile
+        var recovering: Boolean = false
+            private set
         @Volatile
         var startupState: VpnStartupState = VpnStartupState.IDLE
             @VisibleForTesting internal set
@@ -88,12 +112,17 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
+            // Disconnected from the notification: the tunnel must not come back on its own.
+            runCatching { Prefs.get(this).vpnConnectIntent = false }
+            recovering = false
             stopVpn()
             return START_NOT_STICKY
         }
 
         val config = configJson
         if (config == null) {
+            if (recovering) return START_STICKY
+            if (VpnRecovery.shouldRecover(intent, connectIntentSet())) return recoverConnection()
             Log.e(TAG, "No config provided")
             startupState = VpnStartupState.FAILED
             lastStartError = getString(R.string.vpn_error_no_config)
@@ -101,6 +130,81 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             return START_NOT_STICKY
         }
 
+        startRuntime(config)
+        return START_STICKY
+    }
+
+    /**
+     * Android restarted this service (sticky restart, always-on VPN or boot) without the config,
+     * which lived in the killed process. Stay in the foreground and rebuild the user's last
+     * connection through the orchestrator; its config is started in place by [startRecoveredConfig].
+     */
+    private fun recoverConnection(): Int {
+        if (prepare(this) != null) {
+            // VPN consent was revoked; only the app can ask for it again.
+            runCatching { Prefs.get(this).vpnConnectIntent = false }
+            showRecoveryFailed(getString(R.string.vpn_recovery_needs_permission))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.vpn_notification_reconnecting)))
+        } catch (e: Exception) {
+            // Android 12+ refuses a background foreground start unless the app is exempt from
+            // battery optimization; the user has to reconnect from the app.
+            Log.w(TAG, "Cannot return to the foreground to reconnect", e)
+            showRecoveryFailed(getString(R.string.vpn_recovery_background_blocked))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        recovering = true
+        startupState = VpnStartupState.IDLE
+        lastStartError = null
+        Log.i(TAG, "Rebuilding the connection after the service was restarted")
+        recoveryJob = recoveryScope.launch {
+            var failure: Exception? = null
+            for (attempt in 1..VpnRecovery.ATTEMPTS) {
+                if (attempt > 1) delay(VpnRecovery.RETRY_DELAYS_MS[attempt - 2])
+                if (!recovering) return@launch
+                // The user disconnected in the app meanwhile.
+                if (!connectIntentSet()) break
+                try {
+                    TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failure = e
+                    Log.w(TAG, "Reconnect attempt $attempt failed", e)
+                }
+            }
+            mainHandler.post {
+                if (!recovering) return@post
+                recovering = false
+                if (connectIntentSet()) showRecoveryFailed(failure?.message ?: getString(R.string.vpn_error_no_config))
+                stopVpn()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun connectIntentSet(): Boolean = runCatching { Prefs.get(this).vpnConnectIntent }.getOrDefault(false)
+
+    /**
+     * Starts the rebuilt config in this service while it recovers; false when not recovering, and
+     * the caller then starts the service the usual way. Android may refuse a second background
+     * foreground start, which the running foreground service does not need.
+     */
+    fun startRecoveredConfig(): Boolean {
+        if (!recovering) return false
+        val config = configJson ?: return false
+        startupState = VpnStartupState.STARTING
+        lastStartError = null
+        mainHandler.post { startRuntime(config) }
+        return true
+    }
+
+    private fun startRuntime(config: String) {
         startupState = VpnStartupState.STARTING
         lastStartError = null
         isRunning = false
@@ -121,6 +225,11 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             server.startOrReloadService(config, OverrideOptions())
 
             isRunning = true
+            // A failed start keeps recovering set, so the stop below leaves the service in the
+            // foreground for the next rebuild attempt.
+            recovering = false
+            getSystemService(NotificationManager::class.java)?.cancel(RECOVERY_FAILED_NOTIFICATION_ID)
+            TrafficMonitor.onStarted()
             startupState = VpnStartupState.RUNNING
             lastStartError = null
             updateNotification(getString(R.string.vpn_notification_connected))
@@ -131,8 +240,6 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.e(TAG, "Failed to start VPN", e)
             stopVpn()
         }
-
-        return START_STICKY
     }
 
     private fun closeRuntime() {
@@ -160,11 +267,19 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     fun stopVpn() {
+        switchRecoveryJob?.cancel()
+        switchRecoveryJob = null
         closeRuntime()
         // The config contains ephemeral native SOCKS credentials. Do not keep it
         // reachable after the VPN runtime has been stopped.
         configJson = null
         isRunning = false
+        TrafficMonitor.onStopped()
+        // The orchestrator stops the old tunnel before every rebuild; while recovering, the
+        // service stays in the foreground so the rebuilt config can start in place.
+        if (recovering) return
+        recoveryJob?.cancel()
+        recoveryJob = null
         if (startupState != VpnStartupState.FAILED) {
             startupState = VpnStartupState.IDLE
             lastStartError = null
@@ -174,6 +289,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        recovering = false
+        switchRecoveryJob = null
+        recoveryScope.cancel()
+        TrafficMonitor.onStopped()
         closeRuntime()
         instance = null
         isRunning = false
@@ -186,6 +305,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onRevoke() {
+        // Another VPN took over or the user turned this one off in system settings.
+        runCatching { Prefs.get(this).vpnConnectIntent = false }
+        recovering = false
         stopVpn()
     }
 
@@ -206,6 +328,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     ?.takeIf { it.isNotEmpty() },
                 inet4RouteExcludes = options.inet4RouteExcludeAddress.toRoutePrefixes(),
                 inet6RouteExcludes = options.inet6RouteExcludeAddress.toRoutePrefixes(),
+                includePackages = options.includePackage.toList(),
+                excludePackages = options.excludePackage.toList(),
             ),
             ownerPackageName = packageName,
         )
@@ -215,9 +339,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .setMtu(options.mtu)
 
         if (plan.bindActiveNetwork) {
-            resolveUnderlyingNetwork()?.let { network ->
+            resolveUnderlyingNetworks().takeIf { it.isNotEmpty() }?.let { networks ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    builder.setUnderlyingNetworks(arrayOf(network))
+                    builder.setUnderlyingNetworks(networks.toTypedArray())
                 }
             }
         }
@@ -239,9 +363,22 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Log.w(TAG, "TUN route exclusions require API 33 or newer")
         }
         plan.dnsServers.forEach { dns -> builder.addDnsServer(dns) }
-        plan.disallowedPackageNames.forEach { packageName ->
-            builder.addDisallowedApplication(packageName)
-            Log.i(TAG, "Excluded VPN owner package from captured traffic: $packageName")
+        // Apps that are not installed are skipped; Android rejects unknown packages.
+        val allowed = plan.allowedPackageNames.count { packageName ->
+            runCatching { builder.addAllowedApplication(packageName) }.isSuccess
+        }
+        if (plan.allowedPackageNames.isNotEmpty()) {
+            Log.i(TAG, "Per-app VPN: $allowed of ${plan.allowedPackageNames.size} selected apps use the VPN")
+        }
+        if (allowed == 0) {
+            // No selected app is installed (or every app uses the VPN): capture all apps but
+            // keep this app, and its runtimes, outside its own VPN.
+            val disallowed = plan.disallowedPackageNames.ifEmpty { listOf(packageName) }
+            disallowed.forEach { excluded ->
+                runCatching { builder.addDisallowedApplication(excluded) }
+                    .onFailure { Log.w(TAG, "Cannot exclude $excluded from the VPN", it) }
+            }
+            Log.i(TAG, "Per-app VPN: ${disallowed.size} apps excluded from captured traffic")
         }
 
         val replacement = builder.establish() ?: throw Exception("VPN permission not granted")
@@ -255,6 +392,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun useProcFS(): Boolean = false
 
+    /** Owning app of a connection, for sing-box `package_name` rules (Android 10+). */
     override fun findConnectionOwner(
         ipProtocol: Int,
         sourceAddress: String?,
@@ -262,13 +400,31 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         destinationAddress: String?,
         destinationPort: Int,
     ): ConnectionOwner {
-        return ConnectionOwner()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || sourceAddress == null || destinationAddress == null) {
+            throw java.io.IOException("connection_owner_unavailable")
+        }
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+            ?: throw java.io.IOException("connection_owner_unavailable")
+        val uid = connectivity.getConnectionOwnerUid(
+            ipProtocol,
+            java.net.InetSocketAddress(sourceAddress, sourcePort),
+            java.net.InetSocketAddress(destinationAddress, destinationPort),
+        )
+        if (uid == android.os.Process.INVALID_UID) throw java.io.IOException("connection_owner_not_found")
+        val packages = packageManager.getPackagesForUid(uid)?.toList().orEmpty()
+        return ConnectionOwner().apply {
+            userId = uid
+            setAndroidPackageNames(stringIterator(packages))
+        }
     }
 
     override fun readWIFIState(): WIFIState? = null
 
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
-        if (listener != null) networkMonitor.start(listener)
+        if (listener != null) {
+            networkMonitor.start(listener)
+            networkMonitor.addOnDefaultInterfaceChanged(::onDefaultInterfaceChanged)
+        }
     }
 
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
@@ -301,6 +457,13 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             override fun hasNext() = items.hasNext()
             override fun next(): io.nekohasekai.libbox.NetworkInterface = items.next()
         }
+    }
+
+    private fun StringIterator?.toList(): List<String> {
+        if (this == null) return emptyList()
+        val values = mutableListOf<String>()
+        while (hasNext()) values += next()
+        return values
     }
 
     private fun stringIterator(values: List<String>): StringIterator {
@@ -370,7 +533,20 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         }
     }
 
-    private fun buildNotification(status: String): Notification {
+    /**
+     * Shows (or, with null, withdraws) the device-limit refusal on the ongoing VPN notification so
+     * the user sees it without opening the app. The full guidance goes in the expanded text.
+     */
+    fun showDeviceLimitNotice(notice: DeviceLimitNotice?) {
+        if (!isRunning) return
+        if (notice == null) {
+            updateNotification(getString(R.string.vpn_notification_connected))
+        } else {
+            updateNotification(getString(R.string.vpn_notification_device_limit), deviceLimitMessage(notice))
+        }
+    }
+
+    private fun buildNotification(status: String, detail: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pending = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
 
@@ -380,6 +556,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(status)
+            .apply { detail?.let { setStyle(NotificationCompat.BigTextStyle().bigText(it)) } }
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pending)
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.vpn_notification_disconnect), stopPending)
@@ -387,9 +564,24 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .build()
     }
 
-    private fun updateNotification(status: String) {
+    /** A rebuild after Android killed the VPN did not succeed; tapping opens the app to reconnect. */
+    private fun showRecoveryFailed(reason: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.vpn_recovery_failed_title))
+            .setContentText(reason)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.vpn_recovery_failed_body, reason)))
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentIntent(mainActivityPendingIntent())
+            .setAutoCancel(true)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java).notify(RECOVERY_FAILED_NOTIFICATION_ID, notification)
+        }.onFailure { Log.w(TAG, "Cannot post the reconnect failure", it) }
+    }
+
+    private fun updateNotification(status: String, detail: String? = null) {
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(status))
+            .notify(NOTIFICATION_ID, buildNotification(status, detail))
     }
 
     private fun mainActivityPendingIntent(): PendingIntent {
@@ -404,7 +596,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     private fun resolveUnderlyingNetwork(): Network? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return null
-        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
+        return resolveUnderlyingNetworks().firstOrNull()
+    }
+
+    private fun resolveUnderlyingNetworks(): List<Network> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return emptyList()
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
         val candidates = connectivity.allNetworks.mapNotNull { network ->
             val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
             UnderlyingNetworkCandidate(
@@ -413,7 +610,116 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                 hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
             )
         }
-        return UnderlyingNetworkSelector.select(connectivity.activeNetwork, candidates)
+        return UnderlyingNetworkSelector.selectAll(connectivity.activeNetwork, candidates)
+    }
+
+    /**
+     * Publishes the physical networks the tunnel may leave through. Passing every physical
+     * network (not only the selected one) lets the kernel keep tunnel traffic flowing across a
+     * Wi-Fi <-> cellular switch: on 4G/5G the selected network can die seconds before the
+     * monitor sees it, and a single pinned network blackholed the tunnel until the next
+     * `onLost` callback re-pinned it. When nothing physical is up, fall back to default
+     * routing (null) so the tunnel follows the system as networks return.
+     */
+    private fun applyUnderlyingNetworks(preferred: Network?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return
+        val networks = resolveUnderlyingNetworks()
+        val ordered = buildList {
+            if (preferred != null && networks.contains(preferred)) add(preferred)
+            networks.forEach { if (it != preferred) add(it) }
+        }
+        try {
+            setUnderlyingNetworks(ordered.ifEmpty { null }?.toTypedArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to update underlying VPN networks", e)
+        }
+    }
+
+    /**
+     * Wi-Fi <-> cellular switch recovery.
+     *
+     * Even with every physical network published as underlying, a transport switch can leave the
+     * tunnel unusable: libbox's established outbound sockets keep pointing at the dead interface
+     * until they are rebuilt, and sing-box's DNS/route caches keep the old one. On a default
+     * interface change while the tunnel is up, tell libbox to rebind ([CommandServer.resetNetwork]),
+     * then verify the switch actually healed the path; if it did not, rebuild the VPN in place
+     * through the orchestrator (which restarts only the runtimes and re-opens the TUN, not the
+     * whole service). A brief silence first: right after a switch the new network is still
+     * validating and a probe would fail spuriously.
+     */
+    private fun onDefaultInterfaceChanged(name: String?) {
+        val previous = lastDefaultInterfaceName
+        lastDefaultInterfaceName = name
+        if (!isRunning || recovering) return
+        if (previous == null && name == null) return
+        Log.i(TAG, "Default interface changed: ${previous ?: "none"} -> ${name ?: "none"}")
+        try {
+            commandServer?.resetNetwork()
+        } catch (e: Exception) {
+            Log.w(TAG, "resetNetwork after interface switch failed", e)
+        }
+        switchRecoveryJob?.cancel()
+        switchRecoveryJob = recoveryScope.launch {
+            // Let the new network validate and libbox rebind before judging the tunnel.
+            delay(VpnRecovery.SWITCH_PROBE_DELAY_MS)
+            if (!isRunning || recovering) return@launch
+            if (probeTunnelPath()) return@launch
+            Log.w(TAG, "Tunnel still unusable after the interface switch; rebuilding it")
+            try {
+                TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Post-switch rebuild failed; the recovery loop or the user will retry", e)
+            }
+        }
+    }
+
+    /**
+     * The tunnel's own path check: DNS UDP to the TUN resolver through the tunnel. Cheap, uses
+     * the tunnel's own plumbing (so it fails exactly when the tunnel is broken), and needs no
+     * panel. A single 2s attempt; false negatives only cost one rebuild that would have been
+     * harmless.
+     */
+    private fun probeTunnelPath(): Boolean {
+        val dnsServer = tunDnsServer() ?: return true
+        return runCatching {
+            val socket = java.net.DatagramSocket()
+            try {
+                socket.soTimeout = VpnRecovery.SWITCH_PROBE_TIMEOUT_MS
+                val address = java.net.InetSocketAddress(dnsServer, 53)
+                // An A query for the panel host; the answer content does not matter.
+                val query = dnsQueryBytes("connectivity.leikwanhost.com")
+                socket.send(java.net.DatagramPacket(query, query.size, address))
+                val buffer = ByteArray(512)
+                val packet = java.net.DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                packet.length >= 12
+            } finally {
+                socket.close()
+            }
+        }.getOrElse { error ->
+            Log.i(TAG, "Tunnel probe via $dnsServer failed: ${error.message}")
+            false
+        }
+    }
+
+    private fun tunDnsServer(): String? {
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
+        val properties = connectivity.getLinkProperties(connectivity.activeNetwork) ?: return null
+        // On our own VPN the active network's DNS is the TUN resolver sing-box hijacks.
+        return properties.dnsServers.firstOrNull()?.hostAddress
+    }
+
+    /** A minimal recursive A query; no external DNS library needed for a boolean probe. */
+    private fun dnsQueryBytes(name: String): ByteArray {
+        val id = byteArrayOf(0x12, 0x34)
+        val header = byteArrayOf(id[0], id[1], 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        val labels = name.split('.').flatMap { label ->
+            (byteArrayOf(label.length.toByte()) + label.toByteArray(Charsets.US_ASCII)).asIterable()
+        }.fold(byteArrayOf()) { acc, part -> acc + part }
+        val tail = byteArrayOf(0x00, 0x00, 0x01, 0x00, 0x01)
+        return header + labels + tail
     }
 
     private fun RoutePrefixIterator?.toRoutePrefixes(): List<RoutePrefix> {
@@ -431,6 +737,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             addCommand(Libbox.CommandLog)
             addCommand(Libbox.CommandConnections)
             addCommand(Libbox.CommandStatus)
+            // Go time.Duration: one dashboard sample per second.
+            statusInterval = 1_000_000_000L
         }
         runCatching {
             CommandClient(BoxDiagnosticsHandler(), options).also { client ->
@@ -493,6 +801,13 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
         override fun writeStatus(message: StatusMessage?) {
             if (message == null) return
+            TrafficMonitor.report(
+                uplink = message.uplink,
+                downlink = message.downlink,
+                uplinkTotal = message.uplinkTotal,
+                downlinkTotal = message.downlinkTotal,
+                connections = message.connectionsOut,
+            )
             Log.d(
                 TAG,
                 "box status in=${message.connectionsIn} out=${message.connectionsOut} " +

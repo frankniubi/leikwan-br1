@@ -20,11 +20,6 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
     private const uint GaaFlagSkipDnsServer = 0x0008;
     private const uint Flags =
         GaaFlagIncludeGateways | GaaFlagSkipAnycast | GaaFlagSkipMulticast | GaaFlagSkipDnsServer;
-    private const int IfTypeTunnel = 131;
-    private const int IfTypeSoftwareLoopback = 24;
-    private const int IfTypePpp = 23;
-    private const int IfTypeEthernetCsmacd = 6;
-    private const int IfTypeIeee80211 = 71;
     private const int IfOperStatusUp = 1;
     private const uint ErrorBufferOverflow = 111;
 
@@ -56,7 +51,6 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
         public static readonly int FirstGateway = FirstWins + IntPtr.Size;
         public static readonly int Ipv4Metric = FirstGateway + IntPtr.Size;
         public static readonly int Ipv6Metric = Ipv4Metric + 4;
-        public static readonly int SocketAddressStride = IntPtr.Size + 8;
     }
 
     [DllImport("iphlpapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -121,13 +115,14 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
         var friendlyName = ReadString(Marshal.ReadIntPtr(adapter, Offsets.FriendlyName));
         var description = ReadString(Marshal.ReadIntPtr(adapter, Offsets.Description));
         var ifType = Marshal.ReadInt32(adapter, Offsets.IfType);
+        var physicalAddressLength = Marshal.ReadInt32(adapter, Offsets.PhysicalAddressLength);
         var operStatus = Marshal.ReadInt32(adapter, Offsets.OperStatus);
         var v4Index = Marshal.ReadInt32(adapter, Offsets.IfIndex);
         var v6Index = Marshal.ReadInt32(adapter, Offsets.Ipv6IfIndex);
         var v4Metric = Marshal.ReadInt32(adapter, Offsets.Ipv4Metric);
         var v6Metric = Marshal.ReadInt32(adapter, Offsets.Ipv6Metric);
-        var gateways = ReadSocketAddressList(Marshal.ReadIntPtr(adapter, Offsets.FirstGateway));
-        var addresses = ReadSocketAddressList(Marshal.ReadIntPtr(adapter, Offsets.FirstUnicast));
+        var gateways = WindowsSocketAddressList.Read(Marshal.ReadIntPtr(adapter, Offsets.FirstGateway));
+        var addresses = WindowsSocketAddressList.Read(Marshal.ReadIntPtr(adapter, Offsets.FirstUnicast));
 
         return new NetworkAdapterInfo(
             friendlyName.Length == 0 ? description : friendlyName,
@@ -135,35 +130,33 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
             v4Index,
             v6Index,
             operStatus == IfOperStatusUp,
-            ClassifyKind(ifType),
+            ClassifyKind(ifType, physicalAddressLength),
             v4Metric,
             v6Metric,
             gateways,
             addresses);
     }
 
-    private static NetworkAdapterKind ClassifyKind(int ifType)
-    {
-        return ifType switch
-        {
-            IfTypeTunnel => NetworkAdapterKind.Tunnel,
-            IfTypeSoftwareLoopback => NetworkAdapterKind.Loopback,
-            IfTypePpp => NetworkAdapterKind.Virtual,
-            IfTypeEthernetCsmacd or IfTypeIeee80211 => NetworkAdapterKind.Physical,
-            _ => NetworkAdapterKind.Unknown,
-        };
-    }
+    private static NetworkAdapterKind ClassifyKind(int ifType, int physicalAddressLength)
+        => WindowsAdapterKindClassifier.Classify(ifType, physicalAddressLength);
 
     private static string ReadString(IntPtr pointer)
         => pointer == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUni(pointer) ?? string.Empty;
+}
 
-    private static List<IPAddress> ReadSocketAddressList(IntPtr first)
+// Unicast/gateway entries: 8-byte Length|Flags union, then Next, then lpSockaddr.
+public static class WindowsSocketAddressList
+{
+    public const int NextOffset = 8;
+    public static readonly int SockaddrOffset = NextOffset + IntPtr.Size;
+
+    public static List<IPAddress> Read(IntPtr first)
     {
         var addresses = new List<IPAddress>();
         var current = first;
         while (current != IntPtr.Zero)
         {
-            var sockaddr = Marshal.ReadIntPtr(current, 0);
+            var sockaddr = Marshal.ReadIntPtr(current, SockaddrOffset);
             if (sockaddr != IntPtr.Zero)
             {
                 var family = Marshal.ReadInt16(sockaddr, 0);
@@ -180,8 +173,43 @@ internal sealed class WindowsInterfaceEnumerator : ISystemInterfaceEnumerator
                     addresses.Add(new IPAddress(bytes));
                 }
             }
-            current = Marshal.ReadIntPtr(current, Offsets.SocketAddressStride);
+            current = Marshal.ReadIntPtr(current, NextOffset);
         }
         return addresses;
+    }
+}
+
+/// <summary>
+/// Maps IP_ADAPTER_ADDRESSES driver hints to <see cref="NetworkAdapterKind"/>.
+/// Wintun, WireGuardNT and most TUN drivers register as
+/// IF_TYPE_PROP_VIRTUAL; an "Ethernet" adapter without a hardware address is
+/// a software tunnel as well. Name/description rules
+/// (<see cref="TunnelInterfaceHeuristics"/>) still apply on top of this for
+/// virtual adapters that carry a MAC, such as TAP-Windows or Hyper-V vEthernet.
+/// </summary>
+public static class WindowsAdapterKindClassifier
+{
+    public const int IfTypeEthernetCsmacd = 6;
+    public const int IfTypePpp = 23;
+    public const int IfTypeSoftwareLoopback = 24;
+    public const int IfTypePropVirtual = 53;
+    public const int IfTypeIeee80211 = 71;
+    public const int IfTypeTunnel = 131;
+    public const int IfTypeWwanPp = 243;
+    public const int IfTypeWwanPp2 = 244;
+
+    public static NetworkAdapterKind Classify(int ifType, int physicalAddressLength)
+    {
+        return ifType switch
+        {
+            IfTypeTunnel or IfTypePropVirtual => NetworkAdapterKind.Tunnel,
+            IfTypeSoftwareLoopback => NetworkAdapterKind.Loopback,
+            IfTypePpp => NetworkAdapterKind.Virtual,
+            IfTypeEthernetCsmacd when physicalAddressLength <= 0 => NetworkAdapterKind.Tunnel,
+            IfTypeEthernetCsmacd or IfTypeIeee80211 => NetworkAdapterKind.Physical,
+            // Mobile broadband modems are real uplinks.
+            IfTypeWwanPp or IfTypeWwanPp2 => NetworkAdapterKind.Physical,
+            _ => NetworkAdapterKind.Unknown,
+        };
     }
 }

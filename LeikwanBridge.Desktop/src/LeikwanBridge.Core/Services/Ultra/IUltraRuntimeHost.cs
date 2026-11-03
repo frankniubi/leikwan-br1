@@ -22,4 +22,10 @@ public interface IUltraRuntimeHost
     }
 
     void Stop(int forwardId);
+
+    /// <summary>
+    /// Path of the status snapshot the running runtime for <paramref name="forwardId"/>
+    /// writes ("status_path"), or null when the host does not know one.
+    /// </summary>
+    string? GetStatusPath(int forwardId) => null;
 }

@@ -1,7 +1,5 @@
-using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Helpers;
-using System.Net;
-using System.Net.NetworkInformation;
+using LeikwanBridge.Core.Models;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
@@ -16,6 +14,16 @@ public sealed class ProxyForwardLeaseCancellationException : OperationCanceledEx
     {
         ForwardId = forwardId;
     }
+}
+
+/// <summary>
+/// A proxy start that failed on one forward. Message is the stable error code, so
+/// callers that match on the message still work; ForwardId lets the UI name the line.
+/// </summary>
+public sealed class ProxyForwardStartException(int forwardId, string errorCode, Exception innerException)
+    : InvalidOperationException(errorCode, innerException)
+{
+    public int ForwardId { get; } = forwardId;
 }
 
 public sealed class ProxyForwardLease : IAsyncDisposable
@@ -39,7 +47,8 @@ public sealed class ProxyForwardLease : IAsyncDisposable
         Func<CancellationToken, Task> stop,
         CancellationToken ct = default,
         Func<ForwardConfig, CancellationToken, Task<bool>>? readinessProbe = null,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        Func<int, string?>? diagnosePort = null)
     {
         ArgumentNullException.ThrowIfNull(forward);
         if (forward.ForwardId <= 0 || forward.ListenPort is < 1 or > 65535
@@ -75,13 +84,15 @@ public sealed class ProxyForwardLease : IAsyncDisposable
             }
             if (exception is OperationCanceledException && !ct.IsCancellationRequested)
             {
+                var cause = (diagnosePort ?? LocalPortFailure.DiagnoseLive)(forward.ListenPort);
                 Log.Warning(
-                    "ordinary proxy forward readiness timed out forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward}",
+                    "ordinary proxy forward readiness timed out forward={ForwardId} port={Port} transport={Transport} owns_forward={OwnsForward} cause={Cause}",
                     forward.ForwardId,
                     forward.ListenPort,
                     forward.Transport,
-                    ownsForward);
-                throw new TimeoutException("proxy_forward_readiness_timeout", exception);
+                    ownsForward,
+                    cause ?? "unknown");
+                throw new TimeoutException(cause ?? "proxy_forward_readiness_timeout", exception);
             }
 
             if (exception is OperationCanceledException && ct.IsCancellationRequested)
@@ -106,27 +117,16 @@ public sealed class ProxyForwardLease : IAsyncDisposable
         }
     }
 
-    public static async Task<bool> IsListenerReadyAsync(ForwardConfig forward, CancellationToken ct = default)
+    public static Task<bool> IsListenerReadyAsync(ForwardConfig forward, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         var transport = forward.Transport.Trim().ToLowerInvariant();
         if (transport is not ("tcp" or "udp" or "tcp+udp"))
-            return false;
-        if (transport != "udp")
-        {
-            var (ok, _, _) = await NetworkProbe.TcpProbeAsync("127.0.0.1", forward.ListenPort, 300, ct)
-                .ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-            if (!ok) return false;
-        }
-        if (transport == "tcp") return true;
-        try
-        {
-            return IPGlobalProperties.GetIPGlobalProperties().GetActiveUdpListeners().Any(endpoint =>
-                endpoint.Port == forward.ListenPort
-                && (endpoint.Address.Equals(IPAddress.Loopback) || endpoint.Address.Equals(IPAddress.Any)));
-        }
-        catch (NetworkInformationException) { return false; }
+            return Task.FromResult(false);
+        if (transport != "udp" && !NetworkProbe.IsTcpPortListening(forward.ListenPort))
+            return Task.FromResult(false);
+        if (transport == "tcp") return Task.FromResult(true);
+        return Task.FromResult(NetworkProbe.IsUdpPortListening(forward.ListenPort));
     }
 
     public async ValueTask DisposeAsync()

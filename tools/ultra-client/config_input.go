@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 const maxConfigPayload = 64 * 1024
@@ -53,6 +54,9 @@ func loadConfig(configPath string, fromStdin bool, reader io.Reader) (Config, er
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Config{}, ErrFrameInvalid
+	}
+	if err := validateCandidateQuarantine(config, time.Now()); err != nil {
+		return Config{}, err
 	}
 	return config, nil
 }

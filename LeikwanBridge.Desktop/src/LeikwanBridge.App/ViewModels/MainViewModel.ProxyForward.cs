@@ -33,11 +33,16 @@ public partial class MainViewModel
         ? $"127.0.0.1:{forward.ListenPort}"
         : string.Empty;
 
+    public bool IsSelectedProxyForwardUnavailable
+        => _config.ProxySelectedForwardId > 0 && SelectedProxyForwardId != _config.ProxySelectedForwardId;
+
     partial void OnSelectedProxyForwardIdChanged(int value)
     {
-        _config.ProxySelectedForwardId = value;
+        if (value > 0)
+            _config.ProxySelectedForwardId = value;
         RestoreSavedProxySelection();
         OnPropertyChanged(nameof(ProxyForwardEndpoint));
+        OnPropertyChanged(nameof(IsSelectedProxyForwardUnavailable));
         NotifySelectedProxyPairingStateChanged();
     }
 
@@ -70,11 +75,19 @@ public partial class MainViewModel
         var options = ProxyForwardOptions;
         if (_proxyPendingForward is { } pending && !IsCurrentProxyForward(pending))
             CancelProxyForwardStart();
-        var selected = options.FirstOrDefault(item => item.ForwardId == _config.ProxySelectedForwardId)
-            ?? options.FirstOrDefault();
+        // A line the user picked is never swapped for another one: if it is no
+        // longer offered the selection is cleared and the UI says so.
+        var chosen = _config.ProxySelectedForwardId;
+        var selected = chosen > 0
+            ? options.FirstOrDefault(item => item.ForwardId == chosen)
+            : options.FirstOrDefault();
+        var wasUnavailable = IsSelectedProxyForwardUnavailable;
         OnPropertyChanged(nameof(ProxyForwardOptions));
         OnPropertyChanged(nameof(PairedProxyForwardOptions));
         SelectedProxyForwardId = selected?.ForwardId ?? 0;
+        if (IsSelectedProxyForwardUnavailable && !wasUnavailable)
+            AddLog($"Selected forward {chosen} is unavailable; choose another service to connect.");
+        OnPropertyChanged(nameof(IsSelectedProxyForwardUnavailable));
         OnPropertyChanged(nameof(ProxyForwardEndpoint));
         RefreshProxyForwardRows();
         _proxyForwardsAvailable.TrySetResult();
@@ -85,15 +98,6 @@ public partial class MainViewModel
         await _proxyForwardsAvailable.Task.WaitAsync(TimeSpan.FromSeconds(45), ct);
         if (SelectedProxyForwardId <= 0)
             throw new InvalidOperationException("proxy_forward_required");
-    }
-
-    public async Task ImportProxyProfileAsync(string uri, CancellationToken ct = default)
-    {
-        if (!string.IsNullOrWhiteSpace(uri) && !uri.Trim().StartsWith("ss://", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("proxy_import_shadowsocks_only");
-        if (!ProxyEditor.TryImport(uri, out var error))
-            throw new InvalidOperationException(error);
-        await SaveProxyProfileAsync(ct);
     }
 
     private async Task RunProxyThroughForwardAsync(
@@ -139,17 +143,23 @@ public partial class MainViewModel
         }
         catch (Exception exception)
         {
+            var cancelled = exception is OperationCanceledException;
+            var code = cancelled
+                ? string.Empty
+                : WindowsProxyConnectionService.FailureCode(exception, () => LocalPortFailure.DiagnoseLive(_proxyService!.ProxyPort));
             try { await _proxyService!.StopAsync(CancellationToken.None); }
             finally
             {
                 if (acquired is not null)
                     await acquired.DisposeAsync();
                 HandleProxySnapshotChanged(new WindowsProxySnapshot(
-                    exception is OperationCanceledException ? WindowsProxyConnectionState.Disconnected : WindowsProxyConnectionState.Error,
+                    cancelled ? WindowsProxyConnectionState.Disconnected : WindowsProxyConnectionState.Error,
                     mode, profile.Name, _proxyService!.ProxyPort, 0, false, false,
-                    exception is OperationCanceledException ? string.Empty : exception.Message));
+                    code, forward.ForwardId));
             }
-            throw;
+            if (cancelled)
+                throw;
+            throw new ProxyForwardStartException(forward.ForwardId, code, exception);
         }
         finally
         {
@@ -217,6 +227,7 @@ public partial class MainViewModel
                     SystemProxyEnabled = false,
                     ProcessProxyEnabled = false,
                     ErrorCode = "proxy_runtime_unavailable",
+                    ErrorForwardId = lease.Forward.ForwardId,
                 });
             }
         }

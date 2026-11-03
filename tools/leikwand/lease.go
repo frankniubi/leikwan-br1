@@ -23,6 +23,17 @@ import (
 //     re-selects. This is how a Panel-driven line rotation reaches the router.
 const leaseTickInterval = 5 * time.Second
 
+// leaseNonce generates the per-request nonce the Panel's lease plane requires
+// (UltraLeaseService::normalizeRequest enforces ^[a-f0-9]{16,128}$). The
+// native lease path has always minted one (native_lease.go); the ordinary
+// per-forward path skipped it, which made every ordinary lease 409 with
+// lease_scope_invalid on leikwand 1.2.0 — the desktop clients always sent a
+// nonce, so the contract was never exercised without one until the router
+// edition shipped.
+func leaseNonce() (string, error) {
+	return newLeaseNonce()
+}
+
 func (a *Agent) leaseLoop(ctx context.Context) {
 	ticker := time.NewTicker(leaseTickInterval)
 	defer ticker.Stop()
@@ -81,7 +92,10 @@ func (a *Agent) leaseRefreshDue(state *runtimeState, now time.Time) bool {
 	}
 	lead := time.Duration(a.cfg.LeaseRenewLeadSecs) * time.Second
 	if now.Add(lead).After(state.leaseExpiry) {
-		return true
+		// The Panel caps the lease at the grant expiry, so until a newer grant
+		// arrives (pull loop) or renew_after passes, renewing only re-mints
+		// the same expiry; hold back instead of re-leasing every tick.
+		return !now.Before(state.renewNotBefore) || grantAdvanced(state)
 	}
 	// Back off failed attempts so a persistent Panel 409 does not turn into a
 	// request storm.
@@ -92,9 +106,29 @@ func (a *Agent) leaseRefreshDue(state *runtimeState, now time.Time) bool {
 	return false
 }
 
+// grantAdvanced reports a grant newer than the one the current lease was
+// minted from, which can extend the lease and so lifts any renewal hold.
+func grantAdvanced(state *runtimeState) bool {
+	current, used := state.forward.UltraAccess, state.policy
+	return current != nil && used != nil && current.ExpiresAt != used.ExpiresAt
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
 // validatePolicy mirrors the desktop client's UltraPolicy validation. A grant
 // that fails any check must not be used, and must not be silently downgraded.
 func validatePolicy(policy *UltraPolicy, forward ForwardConfig, now time.Time) string {
+	// The Panel omits ultra_access for a forward it cannot grant on this pull
+	// (e.g. no fresh line material). That is a pending grant, not a
+	// revocation: callers keep what they hold and retry.
+	if policy == nil {
+		return "no_grant"
+	}
 	if !strings.EqualFold(strings.TrimSpace(policy.Protocol), "leikwan-ultra-policy-v2") {
 		return "protocol"
 	}
@@ -169,6 +203,14 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	}
 	state.lastLeaseAt = time.Now()
 
+	nonce, err := leaseNonce()
+	if err != nil {
+		state.leaseFailures++
+		state.lastLeaseErr = "nonce generation failed"
+		a.log.Warn("lease", "forward %d could not mint a lease nonce: %v", state.forward.ForwardID, err)
+		return
+	}
+
 	request := LeaseRequest{
 		DeviceID: a.deviceID,
 		Forwards: []LeaseRequestForward{{
@@ -176,6 +218,7 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 			ForwardID:        state.forward.ForwardID,
 			SessionTicket:    policy.SessionTicket,
 			PolicyGeneration: strings.ToLower(strings.TrimSpace(policy.PolicyGeneration)),
+			Nonce:            nonce,
 			TargetDigest:     strings.ToLower(strings.TrimSpace(policy.TargetDigest)),
 			Transport:        strings.ToLower(strings.TrimSpace(policy.Transport)),
 			SelectionMode:    "auto",
@@ -189,9 +232,13 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	if err != nil {
 		state.leaseFailures++
 		state.lastLeaseErr = redactSecrets(err.Error())
-		a.log.Warn("lease", "forward %d lease request failed (%d): %v", state.forward.ForwardID, state.leaseFailures, err)
+		a.log.Warn("lease", "forward %d lease request failed (%d): %v%s", state.forward.ForwardID, state.leaseFailures, err, leaseRefusalHint(err))
+		a.noteGenerationRefused(state, err)
+		a.stopRuntimeGrace(state, err)
+		a.extendRuntimeGrace(state, err)
 		return
 	}
+	a.noteUnsealFailures("lease", state.forward.ForwardID, response)
 	if !response.OK || len(response.Leases) == 0 {
 		state.leaseFailures++
 		state.lastLeaseErr = firstNonEmpty(response.Error, "no_leases")
@@ -221,6 +268,14 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	}
 
 	expiry := earliestLeaseExpiry(response.Leases)
+	state.renewNotBefore = nextLeaseRenewal(policy, expiry)
+	if !expiry.After(state.leaseExpiry) {
+		// No progress (the grant has not been refreshed yet): wait a little
+		// before trying again, but never past the safety margin.
+		if hold := minTime(time.Now().Add(10*time.Second), expiry.Add(-10*time.Second)); hold.After(state.renewNotBefore) {
+			state.renewNotBefore = hold
+		}
+	}
 	state.leaseFailures = 0
 	state.lastLeaseErr = ""
 	state.candidates = len(response.Leases)
@@ -231,8 +286,10 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 	// health loop uses this timestamp to distinguish "no grant yet" from
 	// "listener lost".
 	state.leaseInstalledAt = time.Now()
+	state.graceUntil = time.Time{}
 
 	selected, _ := reply["policy_generation"].(string)
+	a.clearGenerationRefusal(state.forward.ForwardID, policyGenerationOf(state.forward))
 	a.log.Info("lease", "forward %d installed %d candidates, generation=%s expires=%s",
 		state.forward.ForwardID, len(response.Leases), shortRevision(selected), formatRFC3339(expiry))
 
@@ -285,6 +342,12 @@ func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
 		if ok {
 			delete(a.runtimes, action.ForwardID)
 		}
+		if forward, listed := a.forwards[action.ForwardID]; listed {
+			if a.panelStopped == nil {
+				a.panelStopped = map[int]string{}
+			}
+			a.panelStopped[action.ForwardID] = policyGenerationOf(forward)
+		}
 		a.mu.Unlock()
 		if ok {
 			a.log.Warn("panel", "panel action=%s for forward %d (%s); stopping", action.Action, action.ForwardID, action.Reason)
@@ -304,4 +367,88 @@ func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
 	}
 }
 
-var errPolicyMissing = errors.New("ultra grant missing")
+// policyGenerationOf is the grant generation a forward is currently listed
+// under ("" without a grant).
+func policyGenerationOf(forward ForwardConfig) string {
+	if forward.UltraAccess == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(forward.UltraAccess.PolicyGeneration))
+}
+
+// leaseRefusalHint adds operator context to the sealed-lease refusals. They
+// are otherwise handled like any other lease error: counted, backed off and
+// retried at the normal cadence. A key conflict deliberately does not rotate
+// the device key, which would only fight the legitimate holder of the pin.
+// generationRefused reports whether err is the lease plane refusing the grant
+// generation the request carried. Only that code means "fetch a new grant":
+// every other refusal describes the forward or the quota, which a pull cannot
+// change.
+func generationRefused(err error) bool {
+	var pe *panelError
+	return errors.As(err, &pe) && pe.Code == codePolicyGenerationInvalid
+}
+
+// noteGenerationRefused records a refused generation and makes the next pull a
+// full one. Without it the router keeps presenting a generation the Panel has
+// already retired, and its next full pull is up to a grant lifetime away: the
+// forward runs with no lease until then, which looks like the connection
+// dropping and returning. Mirrors the desktop's RecordRefusedPolicyGeneration.
+func (a *Agent) noteGenerationRefused(state *runtimeState, err error) {
+	if state == nil || !generationRefused(err) {
+		return
+	}
+	generation := policyGenerationOf(state.forward)
+	if generation == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.refusedGenerations == nil {
+		a.refusedGenerations = map[int]string{}
+	}
+	a.refusedGenerations[state.forward.ForwardID] = generation
+	a.mu.Unlock()
+
+	// The refused grant cannot renew, so drop the hold the lease loop keeps
+	// while it waits for renew_after; the fresh grant lifts it for real.
+	state.renewNotBefore = time.Time{}
+	a.log.Warn("lease", "forward %d grant generation %s was refused; pulling a fresh grant",
+		state.forward.ForwardID, shortRevision(generation))
+	a.triggerReconcile("generation_refused")
+}
+
+// clearGenerationRefusal forgets a refusal once the forward holds a different
+// generation, which is the grant that replaced the refused one.
+func (a *Agent) clearGenerationRefusal(forwardID int, generation string) {
+	a.mu.Lock()
+	if current, ok := a.refusedGenerations[forwardID]; ok && current != generation {
+		delete(a.refusedGenerations, forwardID)
+	}
+	a.mu.Unlock()
+}
+
+func leaseRefusalHint(err error) string {
+	var pe *panelError
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	switch pe.Code {
+	case codeLeaseKeyInvalid:
+		return " (panel rejected this device's lease key header; client bug)"
+	case codeLeaseSealingRequired:
+		return " (panel requires sealed leases but no device lease key was available)"
+	case codeLeaseDeviceKeyConflict:
+		return " (another lease key is active for this device id; keeping the current key and retrying)"
+	}
+	return ""
+}
+
+// noteUnsealFailures logs sealed leases that were dropped because they could
+// not be opened. Only the non-sensitive reason is logged, never the payload.
+func (a *Agent) noteUnsealFailures(scope string, forwardID int, response *LeaseResponse) {
+	if response == nil || len(response.UnsealFailures) == 0 {
+		return
+	}
+	a.log.Warn(scope, "forward %d: %d sealed lease(s) dropped (%s), %d usable: %v",
+		forwardID, len(response.UnsealFailures), codeLeaseUnsealFailed, len(response.Leases), response.UnsealFailures[0])
+}

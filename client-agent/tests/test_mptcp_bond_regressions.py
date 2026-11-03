@@ -52,6 +52,51 @@ leikwan_uot = load_module(
 )
 
 
+def sidecar_units_in(agent, unit_root: pathlib.Path):
+    """Redirect the sidecar agent's systemd unit writes from /etc/systemd/system.
+
+    apply_management() renders and writes real unit files; without this the
+    tests need root on Linux (and litter C:/etc/systemd on Windows).
+    """
+    unit_root.mkdir(parents=True, exist_ok=True)
+    stack = contextlib.ExitStack()
+    stack.enter_context(
+        mock.patch.object(agent, "service_unit_path", return_value=unit_root / f"{agent.service_name()}.service")
+    )
+    stack.enter_context(
+        mock.patch.object(agent, "unit_path_for", side_effect=lambda name: unit_root / f"{name}.service")
+    )
+    return stack
+
+
+SYSTEM_PATH_PREFIXES = ("/etc/", "/usr/local/", "/run/", "/var/", "/tmp/")
+
+
+def system_path_rerooter(scratch: pathlib.Path):
+    """Return a pathlib.Path stand-in that re-roots fixed system paths.
+
+    client_agent addresses /etc/systemd/system, /etc/wireguard, /usr/local/bin,
+    /run/ultra ... directly. Mapping those under a scratch "filesystem root"
+    lets the tests run unprivileged and keeps them off the real host. Paths
+    inside the scratch dir and kernel views (/proc, /sys) are left alone.
+    """
+    real_path = pathlib.Path
+    fake_root = real_path(scratch) / "root"
+
+    def rooted(*parts):
+        path = real_path(*parts)
+        posix = path.as_posix()
+        if not posix.startswith(SYSTEM_PATH_PREFIXES) or path.is_relative_to(scratch):
+            return path
+        return fake_root / posix.lstrip("/")
+
+    return rooted
+
+
+def rerooted_system_paths(module, scratch: pathlib.Path):
+    return mock.patch.object(module, "pathlib", SimpleNamespace(Path=system_path_rerooter(scratch)))
+
+
 class BondAndMptcpRegressionTests(unittest.TestCase):
     def test_client_heartbeat_includes_bond_leg_reputation_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -100,14 +145,25 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                     {
                         "x-device-platform": "linux",
                         "x-device-architecture": client_agent_module.local_runtime_architecture(),
+                        "x-device-id": agent.device_id(),
+                        "X-Leikwan-Ultra-Offline-Validity": "1800",
                     },
                     extra_headers,
                 )
+                self.assertRegex(agent.device_id(), r"^linux-[0-9a-f]{32}$")
                 return ({"forwards": [], "client": {"id": 123}}, {"date": "Sun, 19 Apr 2026 12:00:00 GMT"})
 
-            def fake_post(method: str, url: str, token: str, payload: dict | None = None):
+            def fake_post(
+                method: str,
+                url: str,
+                token: str,
+                payload: dict | None = None,
+                *,
+                extra_headers: dict[str, str] | None = None,
+            ):
                 self.assertEqual(method, "POST")
                 self.assertTrue(url.endswith("/api/client/heartbeat"))
+                self.assertEqual(agent.device_id(), (extra_headers or {}).get("x-device-id"))
                 captured["payload"] = payload or {}
                 return {"ok": True}
 
@@ -1887,7 +1943,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             )
 
             agent = sidecar_agent_module.SidecarAgent(config_path)
-            with mock.patch.object(agent, "ensure_relay_binary"):
+            with sidecar_units_in(agent, pathlib.Path(tmp_dir) / "systemd"), mock.patch.object(agent, "ensure_relay_binary"):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(sidecar_agent_module.subprocess, "run"):
                         agent.apply_management(
@@ -1925,7 +1981,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             )
 
             agent = sidecar_agent_module.SidecarAgent(config_path)
-            with mock.patch.object(agent, "ensure_relay_binary"):
+            with sidecar_units_in(agent, pathlib.Path(tmp_dir) / "systemd"), mock.patch.object(agent, "ensure_relay_binary"):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(sidecar_agent_module.subprocess, "run"):
                         agent.apply_management(
@@ -1960,7 +2016,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             )
 
             agent = sidecar_agent_module.SidecarAgent(config_path)
-            with mock.patch.object(agent, "ensure_relay_binary"):
+            with sidecar_units_in(agent, pathlib.Path(tmp_dir) / "systemd"), mock.patch.object(agent, "ensure_relay_binary"):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(sidecar_agent_module.subprocess, "run"):
                         agent.apply_management(
@@ -1997,7 +2053,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             )
 
             agent = sidecar_agent_module.SidecarAgent(config_path)
-            with mock.patch.object(agent, "ensure_relay_binary"):
+            with sidecar_units_in(agent, pathlib.Path(tmp_dir) / "systemd"), mock.patch.object(agent, "ensure_relay_binary"):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(sidecar_agent_module.subprocess, "run"):
                         agent.apply_management(
@@ -2032,7 +2088,7 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
             )
 
             agent = sidecar_agent_module.SidecarAgent(config_path)
-            with mock.patch.object(agent, "ensure_relay_binary"):
+            with sidecar_units_in(agent, pathlib.Path(tmp_dir) / "systemd"), mock.patch.object(agent, "ensure_relay_binary"):
                 with mock.patch.object(agent, "systemd_is_active", return_value=True):
                     with mock.patch.object(sidecar_agent_module.subprocess, "run"):
                         with mock.patch.object(agent, "request_self_update") as update_mock:
@@ -2156,23 +2212,29 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
 
             agent = client_agent_module.ClientAgent(config_path)
 
-            service_path = pathlib.Path("/etc/systemd/system/leikwan-client-19.service")
-            start_path = pathlib.Path("/usr/local/bin/leikwan-client-start-19.sh")
-            config_json_path = pathlib.Path("/etc/leikwan/mptcp-forward-19.json")
-            extra_path = pathlib.Path("/tmp/leikwan-extra-managed")
+            # stop_forward() addresses fixed system paths (/etc/systemd/system,
+            # /usr/local/bin, /etc/ultra, /run/ultra); re-root them so the test
+            # runs unprivileged and never touches the real host.
+            rooted = system_path_rerooter(pathlib.Path(tmp_dir))
+
+            service_path = rooted("/etc/systemd/system/leikwan-client-19.service")
+            start_path = rooted("/usr/local/bin/leikwan-client-start-19.sh")
+            config_json_path = rooted("/etc/leikwan/mptcp-forward-19.json")
+            extra_path = rooted("/tmp/leikwan-extra-managed")
             for path in [service_path, start_path, config_json_path, extra_path]:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("x", encoding="utf-8")
 
             with mock.patch.object(agent, "load_applied", return_value={
                 "19": {
-                    "managed_paths": [str(config_json_path), str(extra_path)],
+                    "managed_paths": ["/etc/leikwan/mptcp-forward-19.json", "/tmp/leikwan-extra-managed"],
                 }
             }):
-                with mock.patch.object(agent, "delete_nft_rules"):
-                    with mock.patch.object(client_agent_module.subprocess, "run"):
-                        with mock.patch.object(agent, "cleanup_mptcp_forward_runtime") as cleanup_mock:
-                            agent.stop_forward(19, delete_files=True)
+                with rerooted_system_paths(client_agent_module, pathlib.Path(tmp_dir)):
+                    with mock.patch.object(agent, "delete_nft_rules"):
+                        with mock.patch.object(client_agent_module.subprocess, "run"):
+                            with mock.patch.object(agent, "cleanup_mptcp_forward_runtime") as cleanup_mock:
+                                agent.stop_forward(19, delete_files=True)
 
             cleanup_mock.assert_called_once_with(19)
             self.assertFalse(service_path.exists())
@@ -2390,12 +2452,19 @@ class BondAndMptcpRegressionTests(unittest.TestCase):
                                     with mock.patch.object(agent, "write_text_if_changed", return_value=False):
                                         with mock.patch.object(agent, "rendered_runtime_signature", return_value="same-rendered-signature"):
                                             with mock.patch.object(client_agent_module.subprocess, "run", side_effect=fake_run):
-                                                agent.apply_forward(forward)
+                                                # Orphan cleanup probes /etc/wireguard and
+                                                # /etc/systemd/system; keep that off the host.
+                                                with rerooted_system_paths(client_agent_module, pathlib.Path(tmp_dir)):
+                                                    agent.apply_forward(forward)
 
             command_strings = [command if isinstance(command, str) else " ".join(command) for command in commands]
             self.assertTrue(any("wg-quick@lw-cfsr-59.service" in command for command in command_strings))
             self.assertTrue(any("wg-quick@lw-mptcp-59-0.service" in command for command in command_strings))
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "global MPTCP sysctl/endpoint reconciliation is Linux-only",
+    )
     def test_reconcile_global_mptcp_state_uses_max_subflow_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = pathlib.Path(tmp_dir) / "config.json"

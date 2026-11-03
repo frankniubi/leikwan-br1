@@ -1,11 +1,161 @@
 import pathlib
+import shutil
+import subprocess
+import sys
 import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+# The client installer is a Linux shell script. On Windows, "bash" on PATH may be
+# the WSL launcher or Git Bash, neither of which is the installer's runtime.
+RUNS_LINUX_BASH = unittest.skipUnless(
+    sys.platform.startswith("linux") and shutil.which("bash"),
+    "runs the Linux installer's artifact-source selection under bash (Linux only)",
+)
+
+
+def _artifact_source_selection(source: str) -> str:
+    start = source.index("PANEL_ARTIFACT_SOURCES=(")
+    end = source.index('_VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"')
+    return source[start:end]
+
+
+def _run_bash(script: str) -> subprocess.CompletedProcess:
+    # Bytes on stdin: text mode would turn LF into CRLF on Windows.
+    completed = subprocess.run(["bash", "-s"], input=script.encode("utf-8"), capture_output=True, check=False)
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode, completed.stdout.decode("utf-8"), completed.stderr.decode("utf-8")
+    )
+
+
 class ClientAgentInstallerHelperTests(unittest.TestCase):
+    @RUNS_LINUX_BASH
+    def test_unreachable_cloudflare_falls_back_to_the_aliyun_artifact_source(self) -> None:
+        # A mainland-only host cannot reach Cloudflare; the Aliyun CDN serves
+        # the same artifacts and becomes the download and persisted base.
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() {",
+            "  case \"$1\" in https://v3.leikwanhost.com/*) echo 'connect timed out' >&2; return 1 ;; esac",
+            "  echo '{}' > \"$2\"",
+            "}",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=https://v3.leikwanhost.com",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            _artifact_source_selection(source),
+            "echo \"download=$DOWNLOAD_BASE artifact=$ARTIFACT_BASE\"",
+        ])
+        completed = _run_bash(script)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("artifact source https://v3.leikwanhost.com is unreachable: connect timed out", completed.stderr)
+        self.assertIn(
+            "download=https://api-leikwanbridge.nbwly.com artifact=https://api-leikwanbridge.nbwly.com",
+            completed.stdout,
+        )
+
+    def _select_with_stub(self, stub_body: str) -> subprocess.CompletedProcess:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() {",
+            stub_body,
+            "}",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=https://v3.leikwanhost.com",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            "start=$(date +%s)",
+            _artifact_source_selection(source),
+            "echo \"download=$DOWNLOAD_BASE elapsed=$(( $(date +%s) - start ))\"",
+            'echo "leftovers=$(ls "$STATE_DIR" | grep -v "^versions.json.new$" | wc -l)"',
+        ])
+        return _run_bash(script)
+
+    @RUNS_LINUX_BASH
+    def test_unconnectable_cloudflare_switches_as_soon_as_its_probe_fails(self) -> None:
+        # Probes connect to the first address only, with a 3 s limit, so a
+        # blackholed Cloudflare fails after about 3 s instead of 8 s per address.
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*)\n"
+            "    [[ \"$LEIKWAN_SOURCE_PROBE\" == 1 && \"$LEIKWAN_CONNECT_TIMEOUT_SECONDS\" == 3 ]]"
+            " || { echo 'probe limits missing' >&2; sleep 20 >/dev/null 2>&1 </dev/null; }\n"
+            "    sleep 1; echo 'timed out' >&2; return 1 ;;\n"
+            "  esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://api-leikwanbridge.nbwly.com", completed.stdout)
+        elapsed = int(completed.stdout.split("elapsed=")[1].split()[0])
+        self.assertLessEqual(elapsed, 3, completed.stdout)
+        self.assertIn("artifact source https://v3.leikwanhost.com is unreachable: timed out", completed.stderr)
+        self.assertNotIn("probe limits missing", completed.stderr)
+
+    @RUNS_LINUX_BASH
+    def test_silent_cloudflare_is_abandoned_after_the_grace_period(self) -> None:
+        # A stalled source that never finishes is dropped after 10 s.
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 30 >/dev/null 2>&1 </dev/null; return 1 ;; esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://api-leikwanbridge.nbwly.com", completed.stdout)
+        elapsed = int(completed.stdout.split("elapsed=")[1].split()[0])
+        self.assertLessEqual(elapsed, 12, completed.stdout)
+        self.assertIn("artifact source https://v3.leikwanhost.com did not answer within 10s", completed.stderr)
+        self.assertIn("leftovers=0", completed.stdout)
+
+    @RUNS_LINUX_BASH
+    def test_answering_cloudflare_is_kept_even_when_aliyun_is_faster(self) -> None:
+        # Connected but slow: the whole transfer runs past 3 s, which used to
+        # push a healthy host onto Aliyun.
+        completed = self._select_with_stub(
+            "  case \"$1\" in https://v3.leikwanhost.com/*) sleep 4 ;; esac\n"
+            "  echo '{}' > \"$2\""
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("download=https://v3.leikwanhost.com", completed.stdout)
+        self.assertEqual("", completed.stderr)
+        self.assertIn("leftovers=0", completed.stdout)
+
+    @RUNS_LINUX_BASH
+    def test_every_source_down_fails_with_the_sources_tried(self) -> None:
+        completed = self._select_with_stub("  echo 'connect timed out' >&2; return 1")
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn(
+            "die: no artifact source answered (tried: https://v3.leikwanhost.com https://api-leikwanbridge.nbwly.com )",
+            completed.stderr,
+        )
+
+    @RUNS_LINUX_BASH
+    def test_custom_artifact_source_has_no_fallback(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        script = "\n".join([
+            "set -euo pipefail",
+            "die() { echo \"die: $*\" >&2; exit 1; }",
+            "leikwan_protected_download() { echo \"fetch $1\" >&2; return 1; }",
+            'STATE_DIR="$(mktemp -d)"',
+            "DOWNLOAD_BASE=http://127.0.0.1:8080",
+            "ARTIFACT_BASE=https://v3.leikwanhost.com",
+            _artifact_source_selection(source),
+        ])
+        completed = _run_bash(script)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("fetch http://127.0.0.1:8080/artifacts/versions.json", completed.stderr)
+        self.assertNotIn("fetch https://", completed.stderr)
+        self.assertIn("die: no artifact source answered (tried: http://127.0.0.1:8080 )", completed.stderr)
+
+    def test_panel_connections_fail_fast_so_the_other_source_is_tried(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertIn('CONNECT_TIMEOUT_SECONDS = float(os.environ.get("LEIKWAN_CONNECT_TIMEOUT_SECONDS", "8"))', source)
+        self.assertIn("addresses = addresses[:1]", source)
+        self.assertIn('export LEIKWAN_SOURCE_PROBE=1 LEIKWAN_CONNECT_TIMEOUT_SECONDS="$ARTIFACT_SOURCE_CONNECT_SECONDS"', source)
+        self.assertNotIn("socket.create_connection((self.resolved_ip", source)
+        self.assertIn('"curl", "--noproxy", "*", "--connect-timeout", str(int(CONNECT_TIMEOUT_SECONDS))', source)
+
     def test_installer_deploys_update_helper(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
@@ -42,16 +192,19 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn('MASTER_URL="https://v3.leikwanhost.com"', source)
         self.assertIn('REQUESTED_MASTER_URL="$MASTER_URL"', source)
         # A lease batch may legitimately spend up to 70 s on the runtime control
-        # socket, and the agent pings the watchdog from its own thread, so 180 s
-        # means "wedged", not "busy".
+        # socket, so 180 s means "wedged", not "busy". PyInstaller one-file
+        # sends sd_notify from its extracted child and therefore needs the
+        # runtime-specific NotifyAccess policy rendered by the installer.
         self.assertIn("WatchdogSec=180", source)
-        self.assertIn("NotifyAccess=main", source)
+        self.assertIn('AGENT_NOTIFY_ACCESS="all"', source)
+        self.assertIn('AGENT_NOTIFY_ACCESS="main"', source)
+        self.assertIn("NotifyAccess=$AGENT_NOTIFY_ACCESS", source)
 
     def test_installer_downloads_cfwg_latency_watchdog_module(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            'download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"',
+            'download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"',
             source,
         )
 
@@ -177,6 +330,12 @@ class ClientAgentInstallerHelperTests(unittest.TestCase):
         self.assertIn("bootstrap_dependencies", source)
         self.assertIn("unsupported architecture", source)
         self.assertIn('uname -m', source)
+
+    def test_installer_does_not_pull_a_recommended_kernel_for_wireguard_tools(self) -> None:
+        source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+
+        self.assertIn("apt-get install -y --no-install-recommends wireguard-tools", source)
+        self.assertNotIn("apt-get install -y wireguard-tools", source)
 
     def test_installer_downloads_and_configures_wstunnel(self) -> None:
         source = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")

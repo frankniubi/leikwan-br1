@@ -112,7 +112,7 @@ func TestRankUDPProbeResultsPrefersPaidAndMixedBeforeFreeAndUnknown(t *testing.T
 
 func TestControlDeadlineTracksConfiguredAssociationBudget(t *testing.T) {
 	config := Config{AutoSelect: true, ProbeDurationSecs: 30, ConnectTimeoutSecs: 15}
-	want := 30*time.Second + 15*time.Second + selectionResponseGrace
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
 	if got := controlDeadlineDuration(config); got != want {
 		t.Fatalf("control deadline=%s, want %s", got, want)
 	}
@@ -138,7 +138,7 @@ func TestSelectBestLeaseCarriesLeaseTierIntoProbeResult(t *testing.T) {
 
 func TestStatusPublishesSelectionTierWithoutProviderMaterial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	writer := newStatusWriter(path, 11, time.Millisecond)
+	writer := newTestStatusWriter(t, path, 11, time.Millisecond)
 	writer.UpdateTCPWithTier("tcp-entry-reference-abcdefghijklmnop", selectionTierPaid, 10*time.Millisecond)
 	writer.UpdateUDPProbeWithTier("udp-entry-reference-abcdefghijklmnop", selectionTierMixed, udpProbeResult{
 		SelectionTier: selectionTierUnknown,

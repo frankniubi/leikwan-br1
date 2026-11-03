@@ -1,0 +1,27 @@
+{
+  "advertised": [
+    "1.117.238.119",
+    "121.5.240.89"
+  ],
+  "proof": {
+    "advertised": true,
+    "dns_e2e_ok": 5,
+    "end_to_end_ok": 10,
+    "endpoint": "1.117.238.119:5438",
+    "local_path_only": false,
+    "method": "relay_stream_to_client_target",
+    "relay_local_echo_ok": 10,
+    "target": "45.143.235.221:10809",
+    "tcp_connect_frame_ok": 5,
+    "tcp_dns_answer_ok": 0,
+    "tcp_downstream_ok": 5,
+    "tcp_refused": 0,
+    "tcp_refused_code": null,
+    "tcp_refused_reason": "",
+    "tcp_reply_unparsed": 0,
+    "tcp_unparsed_sample": "",
+    "tcp_zero_downstream_rounds": 0,
+    "udp_target_ok": 5
+  },
+  "target": "45.143.235.221:10809"
+}

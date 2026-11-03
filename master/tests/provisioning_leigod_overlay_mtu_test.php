@@ -24,7 +24,14 @@ foreach ([
 }
 
 $client = file_get_contents($root . '/../client-agent/leikwan_mptcp_client.py') ?: '';
-foreach (['mtu = max(0, int(config.get("mtu", 0) or 0))', 'interface_lines.append(f"MTU = {mtu}")'] as $snippet) {
+// The runtime now clamps the configured MTU to the measured relay payload
+// ceiling (resolve_overlay_mtu, 085de88b); the panel value stays the upper bound.
+foreach ([
+    'configured_mtu = max(0, int(config.get("mtu", 0) or 0))',
+    'mtu = min(mtu, configured_mtu)',
+    'resolution = resolve_overlay_mtu(config, parent_config)',
+    'interface_lines.append(f"MTU = {resolution.mtu}")',
+] as $snippet) {
     if (!str_contains($client, $snippet)) {
         fail('leikwan_mptcp_client.py missing MTU render snippet: ' . $snippet);
     }

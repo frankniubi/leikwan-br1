@@ -165,17 +165,17 @@ object ProxyUriParser {
         return try {
             val parsed = URI(uri)
             val uuid = parsed.userInfo ?: return null
-            val server = parsed.host ?: return null
+            val server = parsed.host?.removeSurrounding("[", "]") ?: return null
             val port = parsed.port.takeIf { it > 0 } ?: return null
-            val name = parsed.fragment?.let {
-                URLDecoder.decode(it, "UTF-8")
-            } ?: "$server:$port"
+            // Decode the fragment and query exactly once: URI.getQuery() already decodes, so splitting
+            // it would break values that contain an encoded '&' or '=' (ws paths such as /ray?ed=2048).
+            val name = parsed.rawFragment?.let(::urlDecode)?.takeIf { it.isNotBlank() } ?: "$server:$port"
 
             val params = mutableMapOf<String, String>()
-            parsed.query?.split("&")?.forEach { pair ->
+            parsed.rawQuery?.split("&")?.forEach { pair ->
                 val parts = pair.split("=", limit = 2)
                 if (parts.size == 2) {
-                    params[parts[0]] = URLDecoder.decode(parts[1], "UTF-8")
+                    params[urlDecode(parts[0])] = urlDecode(parts[1])
                 }
             }
 
@@ -317,7 +317,7 @@ object ProxyUriParser {
     }
 
     private fun parseHostPort(hostPort: String): Pair<String, Int>? {
-        val server = hostPort.substringBeforeLast(":", "")
+        val server = hostPort.substringBeforeLast(":", "").removeSurrounding("[", "]")
         val port = hostPort.substringAfterLast(":", "").toIntOrNull()
         if (server.isBlank() || port == null) return null
         return server to port

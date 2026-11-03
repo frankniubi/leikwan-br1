@@ -1,0 +1,332 @@
+name: OpenWrt router edition
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/openwrt-router-edition
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openwrt-router-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests (leikwand + LuCI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Go test + vet
+        run: |
+          cd tools/leikwand
+          go vet ./...
+          go test -mod=readonly ./... -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: LuCI view tests
+        run: node openwrt/luci-app-leikwan/tests/run-tests.cjs
+      - name: LuCI mutation check
+        run: node openwrt/luci-app-leikwan/tests/mutation-check.cjs
+      - name: One-line installer (install-openwrt.sh) unit test
+        run: bash install/tests/test_install_openwrt.sh
+      - name: Version report (openwrt-versions.sh) unit test
+        run: bash install/tests/test_openwrt_versions.sh
+
+  integration:
+    name: End-to-end integration (real daemon + real runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Build both binaries
+        run: |
+          cd tools/leikwand
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.agentVersion=1.2.6-ci" -o /tmp/leikwand .
+          cd ../ultra-client
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=1.2.6-ci" -o /tmp/ultra-client .
+      - name: Run integration suite
+        run: tools/leikwand/integration/run_integration.sh /tmp/leikwand /tmp/ultra-client
+
+  packages:
+    name: OpenWrt ${{ matrix.edition }} ${{ matrix.arch }} packages + firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # opkg edition: OpenWrt 23.05/24.10 era, .ipk output. Kept for the
+          # installed base — apk-based releases cannot consume these, and the
+          # 21.02/22.03 legacy card depends on them too.
+          - edition: opkg
+            arch: amd64
+            ext: ipk
+            sdk-dir: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst
+            ib-target: x86/64
+            ib-profile: generic
+          - edition: opkg
+            arch: arm64
+            ext: ipk
+            sdk-dir: openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-sdk-24.10.4-armsr-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/24.10.4/targets/armsr/armv8/openwrt-imagebuilder-24.10.4-armsr-armv8.Linux-x86_64.tar.zst
+            ib-target: armsr/armv8
+            ib-profile: generic
+          # apk edition: OpenWrt 25.12+, .apk output. The same package sources
+          # build under the 25.12 SDK; the SDK's buildroot emits apk packages
+          # and an APKINDEX-style feed instead of ipks.
+          - edition: apk
+            arch: amd64
+            ext: apk
+            sdk-dir: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-25.12.6-x86-64.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/openwrt-imagebuilder-25.12.6-x86-64.Linux-x86_64.tar.zst
+            ib-target: x86/64
+            ib-profile: generic
+          - edition: apk
+            arch: arm64
+            ext: apk
+            sdk-dir: openwrt-sdk-25.12.6-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64
+            sdk-url: https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/openwrt-sdk-25.12.6-armsr-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+            ib-dir: openwrt-imagebuilder-25.12.6-armsr-armv8.Linux-x86_64
+            ib-url: https://downloads.openwrt.org/releases/25.12.6/targets/armsr/armv8/openwrt-imagebuilder-25.12.6-armsr-armv8.Linux-x86_64.tar.zst
+            ib-target: armsr/armv8
+            ib-profile: generic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+      - name: Install SDK
+        run: |
+          # python3-distutils was removed in Ubuntu 24.04 (noble); the SDK's
+          # prereq check only needs it on 22.04, so install it best-effort.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libncurses-dev libz-dev libssl-dev \
+            python3 python3-setuptools rsync file unzip zstd
+          sudo apt-get install -y -qq python3-distutils >/dev/null 2>&1 || true
+          mkdir -p ~/leikwan-build
+          curl -fsSL "${{ matrix.sdk-url }}" -o sdk.tar.zst
+          tar --zstd -xf sdk.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.sdk-dir }} ~/leikwan-build/sdk
+      - name: Build packages
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          ./openwrt/build-ipk.sh ${{ matrix.arch }} ~/leikwan-build/sdk || {
+            echo "=== debugging the install host tool ==="
+            command -v install || true
+            install --version || true
+            echo "install exit=$?"
+            sh -c 'command -v install; install --version | grep GNU; echo sh-exit=$?'
+            echo "PATH=$PATH"
+            exit 1
+          }
+      - name: Collect packages
+        run: |
+          mkdir -p artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}
+          # opkg names use leikwand_<ver>_<arch>.ipk; apk names are
+          # leikwand-<ver>.apk (hyphenated, no arch), so both spellings are
+          # collected per flavour.
+          find ~/leikwan-build/sdk/bin/packages -name 'leikwand*.${{ matrix.ext }}' -o -name 'leikwan-runtime*.${{ matrix.ext }}' -o -name 'luci-app-leikwan*.${{ matrix.ext }}' \
+            | xargs -I{} cp {} artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          ls -la artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          if ! ls artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/leikwand*.${{ matrix.ext }} >/dev/null 2>&1; then
+            echo "leikwand ${{ matrix.ext }} package missing" >&2; exit 1
+          fi
+          # The 25.12 SDK also emits the feed index for its output packages;
+          # ship it alongside the apks so the panel can serve a real feed.
+          for idx in APKINDEX.tar.gz packages.adb; do
+            found=$(find ~/leikwan-build/sdk/bin/packages -name "$idx" | head -1)
+            if [ -n "$found" ]; then cp "$found" artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/; fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ matrix.edition }}-pkgs-${{ matrix.arch }}
+          path: artifacts/pkg-${{ matrix.edition }}-${{ matrix.arch }}/
+          if-no-files-found: error
+      - name: Install ImageBuilder
+        run: |
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq build-essential libncurses-dev zstd python3 rsync file unzip >/dev/null 2>&1
+          curl -fsSL "${{ matrix.ib-url }}" -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/${{ matrix.ib-dir }} ~/leikwan-build/ib
+      - name: Build firmware image
+        run: |
+          export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand*.${{ matrix.ext }}' | head -1)")
+          export LEIKWAND_VERSION=1.2.6
+          # uutils coreutils: the ImageBuilder's own scripts may also probe for
+          # GNU wording; make sure the diagnostics survive the run either way.
+          ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib || {
+            echo "=== leikwan-image-build.log (full) ==="
+            cat ~/leikwan-build/ib/leikwan-image-build.log || true
+            exit 1
+          }
+      - name: Collect firmware
+        run: |
+          mkdir -p artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}
+          find ~/leikwan-build/ib/bin/targets -type f \( -name '*.img.gz' -o -name 'manifest' -o -name '*.manifest' \) -exec cp {} artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/ \;
+          ls -la artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware-${{ matrix.edition }}-${{ matrix.arch }}
+          path: artifacts/firmware-${{ matrix.edition }}-${{ matrix.arch }}/
+          if-no-files-found: error
+
+  smoke:
+    name: One-shot install smoke (QEMU x86_64, opkg edition)
+    needs: [packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-opkg-pkgs-amd64
+          path: ipks
+      - name: Install ImageBuilder
+        run: |
+          mkdir -p ~/leikwan-build
+          curl -fsSL https://downloads.openwrt.org/releases/24.10.4/targets/x86/64/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64.tar.zst -o ib.tar.zst
+          tar --zstd -xf ib.tar.zst -C ~/leikwan-build
+          mv ~/leikwan-build/openwrt-imagebuilder-24.10.4-x86-64.Linux-x86_64 ~/leikwan-build/ib
+      - name: Build smoke firmware (leikwan packages preinstalled)
+        run: |
+          export LEIKWAN_IPK_DIR="$PWD/ipks"
+          export LEIKWAND_VERSION=1.2.6
+          ./openwrt/image/build-image.sh amd64 ~/leikwan-build/ib
+      - name: Boot the image in QEMU and verify the install
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq qemu-system-x86 socat >/dev/null 2>&1
+          command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 missing"; exit 1; }
+          IMG=$(find ~/leikwan-build/ib/bin/targets -name '*ext4-combined-efi.img.gz' | head -1)
+          test -n "$IMG" || { echo "no ext4-efi image produced"; exit 1; }
+          # The ImageBuilder appends random padding after the gzip stream, so
+          # gunzip reports "trailing garbage ignored" with exit 2; that is a
+          # warning, not a failure. Only a missing output file is fatal.
+          gunzip -kf "$IMG" || [ -f "${IMG%.gz}" ] || { echo "gunzip failed"; exit 1; }
+          RAW="${IMG%.gz}"
+          # Grow the disk so the ext4 partition has room to breathe.
+          truncate -s 512M "$RAW"
+          # -display none (not -nographic): -daemonize forbids -nographic.
+          # The serial console goes to a file: a unix-socket serial plus socat
+          # probes loses data between connects and made the previous run see
+          # nothing at all. A file keeps every byte since boot.
+          # root=/dev/vda2: the EFI combined image's rootfs partition (vda1 is
+          # boot); PARTLABEL=rootfs does not resolve under this q35/virtio
+          # combination (kernel sat at "Waiting for root device").
+          rm -f serial.log
+          qemu-system-x86_64 \
+            -machine q35 -cpu max -m 512 \
+            -kernel "$(find ~/leikwan-build/ib/bin/targets -name '*-kernel.bin' | head -1)" \
+            -append "root=/dev/vda2 rootwait console=ttyS0" \
+            -drive file="$RAW",format=raw,if=virtio \
+            -netdev user,id=wan -device virtio-net-pci,netdev=wan \
+            -display none -no-reboot -daemonize -pidfile qemu.pid \
+            -serial file:serial.log
+          # A fresh OpenWrt boots in well under a minute; watch the log for the
+          # boot completing (br-lan forwarding = init finished and the network
+          # is up). The daemon's own banner goes to procd's console only after
+          # S95 runs and is not guaranteed in order; the package install itself
+          # is asserted by the packages job and the WSL rootfs spot-check.
+          ok=0
+          for _ in $(seq 1 60); do
+            sleep 2
+            if grep -q "entered forwarding state" serial.log 2>/dev/null; then ok=1; break; fi
+          done
+          echo "=== serial log (full) ==="
+          cat serial.log 2>/dev/null | tail -80
+          if [ "$ok" != "1" ]; then
+            kill $(cat qemu.pid) 2>/dev/null || true
+            exit 1
+          fi
+          echo "smoke boot completed (init finished, network up)"
+          kill $(cat qemu.pid) 2>/dev/null || true
+
+  router-vm:
+    # The end-to-end test: a stock OpenWrt image, the panel's install command,
+    # registration through rpcd, a real forwarding path, usage, line rotation,
+    # a panel outage, relay failover, an unattended reboot and a clean removal.
+    # Runs both editions because the install path and the package manager
+    # differ; the daemon and the runtime are the same build.
+    name: Router VM end-to-end (${{ matrix.edition }} on ${{ matrix.release }})
+    needs: [packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: apk
+            release: "25.12.6"
+            arch: amd64
+          - edition: opkg
+            release: "24.10.4"
+            arch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-${{ matrix.edition }}-pkgs-${{ matrix.arch }}
+          path: pkgs
+      # The arm64 packages exercise the installer's architecture handling on
+      # this x86 router (aarch64_generic is not in its architecture list).
+      - uses: actions/download-artifact@v4
+        with:
+          name: openwrt-${{ matrix.edition }}-pkgs-arm64
+          path: pkgs-arm64
+      - name: Host tooling
+        run: |
+          sudo apt-get update -qq
+          # qemu-system-x86 (TCG: the runner has no /dev/kvm), e2fsprogs for
+          # the offline rootfs resize, sfdisk for the partition table, and the
+          # ssh client the harness drives the router with.
+          sudo apt-get install -y -qq qemu-system-x86 e2fsprogs fdisk dosfstools \
+            curl python3 openssh-client
+          qemu-system-x86_64 --version | head -1
+          command -v debugfs resize2fs sfdisk
+      - name: Router end-to-end
+        run: |
+          chmod +x openwrt/tests/router-vm-e2e.sh
+          ./openwrt/tests/router-vm-e2e.sh \
+            --edition ${{ matrix.edition }} \
+            --release ${{ matrix.release }} \
+            --image-dir "$PWD/pkgs" \
+            --arm64-dir "$PWD/pkgs-arm64"
+      - name: Collect evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: router-vm-${{ matrix.edition }}-failure
+          path: |
+            /tmp/leikwan-vm-*/serial.log
+            /tmp/leikwan-vm-*/daemon.log
+            /tmp/leikwan-vm-*/syslog.log
+            /tmp/leikwan-vm-*/panel-state/
+            /tmp/leikwan-vm-*/panel.log
+            /tmp/leikwan-vm-*/relay*.log
+          if-no-files-found: ignore

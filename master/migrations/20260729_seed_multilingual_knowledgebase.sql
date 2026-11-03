@@ -134,16 +134,16 @@ D --&gt; E[Point the game at the local port]
 E --&gt; F[Play]</pre>
 <p>Five steps, each one covered in a few lines below. Nothing here needs a technical decision.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="Panel overview showing the active plan and the list of forwards">
-  <figcaption>Your starting point: the plan and the forward list, both on the panel''s first page.</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview-en.png" width="1440" height="960" alt="Panel overview showing active packages, forwards and the three setup steps">
+  <figcaption>Your starting point: the Overview page tells you which step comes next.</figcaption>
 </figure>
 <ol>
-  <li><strong>Open the panel and check the plan is active.</strong> If it shows as expired or unpaid, the forward form stays locked.</li>
-  <li><strong>Create a forward.</strong> Pick the line closest to the game''s server, type the address and port the game connects to, keep the suggested local port, and save. Note that local port down - the game needs it in step 5.</li>
-  <li><strong>Install the app</strong> on the device you play on: Windows or Android from the Clients page, or the one-line Linux command. Sign in with your panel account.</li>
+  <li><strong>Open the panel and check the plan is active.</strong> Latest package on the Overview page shows its status; if it is expired or suspended, you cannot create a forward.</li>
+  <li><strong>Create a forward.</strong> Open <strong>My Services</strong> and click <strong>New forward</strong> on your package. Pick the line closest to the game''s server, type the address and port the game connects to, keep the suggested local port, and save. Note that local port down - the game needs it in step 5.</li>
+  <li><strong>Install the app</strong> on the device you play on: Windows, macOS or Android from the Clients page, or the one-line Linux command. Sign in with your panel account.</li>
   <li><strong>Connect.</strong> The app lists your forward; press connect and wait until it reads running.</li>
   <li><strong>Point the game at the client.</strong> Wherever the game asks for a server address, use <code>127.0.0.1</code> and the local port from step 2, then start the game.</li>
-  <li><strong>Play, and glance at the panel afterwards.</strong> The forward shows traffic while you play.</li>
+  <li><strong>Play, and glance at the panel afterwards.</strong> The forward''s <strong>Usage this cycle</strong> goes up while you play.</li>
 </ol>
 
 <h2>How to know it worked</h2>
@@ -177,20 +177,20 @@ SELECT
     topic.id, 'en', NULL, 'Install the Client', 'Install and sign in on Windows, Android, or Linux, then confirm the client is online.', '<p>Install the app once on the device you play on, sign in, and leave it running. After that you only open it to check that the line is still up.</p>
 
 <h2>What you will accomplish</h2>
-<p>The app installed on your device, signed in with your panel account, and shown as online in the panel.</p>
+<p>The app installed on your device, signed in with your panel account, and listed among the online devices on the Clients page.</p>
 
 <h2>Before you begin</h2>
 <ul>
 <li>Your panel email and password.</li>
-<li>The device you play on. The app runs on Windows, Android, and Linux.</li>
+<li>The device you play on. The app runs on Windows, macOS, Android, and Linux.</li>
 <li>Android 8.0+ for phones and tablets.</li>
-<li>On Linux, a 64-bit ARM machine and one root command.</li>
+<li>On Linux, Debian 11, 12 or 13 (x86_64 or arm64) and one root command.</li>
 </ul>
 
 <h2>Steps</h2>
 <ol>
 <li><strong>Open the Clients page.</strong> Everything you need sits on that one page.</li>
-<li><strong>Install the app.</strong> On Windows click <strong>Download Windows App</strong>. On a phone install the arm64 Android app. On Linux click <strong>Copy Install Command</strong> and run it.</li>
+<li><strong>Install the app.</strong> On Windows use the download button in the <strong>Windows App</strong> box. On Android click <strong>Download APK</strong>. On macOS pick the download for your chip. On Linux copy the command in the <strong>Linux</strong> box and run it on the target machine.</li>
 <li><strong>Sign in</strong> with your panel email and password. The app answers <strong>Connection successful!</strong> when it is in.</li>
 <li><strong>Leave it running.</strong> The app shows <strong>Connected</strong> and the switch reads <strong>Running</strong>.</li>
 </ol>
@@ -199,19 +199,19 @@ flowchart TD
 accTitle: Client install path
 accDescr: Pick your device, install the app, sign in, then confirm the client is online
 A[Pick your device] --> B[Operating system]
-B --> C[Download Windows App]
-B --> D[Install arm64 Android app]
+B --> C[Download the Windows installer]
+B --> D[Download the Android APK]
 B --> E[Copy Linux install command]
 C --> F[Sign in]
 D --> F
 E --> F
 F --> G[Client reads Connected and Running]
 </pre>
-<p>All three devices finish in the same place: the app is signed in and the panel shows a recent sync for it.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients page showing the Windows download button and the Linux install command"><figcaption>The Clients page holds every download and the Linux install command.</figcaption></figure>
+<p>Every device finishes in the same place: the app is signed in and the Clients page lists it as online.</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install-en.png" width="1440" height="960" alt="Clients page showing the Windows download button and the Linux install command"><figcaption>The Clients page holds every download and the Linux install command.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>Two checks. The app shows <strong>Connected</strong>, and the Clients page lists your device with a recent sync time.</p>
+<p>Two checks. The app shows <strong>Connected</strong>, and the online devices list at the bottom of the Clients page shows your device (IP, system and app version).</p>
 
 <h2>If it did not work</h2>
 <p><strong>Stop</strong> and sign in again if the app never leaves <strong>Connecting...</strong>. Most likely first: the password is wrong or the account is not active yet. Then: Android put the app to sleep in the background. Then: the Linux command was run without root.</p>
@@ -248,12 +248,12 @@ SELECT
 
 <h2>Steps</h2>
 <ol>
-<li><strong>Open Forwards and click Create Forward.</strong></li>
+<li><strong>Open My Services and click New forward on your package.</strong> The Create Forward button on the service details page opens the same form.</li>
 <li><strong>Pick a Forward Route.</strong> Take the line closest to the destination. Every line uses ultra, so there is nothing else to decide.</li>
 <li><strong>Fill in Target Host and Target Port.</strong> This is the address the game itself connects to, not the address of the site you downloaded it from.</li>
 <li><strong>Choose the Transport</strong> your service needs: TCP, UDP, or TCP + UDP.</li>
-<li><strong>Save.</strong> Keep the suggested Local Listen Port unless you have a reason to change it.</li>
-<li><strong>Write down the assigned local port.</strong> It shows up on the row within a few seconds.</li>
+<li><strong>Click Create Forward.</strong> Leave Local Listen Port empty so the panel assigns one, unless you have a reason to pick it yourself.</li>
+<li><strong>Write down the assigned local port.</strong> After saving you land on the service details page; the new forward is in the Forward Rules table and the Local Listen column is its port.</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
@@ -267,10 +267,10 @@ E --> F[Wait until the forward is ready]
 F --> G[Note the assigned local port]
 </pre>
 <p>The form only asks for the route, the destination, the transport, and the local port. The rest is filled in for you.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward form with the route, target host, target port and transport fields"><figcaption>The Create Forward form. Only four fields need your attention.</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-en.png" width="1440" height="960" alt="Create Forward form with the route, target host, target port and transport fields"><figcaption>The Create Forward form. Only four fields need your attention.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The row stays saved instead of flipping through provisioning, and the assigned local port is filled in. The Clients page then shows a recent client sync for the device that will carry this forward.</p>
+<p>In Forward Rules the row reads <strong>Running</strong>, Local Listen has a number, and Endpoint Status no longer says <strong>No endpoint assigned yet</strong>. Then check that the device that will carry this forward is online on the Clients page.</p>
 
 <h2>If it did not work</h2>
 <p><strong>Stop</strong> if the panel refuses to save. Three usual reasons: the plan is not active any more, the target host or port is not right, or the local port you typed is already in use - clear it and let the panel suggest one again.</p>
@@ -322,7 +322,7 @@ B --> D[Start the game]
 C --> D
 </pre>
 <p>Same device keeps the port on loopback only. Another device needs one allowed path through the network in between.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="Forward row showing the assigned local port and live traffic"><figcaption>The forward row shows the local port and the traffic it carries.</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result-en.png" width="1440" height="960" alt="Forward Rules table on the service details page with the local port, target, transport and usage"><figcaption>The forward row shows the local port and the traffic it carries.</figcaption></figure>
 
 <h2>How to know it worked</h2>
 <p>Two checks. The app shows the line as running, and the forward row shows incoming traffic while you play. On Android the client runs on the phone itself, so the game there always uses <code>127.0.0.1</code> too.</p>
@@ -361,11 +361,11 @@ SELECT
 
 <h2>Steps</h2>
 <ol>
-<li><strong>Is the client in sync?</strong> The Clients page should show a recent sync. If it does not, restart the app and give it a few seconds.</li>
+<li><strong>Is the client online?</strong> The online devices list at the bottom of the Clients page should show this device. If it does not, restart the app, wait a few seconds and reload; if the online limit is full, kick a device you no longer use.</li>
 <li><strong>Is the address correct?</strong> Same device as the client means 127.0.0.1 plus the local port; another device means the client host address.</li>
 <li><strong>Is the port allowed?</strong> Only the port you actually use has to be open through the firewall, security group, or NAT.</li>
-<li><strong>Are the forward and route healthy?</strong> The row must not sit in provisioning, and the target service should answer when you test it from its own host.</li>
-<li><strong>Still stuck?</strong> Open View Diagnostics and send the result to support with the name of the forward.</li>
+<li><strong>Are the forward and route healthy?</strong> In Forward Rules the row should read Running and Endpoint Status should not stay on "No endpoint assigned yet"; the target service should answer when you test it from its own host.</li>
+<li><strong>Still stuck?</strong> Send support the forward ID, the device you used, and roughly when it failed.</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
@@ -377,16 +377,16 @@ B -- Yes --> D[Is the address and port correct?]
 D -- No --> E[Use 127.0.0.1 or the client host address]
 E --> C
 D -- Yes --> F[Test the target service from its own host]
-F --> G[Open View Diagnostics and contact support]
+F --> G[Contact support with the forward ID]
 </pre>
 <p>Work down the list once, in order. Skipping a step usually means coming back to it later.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="Diagnostics page with the client sync state and the forward health summary"><figcaption>View Diagnostics collects the client sync, the forward state, and the last error in one place.</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-en.png" width="1440" height="960" alt="Online devices list on the Clients page with each device IP, system and app version"><figcaption>Online devices lists every signed-in device; if yours is missing, the forward will not work.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The app shows the line as running, and the forward row shows traffic again while you play.</p>
+<p>The app shows the line as running, and Usage this cycle in Forward Rules goes up again while you play.</p>
 
 <h2>If it did not work</h2>
-<p><strong>Stop</strong> before changing anything else. Do not make random topology changes - they hide the real cause and make the next round slower. If all four checks are clean, send support the diagnostics output; that is the fastest path from there.</p>
+<p><strong>Stop</strong> before changing anything else. Do not change settings at random - it hides the real cause and makes the next round slower. If all four checks are clean, contact support; that is the fastest path from there.</p>
 
 <h2>Related guides</h2>
 <p><a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a>, or <a href="/knowledgebase?thread=getting-started-first-forward-checklist">create your first forward</a> if the row itself looks wrong.</p>
@@ -433,11 +433,11 @@ SELECT
 <tr><td><strong>Forward Route</strong></td><td>The line your traffic leaves from. Pick the one closest to the destination.</td></tr>
 <tr><td><strong>Target Host</strong></td><td>The address of the game or service you want to reach.</td></tr>
 <tr><td><strong>Target Port</strong></td><td>The port that address listens on.</td></tr>
-<tr><td><strong>Local Listen Port</strong></td><td>The port on your own device that the panel hands you. Your game uses this one.</td></tr>
+<tr><td><strong>Local Listen Port</strong></td><td>The port on your own device that the panel hands you, shown as Local Listen in Forward Rules. Your game uses this one.</td></tr>
 <tr><td><strong>Transport</strong></td><td>Whether the traffic is TCP, UDP, or both. Games are usually UDP.</td></tr>
 <tr><td><strong>Client</strong></td><td>The app that carries the line on your device.</td></tr>
 <tr><td><strong>Running</strong></td><td>The state the app shows when the line is up.</td></tr>
-<tr><td><strong>Recent sync</strong></td><td>The last time the app talked to the panel. A fresh time means the client is healthy.</td></tr>
+<tr><td><strong>Online devices</strong></td><td>The devices currently signed in, listed on the Clients page. A device in the list means its client is healthy.</td></tr>
 <tr><td><strong>Ultra</strong></td><td>How every line is carried. It keeps the route steady while you play.</td></tr>
 <tr><td><strong>Application verification</strong></td><td>Testing the game itself, not a ping.</td></tr>
 </tbody>
@@ -489,7 +489,7 @@ accDescr: Pick the computer, install the background client, then confirm the lin
  E --&gt; F[See the device online in the panel]</pre>
 <p>The picture is the whole job: choose the system, run one command, then confirm. Everything after that happens in the background.</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients page showing the download buttons and this machine''s Client ID and Agent Token">
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install-en.png" width="1440" height="960" alt="Clients page showing the download buttons and this machine''s Client ID and Agent Token">
   <figcaption>Your Client ID and Agent Token are on this page, together with the download for your system.</figcaption>
 </figure>
 <ol>
@@ -531,50 +531,50 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-Hans', NULL, '五分钟完成首次连接', '按最短路径完成套餐、转发、客户端安装和连接验证。', '<h2>你将完成什么</h2>
-<p>你会从"套餐已生效"走到"线路可用"：在面板建一条转发、装上客户端、连接，然后看到线路在运行。大约五分钟，而且你不需要选择任何连接类型 —— 所有线路都用 ultra，它做的就是在你打游戏时把线路保持稳定。</p>
+<p>你会从"套餐已生效"走到"线路可用"：在控制台建一条转发、装上客户端、连接，然后看到线路在运行。大约五分钟，而且你不需要选择任何连接类型 —— 所有线路都用 ultra，它做的就是在你打游戏时把线路保持稳定。</p>
 
 <h2>开始前准备</h2>
 <ul>
-  <li>一个有效套餐，面板才会允许你创建转发。</li>
+  <li>一个使用中的套餐，控制台才会允许你创建转发。</li>
   <li>想加速的游戏或程序，以及它连接的地址（游戏里的服务器列表通常能看到）。</li>
-  <li>运行客户端的设备：Windows、Android 或 Linux 都可以，手机和电脑一样能用。</li>
-  <li>你的面板账号，以及大约五分钟。</li>
+  <li>运行客户端的设备：Windows、macOS、Android 或 Linux 都可以，手机和电脑一样能用。</li>
+  <li>你的控制台账号，以及大约五分钟。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
 accTitle: 从套餐到可用线路
 accDescr: 先创建一条转发，装上客户端并连接，再把游戏指向本机端口。
-A[打开面板] --&gt; B[创建一条转发]
-B --&gt; C[安装应用]
+A[打开控制台] --&gt; B[新建一条转发]
+B --&gt; C[安装客户端]
 C --&gt; D[登录并连接]
 D --&gt; E[把游戏指向本机端口]
 E --&gt; F[开始游戏]</pre>
 <p>五步，下面每步都只有几行说明。这里没有任何需要你判断的技术选项。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="面板首页，显示有效套餐与转发列表">
-  <figcaption>起点就在这里：套餐和转发列表都在面板首页。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview-zh-hans.png" width="1440" height="960" alt="控制台总览页，显示使用中的套餐、转发规则数量和三步开始使用">
+  <figcaption>起点就在这里：登录后的「总览」页会告诉你下一步该做什么。</figcaption>
 </figure>
 <ol>
-  <li><strong>打开面板，确认套餐有效。</strong>如果显示已过期或未付款，转发表单会一直是锁住的。</li>
-  <li><strong>创建一条转发。</strong>选择离游戏服务器最近的线路，填入游戏连接的地址和端口，本机端口用默认值即可，然后保存。把这个本机端口记下来 —— 第 5 步要用。</li>
-  <li><strong>安装应用</strong>到你玩游戏的设备上：Windows 和 Android 在「客户端」页面下载，Linux 用那一条安装命令。用面板账号登录。</li>
-  <li><strong>连接。</strong>应用里会列出你刚建的转发，点连接，等到显示 running。</li>
-  <li><strong>把游戏指向客户端。</strong>游戏里凡是要填服务器地址的地方，填 <code>127.0.0.1</code> 和第 2 步记下的本机端口，然后启动游戏。</li>
-  <li><strong>开始游戏，之后再回面板看一眼。</strong>你玩的时候，那条转发会显示有流量。</li>
+  <li><strong>打开控制台，确认套餐在使用中。</strong>「总览」页的「最近的套餐」会显示状态；如果显示已到期或已暂停，就没法新建转发。</li>
+  <li><strong>新建一条转发。</strong>进入「我的服务」，在套餐卡片上点「新建转发」。选择离游戏服务器最近的线路，填入游戏连接的目标地址和目标端口，本地监听端口留空让系统分配，然后保存。把这个本地端口记下来 —— 第 5 步要用。</li>
+  <li><strong>安装客户端</strong>到你玩游戏的设备上：在「客户端」页面，Windows 点「下载安装包」，Android 点「下载 APK」，Linux 复制那一条安装命令运行。用控制台账号登录。</li>
+  <li><strong>连接。</strong>客户端里会列出你刚建的转发，点连接，等到显示 running。</li>
+  <li><strong>把游戏指向客户端。</strong>游戏里凡是要填服务器地址的地方，填 <code>127.0.0.1</code> 和第 2 步记下的本地端口，然后启动游戏。</li>
+  <li><strong>开始游戏，之后再回控制台看一眼。</strong>你玩的时候，那条转发的「本期用量」会增加。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>按顺序看三个地方：应用里线路显示为 running；你游戏时面板上那条转发有流量数字；游戏本身稳定，不会在一局中途突然卡顿。如果游戏能进但流量一直是 0，几乎都是本机端口填错了 —— 回到第 5 步检查。</p>
+<p>按顺序看三个地方：客户端里线路显示为 running；你游戏时控制台上那条转发的「本期用量」在增加；游戏本身稳定，不会在一局中途突然卡顿。如果游戏能进但用量一直是 0，几乎都是本地端口填错了 —— 回到第 5 步检查。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止</strong>反复提交表单，先确认套餐状态 —— 面板不让你保存转发，最常见的原因就是套餐过期。第二常见的是目标填错：要填游戏真正连接的地址，不是你下载游戏的网站地址。第三是本机端口：游戏必须使用面板分配的那个端口。其它情况（应用连不上、线路老是掉、游戏进不去服务器）都写在下面的排查指南里。</p>
+<p><strong>先停止</strong>反复提交表单，先确认套餐状态 —— 控制台不让你保存转发，最常见的原因就是套餐到期。第二常见的是目标填错：要填游戏真正连接的地址，不是你下载游戏的网站地址。第三是本地端口：游戏必须使用系统分配的那个端口。其它情况（客户端连不上、线路老是掉、游戏进不去服务器）都写在下面的排查指南里。</p>
 
 <h2>相关指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a></li>
   <li><a href="/knowledgebase?thread=install-client">安装客户端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">连接与验证</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">连接并验证</a></li>
 </ul>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -595,21 +595,21 @@ SELECT
     topic.id, 'zh-Hans', NULL, '安装客户端', '在 Windows、Android 或 Linux 上安装并登录，然后确认客户端在线。', '<p>在你玩游戏的那台设备上装一次客户端，登录之后让它一直开着就行。以后只要偶尔看一眼线路还在不在。</p>
 
 <h2>你将完成什么</h2>
-<p>客户端装好、用面板账号登录，并且在面板里显示为在线。</p>
+<p>客户端装好、用控制台账号登录，并且在控制台「客户端」页面的「在线设备」里能看到它。</p>
 
 <h2>开始前准备</h2>
 <ul>
-<li>你的面板邮箱和密码。</li>
-<li>你玩游戏用的设备。客户端支持 Windows、Android 和 Linux。</li>
+<li>你的控制台邮箱和密码。</li>
+<li>你玩游戏用的设备。客户端支持 Windows、macOS、Android 和 Linux。</li>
 <li>手机或平板需要 Android 8.0 以上。</li>
-<li>Linux 需要 64 位 ARM（arm64）机器，并且能执行一条 root 命令。</li>
+<li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），并且能用 root 执行命令。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-<li><strong>打开 Clients 页面。</strong>需要的东西都在这一页。</li>
-<li><strong>安装客户端。</strong>Windows 点 <strong>Download Windows App</strong>；手机装 arm64 安装包；Linux 点 <strong>Copy Install Command</strong>，再执行这条命令。</li>
-<li><strong>登录。</strong>用面板的邮箱和密码。进去之后客户端会显示 <strong>Connection successful!</strong>。</li>
+<li><strong>打开「客户端」页面。</strong>需要的东西都在「下载与安装」这一块里。</li>
+<li><strong>安装客户端。</strong>Windows 点「下载安装包」；Android 点「下载 APK」；macOS 点对应芯片的下载按钮；Linux 点「复制命令」，再在目标机器上执行这条命令。</li>
+<li><strong>登录。</strong>用控制台的邮箱和密码。进去之后客户端会显示 <strong>Connection successful!</strong>。</li>
 <li><strong>让它一直开着。</strong>客户端显示 <strong>Connected</strong>，开关显示 <strong>Running</strong>。</li>
 </ol>
 <pre class="mermaid">
@@ -617,22 +617,22 @@ flowchart TD
 accTitle: 客户端安装路径
 accDescr: 按设备系统选择安装方式，登录后确认客户端在线
 A[选择设备] --> B[操作系统]
-B --> C[下载 Windows 应用]
-B --> D[安装 arm64 Android 应用]
+B --> C[下载 Windows 安装包]
+B --> D[下载 Android APK]
 B --> E[复制 Linux 安装命令]
 C --> F[登录]
 D --> F
 E --> F
 F --> G[客户端显示 Connected 和 Running]
 </pre>
-<p>三种设备最后都停在同一处：客户端已经登录，面板里能看到它最近同步过。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 页面上的 Windows 下载按钮和 Linux 安装命令"><figcaption>下载入口和 Linux 安装命令都在 Clients 页面上。</figcaption></figure>
+<p>几种设备最后都停在同一处：客户端已经登录，控制台的「在线设备」里能看到它。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-hans.png" width="1440" height="960" alt="客户端页面的下载与安装区域，包括 Linux 安装命令和 Windows 下载安装包按钮"><figcaption>下载入口和 Linux 安装命令都在「客户端」页面的「下载与安装」里。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>看两处。客户端显示 <strong>Connected</strong>，Clients 页面里这台设备有最近同步时间。</p>
+<p>看两处。客户端显示 <strong>Connected</strong>；「客户端」页面底部的「在线设备」里出现这台设备（IP、系统和客户端版本）。</p>
 
 <h2>如果没有成功</h2>
-<p>如果一直停在 <strong>Connecting...</strong>，<strong>先停止</strong>，重新登录一次。按可能性排：密码不对，或者账号还没生效；Android 把客户端在后台休眠了；Linux 命令没有用 root 执行。</p>
+<p>如果一直停在 <strong>Connecting...</strong>，<strong>先停止</strong>，重新登录一次。按可能性排：密码不对，或者账号还没生效；同时在线的设备已经达到套餐上限（看页面上的「最大在线」）；Android 把客户端在后台休眠了；Linux 命令没有用 root 执行。</p>
 
 <h2>相关指南</h2>
 <p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。装好还没有转发，先看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。有问题可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>；没有屏幕的机器看<a href="/knowledgebase?thread=no-gui-clients">无界面运行客户端</a>。</p>
@@ -652,46 +652,46 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-Hans', NULL, '创建第一条转发', '选择线路方案、填写目标地址并记下系统分配的本地端口。', '<p>一条转发就是你在面板上画的一条线：你的游戏或服务在哪里，以及本机用哪个端口去连它。</p>
+    topic.id, 'zh-Hans', NULL, '创建第一条转发', '选择线路方案、填写目标地址并记下系统分配的本地端口。', '<p>一条转发就是你在控制台上画的一条线：你的游戏或服务在哪里，以及本机用哪个端口去连它。</p>
 
 <h2>你将完成什么</h2>
-<p>一条保存好的转发，加上一个分配给你的本地端口。下一条指南要用这个端口，先记下来。</p>
+<p>一条保存好的转发，加上一个分配给你的本地端口。下一篇指南要用这个端口，先记下来。</p>
 
 <h2>开始前准备</h2>
 <ul>
-<li>一个有效套餐，面板才允许保存转发。</li>
+<li>一个使用中的套餐，控制台才允许保存转发。</li>
 <li>你的游戏或服务真正监听的地址和端口。</li>
-<li>它需要哪种传输方式：TCP、UDP 还是两者都要。游戏一般是 UDP。</li>
+<li>它需要哪种协议：TCP、UDP 还是两者都要。游戏一般是 UDP。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-<li><strong>打开 Forwards，点 Create Forward。</strong></li>
-<li><strong>选择 Forward Route。</strong>挑离目标最近的那条线路。所有线路都用 ultra，这里不需要再决定别的。</li>
-<li><strong>填写 Target Host 和 Target Port。</strong>这里要填游戏自己连的地址，不是你下载游戏的网站地址。</li>
-<li><strong>选择 Transport</strong>，也就是你的服务需要的传输方式：TCP、UDP 或 TCP + UDP。</li>
-<li><strong>保存。</strong>Local Listen Port 用默认建议值就行，除非你有特别的理由要改。</li>
-<li><strong>记下分配给你的本地端口。</strong>几秒后它会显示在这一行上。</li>
+<li><strong>打开「我的服务」，在套餐卡片上点「新建转发」。</strong>在服务详情页里点「新建转发」也是同一个表单。</li>
+<li><strong>选择线路。</strong>挑离目标最近的那条线路。所有线路都用 ultra，这里不需要再决定别的。</li>
+<li><strong>填写目标地址和目标端口。</strong>这里要填游戏自己连的地址，不是你下载游戏的网站地址。</li>
+<li><strong>选择协议</strong>，也就是你的服务需要的传输方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>点「新建转发」保存。</strong>本地监听端口留空就行，系统会自动分配，除非你有特别的理由要指定。</li>
+<li><strong>记下分配给你的本地端口。</strong>保存后会回到服务详情页，新转发出现在「转发规则」表里，「本地端口」一列就是它。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 第一条转发的表单路径
-accDescr: 打开有效套餐，选择转发线路，填写目标和传输方式，保存后记下分配的本地端口
-A[打开有效套餐] --> B[选择 Forward Route]
-B --> C[填写 Target Host 和 Target Port]
-C --> D[选择 Transport]
-D --> E[保存]
-E --> F[等待转发可用]
+accDescr: 打开使用中的套餐，选择线路，填写目标和协议，保存后记下分配的本地端口
+A[打开我的服务] --> B[点新建转发]
+B --> C[选择线路]
+C --> D[填写目标地址和目标端口]
+D --> E[选择协议]
+E --> F[保存]
 F --> G[记下分配的本地端口]
 </pre>
-<p>表单只问线路、目标、传输方式和本地端口，其余都替你填好了。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表单，包含线路、目标地址、目标端口和传输方式"><figcaption>Create Forward 表单，真正要你决定的只有四个字段。</figcaption></figure>
+<p>表单只问线路、目标、协议和本地端口，其余都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-zh-hans.png" width="1440" height="960" alt="新建转发表单，包含线路、目标地址、目标端口、本地监听端口和协议"><figcaption>「新建转发」表单，真正要你决定的只有四个字段。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>这一行会稳定停在已保存状态，而不是反复显示预配中，并且本地端口已经填好。接着去 Clients 页面，能看到准备承载这条转发的设备有最近同步时间。</p>
+<p>在「转发规则」表里，这一行的状态是「运行中」，「本地端口」已经有数字，「节点状态」不再一直显示「正在分配节点」。接着去「客户端」页面，确认准备承载这条转发的设备出现在「在线设备」里。</p>
 
 <h2>如果没有成功</h2>
-<p>面板不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经失效；目标地址或端口填错；你填的本地端口已经被占用——清空它，让面板重新分配一个。</p>
+<p>控制台不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经到期；目标地址或端口填错；你填的本地端口已经被占用——清空它，让系统重新分配一个。如果「线路」下拉框是空的，说明你的套餐还没有开放线路，请联系客服。</p>
 
 <h2>相关指南</h2>
 <p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。客户端还没装的话，先看<a href="/knowledgebase?thread=install-client">安装客户端</a>。</p>
@@ -718,7 +718,7 @@ SELECT
 
 <h2>开始前准备</h2>
 <ul>
-<li>一条保存好的转发，以及面板分配的本地端口。</li>
+<li>一条保存好的转发，以及系统分配的本地端口。</li>
 <li>运行客户端的那台设备上，客户端已经装好并登录。</li>
 <li>游戏开着的时候留几分钟做测试。</li>
 </ul>
@@ -740,10 +740,10 @@ B --> D[启动游戏]
 C --> D
 </pre>
 <p>同一台设备时端口只留在回环地址上；跨设备时需要在中间的网络里放行一条路径。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="转发列表显示分配的本地端口和实时流量"><figcaption>转发列表上能看到本地端口和它承载的流量。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result-zh-hans.png" width="1440" height="960" alt="服务详情页的转发规则表，显示本地端口、目标、协议和本期用量"><figcaption>服务详情页的「转发规则」里能看到本地端口和它的本期用量。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>看两处。客户端显示这条线路 running，转发列表在你玩的时候有进来的流量。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
+<p>看两处。客户端显示这条线路 running；你玩的时候，「转发规则」里这条转发的「本期用量」在增加。Android 上客户端就跑在手机里，所以那边的游戏同样用 <code>127.0.0.1</code>。</p>
 
 <h2>如果没有成功</h2>
 <p><strong>先停止</strong>，先核对地址。按可能性排：端口和分配的本地端口不一致；跨设备时被防火墙或 NAT 挡住了；目标服务本身没起来——从目标服务自己的主机测试目标服务，再看目标日志。测试时要测实际应用协议，不要只 ping。</p>
@@ -773,38 +773,38 @@ SELECT
 
 <h2>开始前准备</h2>
 <ul>
-<li>打开面板，并且保证你玩游戏那台设备上的客户端在运行。</li>
+<li>打开控制台，并且保证你玩游戏那台设备上的客户端在运行。</li>
 <li>你之前跟着做的那篇指南，万一要再查一次本地端口。</li>
 </ul>
 
 <h2>操作步骤</h2>
 <ol>
-<li><strong>客户端同步正常吗？</strong>Clients 页面应该显示最近同步。没有的话，重启客户端，等几秒。</li>
+<li><strong>客户端在线吗？</strong>「客户端」页面底部的「在线设备」里应该能看到这台设备。没有的话，重启客户端，等几秒再刷新页面；如果「最大在线」已经满了，先在列表里把不用的设备「踢下线」。</li>
 <li><strong>地址是否正确？</strong>和客户端同一台设备就用 127.0.0.1 加本地端口；不同设备就用客户端主机地址。</li>
 <li><strong>端口已放行吗？</strong>只需要放行你真正用的那个端口，防火墙、安全组或 NAT 上放行一条就够。</li>
-<li><strong>转发和线路健康吗？</strong>这一行不应该停在预配中，并且从目标服务自己的主机测试目标服务时应该有回应。</li>
-<li><strong>还是不行？</strong>打开 View Diagnostics，把结果和转发名称一起发给支持。</li>
+<li><strong>转发和线路正常吗？</strong>在服务详情页的「转发规则」里，这一行的状态应该是「运行中」，「节点状态」不应该一直停在「正在分配节点」；从目标服务自己的主机测试目标服务时也应该有回应。</li>
+<li><strong>还是不行？</strong>把转发的编号、用的是哪台设备、出问题的大概时间一起发给客服。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 从症状开始排查
-accDescr: 从游戏连不上开始，依次检查客户端同步、地址，最后检查目标服务
-A[游戏连不上] --> B[客户端同步正常吗？]
+accDescr: 从游戏连不上开始，依次检查客户端在线、地址，最后检查目标服务
+A[游戏连不上] --> B[客户端在线吗？]
 B -- 否 --> C[重启客户端再试]
 B -- 是 --> D[地址和端口正确吗？]
 D -- 否 --> E[改用 127.0.0.1 或客户端主机地址]
 E --> C
 D -- 是 --> F[从目标服务自己的主机测试目标服务]
-F --> G[打开 View Diagnostics 并联系支持]
+F --> G[带上转发编号联系客服]
 </pre>
 <p>从头到尾走一遍，别跳步。跳过的步骤通常最后还要回来补。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="诊断页面显示客户端同步状态和转发健康摘要"><figcaption>View Diagnostics 会把客户端同步、转发状态和最后一次错误放在一起。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-zh-hans.png" width="1440" height="960" alt="客户端页面的在线设备列表，显示设备 IP、系统和客户端版本"><figcaption>「在线设备」列出当前登录的每台设备；设备不在这里，转发就不会通。</figcaption></figure>
 
 <h2>如何确认成功</h2>
-<p>客户端显示这条线路 running，你玩的时候转发列表又出现流量。</p>
+<p>客户端显示这条线路 running，你玩的时候「转发规则」里的「本期用量」又开始增加。</p>
 
 <h2>如果没有成功</h2>
-<p>在改别的东西之前，<strong>先停止</strong>。不要随机修改拓扑——那样只会盖住真正的原因，让下一次排查更慢。上面四项都干净的话，把诊断结果发给支持，这是从这里出发最快的路。</p>
+<p>在改别的东西之前，<strong>先停止</strong>。不要随手改一堆设置——那样只会盖住真正的原因，让下一次排查更慢。上面四项都没问题的话，直接联系客服，这是从这里出发最快的路。</p>
 
 <h2>相关指南</h2>
 <p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。</p>
@@ -846,16 +846,17 @@ SELECT
 <tr><th>词</th><th>意思</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>有效套餐</strong></td><td>你付过钱而且还在有效期内的套餐。只有套餐有效时转发才会运行。</td></tr>
-<tr><td><strong>转发</strong></td><td>你在面板上画的一条线：一头是目标，另一头是本机端口。</td></tr>
-<tr><td><strong>Forward Route</strong></td><td>流量从哪条线路出去。挑离目标最近的那条。</td></tr>
-<tr><td><strong>Target Host</strong></td><td>你要连接的游戏或服务的地址。</td></tr>
-<tr><td><strong>Target Port</strong></td><td>那个地址监听的端口。</td></tr>
-<tr><td><strong>Local Listen Port</strong></td><td>面板分给你自己设备的端口。游戏用这个。</td></tr>
-<tr><td><strong>Transport</strong></td><td>流量是 TCP、UDP 还是两者都要。游戏一般是 UDP。</td></tr>
+<tr><td><strong>使用中的套餐</strong></td><td>你付过钱而且还在有效期内的套餐。只有套餐有效时转发才会运行。</td></tr>
+<tr><td><strong>转发</strong></td><td>你在控制台上画的一条线：一头是目标，另一头是本机端口。</td></tr>
+<tr><td><strong>线路</strong></td><td>流量从哪条线路出去。挑离目标最近的那条。</td></tr>
+<tr><td><strong>目标地址</strong></td><td>你要连接的游戏或服务的地址。</td></tr>
+<tr><td><strong>目标端口</strong></td><td>那个地址监听的端口。</td></tr>
+<tr><td><strong>本地监听端口</strong></td><td>系统分给你自己设备的端口，在「转发规则」里显示为「本地端口」。游戏用这个。</td></tr>
+<tr><td><strong>协议</strong></td><td>流量是 TCP、UDP 还是两者都要。游戏一般是 UDP。</td></tr>
 <tr><td><strong>客户端</strong></td><td>在你设备上承载这条线路的应用。</td></tr>
 <tr><td><strong>Running</strong></td><td>线路通了以后客户端显示的状态。</td></tr>
-<tr><td><strong>最近同步</strong></td><td>客户端最后一次和面板通信的时间。时间很新说明客户端正常。</td></tr>
+<tr><td><strong>在线设备</strong></td><td>「客户端」页面上当前登录着的设备列表。设备在列表里，说明客户端正常。</td></tr>
+<tr><td><strong>最大在线</strong></td><td>你的套餐允许同时登录的设备数。满了以后新设备登录不上，可以把不用的设备踢下线。</td></tr>
 <tr><td><strong>ultra</strong></td><td>所有线路都用它承载。它让你玩的时候线路保持稳定。</td></tr>
 <tr><td><strong>应用验证</strong></td><td>用游戏本身去测，而不是只 ping 一下。</td></tr>
 </tbody>
@@ -890,7 +891,7 @@ SELECT
 
 <h2>开始前准备</h2>
 <ul>
-  <li>面板「客户端」页面上的 <strong>Client ID</strong> 和 <strong>Agent Token</strong>，它们就是这台机器的登录凭据，请像密码一样保管。</li>
+  <li>控制台「客户端」页面上的 <strong>客户端 ID</strong> 和 <strong>客户端令牌</strong>，它们就是这台机器的登录凭据，请像密码一样保管。</li>
   <li>在这台机器上安装软件的权限（Windows 需要管理员，macOS 需要你自己的密码）。</li>
   <li>两分钟时间。macOS 下载约 80 MB，Windows 约 34 MB。</li>
 </ul>
@@ -898,33 +899,33 @@ SELECT
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
 accTitle: 不用屏幕的电脑设置流程
-accDescr: 选择电脑，安装后台客户端，然后在面板确认线路已经在运行。
+accDescr: 选择电脑，安装后台客户端，然后在控制台确认线路已经在运行。
 A[选择电脑] --&gt; B{哪个系统}
 B -- macOS --&gt; C[先装应用，再运行一条命令]
 B -- Windows --&gt; D[解压下载包，再运行一条命令]
 C --&gt; E[确认显示 running]
 D --&gt; E
-E --&gt; F[在面板看到设备在线]</pre>
+E --&gt; F[在控制台看到设备在线]</pre>
 <p>整件事就是这张图：选系统、运行一条命令、确认结果。之后的一切都在后台进行。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="客户端页面，显示下载入口以及这台机器的 Client ID 与 Agent Token">
-  <figcaption>Client ID 和 Agent Token 就在这个页面上，旁边的下载按你的系统选择。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-hans.png" width="1440" height="960" alt="客户端页面，显示下载入口以及这台机器的客户端 ID 与客户端令牌">
+  <figcaption>客户端 ID 和客户端令牌在同一页，下载按你的系统选择「无界面版」。</figcaption>
 </figure>
 <ol>
   <li><strong>挑选电脑。</strong>用一台长期开机的机器，不需要显示器、不需要键盘，也不需要有人登录。</li>
   <li><strong>先安装应用。</strong>macOS：打开下载的磁盘映像，把 <strong>LeiKwan Bridge</strong> 拖进 <strong>应用程序</strong>。Windows：把无界面版下载包解压到一个文件夹。</li>
-  <li><strong>运行一次安装命令。</strong>macOS：打开「终端」，粘贴客户端页面上的 macOS 命令。Windows：在解压出来的文件夹上右键，以管理员身份打开终端，粘贴页面上的 Windows 命令。两条命令里都已经带了这台机器的身份。</li>
+  <li><strong>运行一次安装命令。</strong>macOS：打开「终端」，粘贴客户端页面「无界面版」里「复制 macOS 命令」得到的命令。Windows：在解压出来的文件夹上右键，以管理员身份打开终端，粘贴「复制 Windows 命令」得到的命令。两条命令里都已经带了这台机器的身份。</li>
   <li><strong>确认已经启动。</strong>输入 <code>leikwan status</code>，看到转发显示为 running 就对了。</li>
-  <li><strong>回到面板看一眼。</strong>这台设备会像装了普通客户端的电脑一样显示在线。</li>
+  <li><strong>回到控制台看一眼。</strong>这台设备会像装了普通客户端的电脑一样出现在「在线设备」里。</li>
   <li><strong>以后只需要三条命令。</strong>查看用 <code>leikwan status</code>，觉得卡住用 <code>leikwan restart</code>，升级用 <code>leikwan update</code>；如果只想看看有没有新版本，用 <code>leikwan update --check</code>。</li>
   <li><strong>需要卸载时：</strong>运行同一个客户端页面上的卸载命令，或者先用 <code>leikwan stop</code> 暂时关掉它。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>两个简单检查。面板里这台电脑显示在线，和其他设备一样；在电脑上运行 <code>leikwan status</code>，线路显示为 running，并且命令以成功状态结束，所以监控工具也可以直接用它。想看细节时，<code>leikwan logs -n 50</code> 显示最近 50 行日志，<code>leikwan doctor</code> 一次列清整体状态。</p>
+<p>两个简单检查。控制台「在线设备」里能看到这台电脑，和其他设备一样；在电脑上运行 <code>leikwan status</code>，线路显示为 running，并且命令以成功状态结束，所以监控工具也可以直接用它。想看细节时，<code>leikwan logs -n 50</code> 显示最近 50 行日志，<code>leikwan doctor</code> 一次列清整体状态。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止把 Agent Token 发给任何人 —— 聊天、工单、截图都不行。</strong>最常见的原因是 Agent Token 抄错或已失效：面板会显示设备离线，日志里会写着登录被拒绝。回到客户端页面重新复制 Client ID 与 Agent Token，再运行一次安装命令即可。如果面板显示设备在线、但某条转发仍是停止状态，等半分钟 —— 转发由面板决定，电脑会在几秒内跟上。仍然不通，就把 <code>leikwan doctor</code> 的输出发给客服，那份内容不含任何机密。</p>
+<p><strong>先停止把客户端令牌发给任何人 —— 聊天、工单、截图都不行。</strong>最常见的原因是客户端令牌抄错或已失效：控制台里看不到这台设备在线，日志里会写着登录被拒绝。回到客户端页面重新复制客户端 ID 与客户端令牌，再运行一次安装命令即可。如果控制台显示设备在线、但某条转发仍是停止状态，等半分钟 —— 转发由控制台决定，电脑会在几秒内跟上。仍然不通，就把 <code>leikwan doctor</code> 的输出发给客服，那份内容不含任何机密。</p>
 
 <h2>相关指南</h2>
 <ul>
@@ -949,50 +950,50 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-TW', NULL, '五分鐘完成首次連線', '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。', '<h2>你將完成什麼</h2>
-<p>你會從「方案已生效」走到「線路可用」：在面板建立一條轉發、裝上用戶端、連線，然後看到線路在運作。大約五分鐘，而且你不需要選擇任何連線類型 —— 所有線路都用 ultra，它做的就是在你打遊戲時把線路保持穩定。</p>
+<p>你會從"套餐已生效"走到"線路可用"：在控制台建一條轉發、裝上用戶端、連線，然後看到線路在執行。大約五分鐘，而且你不需要選擇任何連線型別 —— 所有線路都用 ultra，它做的就是在你打遊戲時把線路保持穩定。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>一個有效方案，面板才會允許你建立轉發。</li>
-  <li>想加速的遊戲或程式，以及它連線的位址（遊戲裡的伺服器清單通常看得到）。</li>
-  <li>執行用戶端的裝置：Windows、Android 或 Linux 都可以，手機和電腦一樣能用。</li>
-  <li>你的面板帳號，以及大約五分鐘。</li>
+  <li>一個使用中的套餐，控制台才會允許你建立轉發。</li>
+  <li>想加速的遊戲或程式，以及它連線的位址（遊戲裡的伺服器列表通常能看到）。</li>
+  <li>執行用戶端的裝置：Windows、macOS、Android 或 Linux 都可以，手機和電腦一樣能用。</li>
+  <li>你的控制台帳號，以及大約五分鐘。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <pre class="mermaid">flowchart TD
-accTitle: 從方案到可用線路
+accTitle: 從套餐到可用線路
 accDescr: 先建立一條轉發，裝上用戶端並連線，再把遊戲指向本機連接埠。
-A[打開面板] --&gt; B[建立一條轉發]
-B --&gt; C[安裝應用程式]
+A[開啟控制台] --&gt; B[新建一條轉發]
+B --&gt; C[安裝用戶端]
 C --&gt; D[登入並連線]
 D --&gt; E[把遊戲指向本機連接埠]
 E --&gt; F[開始遊戲]</pre>
 <p>五步，下面每步都只有幾行說明。這裡沒有任何需要你判斷的技術選項。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/01-overview.png" width="1440" height="960" alt="面板首頁，顯示有效方案與轉發清單">
-  <figcaption>起點就在這裡：方案和轉發清單都在面板首頁。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/01-overview-zh-tw.png" width="1440" height="960" alt="控制台總覽頁，顯示使用中的套餐、轉發規則數量和三步開始使用">
+  <figcaption>起點就在這裡：登入後的「總覽」頁會告訴你下一步該做什麼。</figcaption>
 </figure>
 <ol>
-  <li><strong>打開面板，確認方案有效。</strong>如果顯示已過期或未付款，轉發表單會一直是鎖住的。</li>
-  <li><strong>建立一條轉發。</strong>選擇離遊戲伺服器最近的線路，填入遊戲連線的位址和連接埠，本機連接埠用預設值即可，然後儲存。把這個本機連接埠記下來 —— 第 5 步要用。</li>
-  <li><strong>安裝應用程式</strong>到你玩遊戲的裝置上：Windows 和 Android 在「用戶端」頁面下載，Linux 用那一條安裝指令。用面板帳號登入。</li>
-  <li><strong>連線。</strong>應用程式裡會列出你剛建立的轉發，點連線，等到顯示 running。</li>
+  <li><strong>開啟控制台，確認套餐在使用中。</strong>「總覽」頁的「最近的套餐」會顯示狀態；如果顯示已到期或已暫停，就沒法新建轉發。</li>
+  <li><strong>新建一條轉發。</strong>進入「我的服務」，在套餐卡片上點「新建轉發」。選擇離遊戲伺服器最近的線路，填入遊戲連線的目標位址和目標連接埠，本機監聽連接埠留空讓系統分配，然後儲存。把這個本機連接埠記下來 —— 第 5 步要用。</li>
+  <li><strong>安裝用戶端</strong>到你玩遊戲的裝置上：在「用戶端」頁面，Windows 點「下載安裝包」，Android 點「下載 APK」，Linux 複製那一條安裝命令執行。用控制台帳號登入。</li>
+  <li><strong>連線。</strong>用戶端裡會列出你剛建的轉發，點連線，等到顯示 running。</li>
   <li><strong>把遊戲指向用戶端。</strong>遊戲裡凡是要填伺服器位址的地方，填 <code>127.0.0.1</code> 和第 2 步記下的本機連接埠，然後啟動遊戲。</li>
-  <li><strong>開始遊戲，之後再回面板看一眼。</strong>你玩的時候，那條轉發會顯示有流量。</li>
+  <li><strong>開始遊戲，之後再回控制台看一眼。</strong>你玩的時候，那條轉發的「本期用量」會增加。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>按順序看三個地方：應用程式裡線路顯示為 running；你遊戲時面板上那條轉發有流量數字；遊戲本身穩定，不會在一局中途突然卡頓。如果遊戲能進但流量一直是 0，幾乎都是本機連接埠填錯了 —— 回到第 5 步檢查。</p>
+<p>按順序看三個地方：用戶端裡線路顯示為 running；你遊戲時控制台上那條轉發的「本期用量」在增加；遊戲本身穩定，不會在一局中途突然卡頓。如果遊戲能進但用量一直是 0，幾乎都是本機連接埠填錯了 —— 回到第 5 步檢查。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止</strong>反覆提交表單，先確認方案狀態 —— 面板不讓你儲存轉發，最常見的原因就是方案過期。第二常見的是目標填錯：要填遊戲真正連線的位址，不是你下載遊戲的網站位址。第三是本機連接埠：遊戲必須使用面板分配的那個連接埠。其他情況（應用程式連不上、線路老是掉、遊戲進不去伺服器）都寫在下面的排查指南裡。</p>
+<p><strong>先停止</strong>反覆提交表單，先確認套餐狀態 —— 控制台不讓你儲存轉發，最常見的原因就是套餐到期。第二常見的是目標填錯：要填遊戲真正連線的位址，不是你下載遊戲的網站位址。第三是本機連接埠：遊戲必須使用系統分配的那個連接埠。其它情況（用戶端連不上、線路老是掉、遊戲進不去伺服器）都寫在下面的排查指南里。</p>
 
 <h2>相關指南</h2>
 <ul>
   <li><a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a></li>
   <li><a href="/knowledgebase?thread=install-client">安裝用戶端</a></li>
-  <li><a href="/knowledgebase?thread=connect-and-verify">連線與驗證</a></li>
+  <li><a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a></li>
 </ul>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -1010,47 +1011,47 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '安裝用戶端', '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。', '<p>在你玩遊戲的那台裝置上裝一次用戶端，登入之後讓它一直開著就好。之後只要偶爾看一眼線路還在不在。</p>
+    topic.id, 'zh-TW', NULL, '安裝用戶端', '在 Windows、Android 或 Linux 上安裝並登入，然後確認用戶端在線。', '<p>在你玩遊戲的那臺裝置上裝一次用戶端，登入之後讓它一直開著就行。以後只要偶爾看一眼線路還在不在。</p>
 
 <h2>你將完成什麼</h2>
-<p>用戶端裝好、用面板帳號登入，並且在面板裡顯示為在線。</p>
+<p>用戶端裝好、用控制台帳號登入，並且在控制台「用戶端」頁面的「線上裝置」裡能看到它。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>你的面板電子郵件和密碼。</li>
-<li>你玩遊戲用的裝置。用戶端支援 Windows、Android 和 Linux。</li>
+<li>你的控制台郵箱和密碼。</li>
+<li>你玩遊戲用的裝置。用戶端支援 Windows、macOS、Android 和 Linux。</li>
 <li>手機或平板需要 Android 8.0 以上。</li>
-<li>Linux 需要 64 位元 ARM（arm64）機器，並且能執行一條 root 指令。</li>
+<li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），並且能用 root 執行命令。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>打開 Clients 頁面。</strong>需要的東西都在這一頁。</li>
-<li><strong>安裝用戶端。</strong>Windows 點 <strong>Download Windows App</strong>；手機裝 arm64 安裝包；Linux 點 <strong>Copy Install Command</strong>，再執行這條指令。</li>
-<li><strong>登入。</strong>用面板的電子郵件和密碼。進去之後用戶端會顯示 <strong>Connection successful!</strong>。</li>
+<li><strong>開啟「用戶端」頁面。</strong>需要的東西都在「下載與安裝」這一塊裡。</li>
+<li><strong>安裝用戶端。</strong>Windows 點「下載安裝包」；Android 點「下載 APK」；macOS 點對應晶片的下載按鈕；Linux 點「複製命令」，再在目標機器上執行這條命令。</li>
+<li><strong>登入。</strong>用控制台的郵箱和密碼。進去之後用戶端會顯示 <strong>Connection successful!</strong>。</li>
 <li><strong>讓它一直開著。</strong>用戶端顯示 <strong>Connected</strong>，開關顯示 <strong>Running</strong>。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 用戶端安裝路徑
-accDescr: 依裝置的作業系統選擇安裝方式，登入後確認用戶端在線
+accDescr: 按裝置系統選擇安裝方式，登入後確認用戶端線上
 A[選擇裝置] --> B[作業系統]
-B --> C[下載 Windows App]
-B --> D[安裝 arm64 Android App]
-B --> E[複製 Linux 安裝指令]
+B --> C[下載 Windows 安裝包]
+B --> D[下載 Android APK]
+B --> E[複製 Linux 安裝命令]
 C --> F[登入]
 D --> F
 E --> F
 F --> G[用戶端顯示 Connected 和 Running]
 </pre>
-<p>三種裝置最後都停在同一處：用戶端已經登入，面板裡能看到它最近同步過。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="Clients 頁面上的 Windows 下載按鈕和 Linux 安裝指令"><figcaption>下載入口和 Linux 安裝指令都在 Clients 頁面上。</figcaption></figure>
+<p>幾種裝置最後都停在同一處：用戶端已經登入，控制台的「線上裝置」裡能看到它。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-tw.png" width="1440" height="960" alt="用戶端頁面的下載與安裝區域，包括 Linux 安裝命令和 Windows 下載安裝包按鈕"><figcaption>下載入口和 Linux 安裝命令都在「用戶端」頁面的「下載與安裝」裡。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>看兩處。用戶端顯示 <strong>Connected</strong>，Clients 頁面裡這台裝置有最近同步時間。</p>
+<p>看兩處。用戶端顯示 <strong>Connected</strong>；「用戶端」頁面底部的「線上裝置」裡出現這臺裝置（IP、系統和用戶端版本）。</p>
 
 <h2>如果沒有成功</h2>
-<p>如果一直停在 <strong>Connecting...</strong>，<strong>請先停止</strong>，重新登入一次。依可能性排：密碼不對，或者帳號還沒生效；Android 把用戶端在背景休眠了；Linux 指令沒有用 root 執行。</p>
+<p>如果一直停在 <strong>Connecting...</strong>，<strong>先停止</strong>，重新登入一次。按可能性排：密碼不對，或者帳號還沒生效；同時線上的裝置已經達到套餐上限（看頁面上的「最大線上」）；Android 把用戶端在後臺休眠了；Linux 命令沒有用 root 執行。</p>
 
 <h2>相關指南</h2>
 <p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。裝好還沒有轉發，先看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。有問題可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>；沒有螢幕的機器看<a href="/knowledgebase?thread=no-gui-clients">無介面執行用戶端</a>。</p>
@@ -1070,46 +1071,46 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '建立第一條轉發', '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。', '<p>一條轉發就是你在面板上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
+    topic.id, 'zh-TW', NULL, '建立第一條轉發', '選擇線路方案、填寫目標位址並記下系統分配的本機連接埠。', '<p>一條轉發就是你在控制台上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
 
 <h2>你將完成什麼</h2>
-<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一條指南要用這個連接埠，先記下來。</p>
+<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一篇指南要用這個連接埠，先記下來。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>一個有效方案，面板才允許儲存轉發。</li>
+<li>一個使用中的套餐，控制台才允許儲存轉發。</li>
 <li>你的遊戲或服務真正監聽的位址和連接埠。</li>
-<li>它需要哪種傳輸方式：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
+<li>它需要哪種協定：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>打開 Forwards，點 Create Forward。</strong></li>
-<li><strong>選擇 Forward Route。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
-<li><strong>填寫 Target Host 和 Target Port。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
-<li><strong>選擇 Transport</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
-<li><strong>儲存。</strong>Local Listen Port 用預設建議值就好，除非你有特別的理由要改。</li>
-<li><strong>記下分配給你的本機連接埠。</strong>幾秒後它會顯示在這一列上。</li>
+<li><strong>開啟「我的服務」，在套餐卡片上點「新建轉發」。</strong>在服務詳情頁裡點「新建轉發」也是同一個表單。</li>
+<li><strong>選擇線路。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
+<li><strong>填寫目標位址和目標連接埠。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
+<li><strong>選擇協定</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>點「新建轉發」儲存。</strong>本機監聽連接埠留空就行，系統會自動分配，除非你有特別的理由要指定。</li>
+<li><strong>記下分配給你的本機連接埠。</strong>儲存後會回到服務詳情頁，新轉發出現在「轉發規則」表裡，「本機連接埠」一列就是它。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 第一條轉發的表單路徑
-accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後記下分配的本機連接埠
-A[開啟有效方案] --> B[選擇 Forward Route]
-B --> C[填寫 Target Host 和 Target Port]
-C --> D[選擇 Transport]
-D --> E[儲存]
-E --> F[等待轉發可用]
+accDescr: 開啟使用中的套餐，選擇線路，填寫目標和協定，儲存後記下分配的本機連接埠
+A[開啟我的服務] --> B[點新建轉發]
+B --> C[選擇線路]
+C --> D[填寫目標位址和目標連接埠]
+D --> E[選擇協定]
+E --> F[儲存]
 F --> G[記下分配的本機連接埠]
 </pre>
-<p>表單只問線路、目標、傳輸方式和本機連接埠，其餘都替你填好了。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單，包含線路、目標主機、目標連接埠和傳輸方式"><figcaption>Create Forward 表單，真正要你決定的只有四個欄位。</figcaption></figure>
+<p>表單只問線路、目標、協定和本機連接埠，其餘都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-zh-tw.png" width="1440" height="960" alt="新建轉發表單，包含線路、目標位址、目標連接埠、本機監聽連接埠和協定"><figcaption>「新建轉發」表單，真正要你決定的只有四個欄位。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>這一列會穩定停在已儲存狀態，而不是反覆顯示佈建中，並且本機連接埠已經填好。接著去 Clients 頁面，能看到準備承載這條轉發的裝置有最近同步時間。</p>
+<p>在「轉發規則」表裡，這一行的狀態是「執行中」，「本機連接埠」已經有數字，「節點狀態」不再一直顯示「正在分配節點」。接著去「用戶端」頁面，確認準備承載這條轉發的裝置出現在「線上裝置」裡。</p>
 
 <h2>如果沒有成功</h2>
-<p>面板不讓儲存時，<strong>請先停止</strong>，別反覆點。三個常見原因：方案已經失效；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓面板重新分配一個。</p>
+<p>控制台不讓儲存時，<strong>先停止</strong>，別反覆點。三個常見原因：套餐已經到期；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓系統重新分配一個。如果「線路」下拉框是空的，說明你的套餐還沒有開放線路，請聯絡客服。</p>
 
 <h2>相關指南</h2>
 <p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。</p>
@@ -1129,42 +1130,42 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '連線並驗證', '選擇正確的用戶端位址，測試服務並確認轉發已經運作。', '<p>轉發已經儲存，用戶端也在線了。最後一步是告訴遊戲該連哪裡。</p>
+    topic.id, 'zh-TW', NULL, '連線並驗證', '選擇正確的用戶端位址，測試服務並確認轉發已經運作。', '<p>轉發已經儲存，用戶端也線上了。最後一步是告訴遊戲該連哪裡。</p>
 
 <h2>你將完成什麼</h2>
 <p>讓遊戲指向用戶端，並且確認流量真的在走。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>一條儲存好的轉發，以及面板分配的本機連接埠。</li>
-<li>執行用戶端的那台裝置上，用戶端已經裝好並登入。</li>
+<li>一條儲存好的轉發，以及系統分配的本機連接埠。</li>
+<li>執行用戶端的那臺裝置上，用戶端已經裝好並登入。</li>
 <li>遊戲開著的時候留幾分鐘做測試。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>先問一個問題：遊戲和用戶端在同一台裝置上嗎？</strong>答案決定你要填哪個位址。</li>
-<li><strong>同一台裝置：</strong>用 <code>127.0.0.1</code> 加分配的本機連接埠。這是最常見的情況，而且只監聽迴送位址，區域網路裡其他裝置碰不到它。</li>
-<li><strong>不同裝置：</strong>用可連到的 Windows 或 Linux 用戶端主機位址加同一個連接埠，並在兩台裝置之間的防火牆、安全群組或 NAT 上開放這個連接埠。</li>
-<li><strong>啟動遊戲並連線。</strong>玩的時候看一眼那一列轉發。</li>
+<li><strong>先問一個問題：遊戲和用戶端在同一臺裝置上嗎？</strong>答案決定你要填哪個位址。</li>
+<li><strong>同一臺裝置：</strong>用 <code>127.0.0.1</code> 加分配的本機連接埠。這是最常見的情況，而且只監聽迴環位址，區域網裡其他裝置碰不到它。</li>
+<li><strong>不同裝置：</strong>用可訪問的 Windows 或 Linux 用戶端主機位址加同一個連接埠，並在兩臺裝置之間的防火牆、安全組或 NAT 上放行這個連接埠。</li>
+<li><strong>啟動遊戲並連線。</strong>玩的時候看一眼那條轉發。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 選擇用戶端連線位址
-accDescr: 先確認遊戲在哪台裝置上執行，再決定用迴送位址還是用戶端主機位址
-A[遊戲在哪台裝置上執行？] -- 與用戶端同機 --> B[使用 127.0.0.1 和本機連接埠]
-A -- 另一台裝置 --> C[使用用戶端主機位址]
+accDescr: 先確認遊戲在哪臺裝置上執行，再決定用迴環位址還是用戶端主機位址
+A[遊戲在哪臺裝置上執行？] -- 與用戶端同機 --> B[使用 127.0.0.1 和本機連接埠]
+A -- 另一臺裝置 --> C[使用用戶端主機位址]
 B --> D[啟動遊戲]
 C --> D
 </pre>
-<p>同一台裝置時連接埠只留在迴送位址上；跨裝置時需要在中間的網路裡開放一條路徑。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result.png" width="1440" height="960" alt="轉發列表顯示分配的本機連接埠和即時流量"><figcaption>轉發列表上能看到本機連接埠和它承載的流量。</figcaption></figure>
+<p>同一臺裝置時連接埠只留在迴環位址上；跨裝置時需要在中間的網路裡放行一條路徑。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/04-forward-result-zh-tw.png" width="1440" height="960" alt="服務詳情頁的轉發規則表，顯示本機連接埠、目標、協定和本期用量"><figcaption>服務詳情頁的「轉發規則」裡能看到本機連接埠和它的本期用量。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>看兩處。用戶端顯示這條線路 running，轉發列表在你玩的時候有進來的流量。Android 上用戶端就跑在手機裡，所以那邊的遊戲同樣用 <code>127.0.0.1</code>。</p>
+<p>看兩處。用戶端顯示這條線路 running；你玩的時候，「轉發規則」裡這條轉發的「本期用量」在增加。Android 上用戶端就跑在手機裡，所以那邊的遊戲同樣用 <code>127.0.0.1</code>。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止</strong>，先核對位址。依可能性排：連接埠和分配的本機連接埠不一致；跨裝置時被防火牆或 NAT 擋住了；目標服務本身沒起來——從目標服務所在主機測試目標服務，再看目標服務記錄。測試時要測實際應用協定，不要只 ping。</p>
+<p><strong>先停止</strong>，先核對位址。按可能性排：連接埠和分配的本機連接埠不一致；跨裝置時被防火牆或 NAT 擋住了；目標服務本身沒起來——從目標服務自己的主機測試目標服務，再看目標日誌。測試時要測實際應用協定，不要只 ping。</p>
 
 <h2>相關指南</h2>
 <p>還是不通就看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>。忘了連接埠是多少，回<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>看一眼。</p>
@@ -1184,48 +1185,48 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '排查常見問題', '從看得見的症狀開始，按最短且安全的順序恢復連線。', '<p>遊戲連不上的時候，幾乎都是這三個原因之一。依序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
+    topic.id, 'zh-TW', NULL, '排查常見問題', '從看得見的症狀開始，按最短且安全的順序恢復連線。', '<p>遊戲連不上的時候，幾乎都是這三個原因之一。按順序查一遍，通常一兩分鐘就能回到遊戲裡。</p>
 
 <h2>你將完成什麼</h2>
 <p>找出這三個常見原因裡屬於你的那一個，修好它，重新進遊戲。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>打開面板，並且保證你玩遊戲那台裝置上的用戶端在執行。</li>
+<li>開啟控制台，並且保證你玩遊戲那臺裝置上的用戶端在執行。</li>
 <li>你之前跟著做的那篇指南，萬一要再查一次本機連接埠。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>用戶端同步正常嗎？</strong>Clients 頁面應該顯示最近同步。沒有的話，重新啟動用戶端，等幾秒。</li>
-<li><strong>位址是否正確？</strong>和用戶端同一台裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
-<li><strong>連接埠已開放嗎？</strong>只需要開放你真正用的那個連接埠，防火牆、安全群組或 NAT 上開放一條就夠。</li>
-<li><strong>轉發和線路健康嗎？</strong>這一列不應該停在佈建中，並且從目標服務所在主機測試目標服務時應該有回應。</li>
-<li><strong>還是不行？</strong>打開 View Diagnostics，把結果和轉發名稱一起送給支援。</li>
+<li><strong>用戶端線上嗎？</strong>「用戶端」頁面底部的「線上裝置」裡應該能看到這臺裝置。沒有的話，重啟用戶端，等幾秒再重新整理頁面；如果「最大線上」已經滿了，先在列表裡把不用的裝置「踢下線」。</li>
+<li><strong>位址是否正確？</strong>和用戶端同一臺裝置就用 127.0.0.1 加本機連接埠；不同裝置就用用戶端主機位址。</li>
+<li><strong>連接埠已放行嗎？</strong>只需要放行你真正用的那個連接埠，防火牆、安全組或 NAT 上放行一條就夠。</li>
+<li><strong>轉發和線路正常嗎？</strong>在服務詳情頁的「轉發規則」裡，這一行的狀態應該是「執行中」，「節點狀態」不應該一直停在「正在分配節點」；從目標服務自己的主機測試目標服務時也應該有回應。</li>
+<li><strong>還是不行？</strong>把轉發的編號、用的是哪臺裝置、出問題的大概時間一起發給客服。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 從症狀開始排查
-accDescr: 從遊戲連不上開始，依序檢查用戶端同步、位址，最後檢查目標服務
-A[遊戲連不上] --> B[用戶端同步正常嗎？]
-B -- 否 --> C[重新啟動用戶端再試]
+accDescr: 從遊戲連不上開始，依次檢查用戶端線上、位址，最後檢查目標服務
+A[遊戲連不上] --> B[用戶端線上嗎？]
+B -- 否 --> C[重啟用戶端再試]
 B -- 是 --> D[位址和連接埠正確嗎？]
 D -- 否 --> E[改用 127.0.0.1 或用戶端主機位址]
 E --> C
-D -- 是 --> F[從目標服務所在主機測試目標服務]
-F --> G[開啟 View Diagnostics 並聯絡支援]
+D -- 是 --> F[從目標服務自己的主機測試目標服務]
+F --> G[帶上轉發編號聯絡客服]
 </pre>
 <p>從頭到尾走一遍，別跳步。跳過的步驟通常最後還要回來補。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/05-diagnostics.png" width="1440" height="960" alt="診斷頁面顯示用戶端同步狀態和轉發健康摘要"><figcaption>View Diagnostics 會把用戶端同步、轉發狀態和最後一次錯誤放在一起。</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/05-online-devices-zh-tw.png" width="1440" height="960" alt="用戶端頁面的線上裝置列表，顯示裝置 IP、系統和用戶端版本"><figcaption>「線上裝置」列出當前登入的每臺裝置；裝置不在這裡，轉發就不會通。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>用戶端顯示這條線路 running，你玩的時候轉發列表又出現流量。</p>
+<p>用戶端顯示這條線路 running，你玩的時候「轉發規則」裡的「本期用量」又開始增加。</p>
 
 <h2>如果沒有成功</h2>
-<p>在改別的東西之前，<strong>請先停止</strong>。不要隨意變更拓撲——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都乾淨的話，把診斷結果送給支援，這是從這裡出發最快的路。</p>
+<p>在改別的東西之前，<strong>先停止</strong>。不要隨手改一堆設定——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都沒問題的話，直接聯絡客服，這是從這裡出發最快的路。</p>
 
 <h2>相關指南</h2>
-<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一列本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一行本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1242,14 +1243,14 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
-    topic.id, 'zh-TW', NULL, '名詞解釋', '用淺白語言解釋指南中出現的產品和網路術語。', '<p>其他指南裡出現的詞，這裡每個用一句話說清楚。遇到看不懂的詞就打開這一頁，看完再關掉。</p>
+    topic.id, 'zh-TW', NULL, '名詞解釋', '用淺白語言解釋指南中出現的產品和網路術語。', '<p>其他指南里出現的詞，這裡每個用一句話說清楚。遇到看不懂的詞就開啟這一頁，看完再關掉。</p>
 
 <h2>你將完成什麼</h2>
-<p>指南裡的每個詞你都能看懂，不需要讀任何技術資料。</p>
+<p>指南里的每個詞你都能看懂，不需要讀任何技術資料。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>不用準備什麼。這一頁適合一直開在另一個分頁裡。</li>
+<li>不用準備什麼。這一頁適合一直開在另一個標籤頁裡。</li>
 <li>少了你要查的詞，告訴支援，我們會補上。</li>
 </ul>
 
@@ -1257,25 +1258,26 @@ SELECT
 <ol>
 <li><strong>在下面的表裡找到那個詞。</strong></li>
 <li><strong>讀那一句話的解釋。</strong>看懂就可以停下了。</li>
-<li><strong>想真正用起來，就去打開旁邊對應的指南。</strong></li>
+<li><strong>想真正用起來，就去開啟旁邊對應的指南。</strong></li>
 </ol>
 <table>
 <thead>
 <tr><th>詞</th><th>意思</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>有效方案</strong></td><td>你付過錢而且還在有效期內的方案。只有方案有效時轉發才會運作。</td></tr>
-<tr><td><strong>轉發</strong></td><td>你在面板上畫的一條線：一頭是目標，另一頭是本機連接埠。</td></tr>
-<tr><td><strong>Forward Route</strong></td><td>流量從哪條線路出去。挑離目標最近的那條。</td></tr>
-<tr><td><strong>Target Host</strong></td><td>你要連線的遊戲或服務的位址。</td></tr>
-<tr><td><strong>Target Port</strong></td><td>那個位址監聽的連接埠。</td></tr>
-<tr><td><strong>Local Listen Port</strong></td><td>面板分給你自己裝置的連接埠。遊戲用這個。</td></tr>
-<tr><td><strong>Transport</strong></td><td>流量是 TCP、UDP 還是兩者都要。遊戲一般是 UDP。</td></tr>
-<tr><td><strong>用戶端</strong></td><td>在你裝置上承載這條線路的應用程式。</td></tr>
+<tr><td><strong>使用中的套餐</strong></td><td>你付過錢而且還在有效期內的套餐。只有套餐有效時轉發才會執行。</td></tr>
+<tr><td><strong>轉發</strong></td><td>你在控制台上畫的一條線：一頭是目標，另一頭是本機連接埠。</td></tr>
+<tr><td><strong>線路</strong></td><td>流量從哪條線路出去。挑離目標最近的那條。</td></tr>
+<tr><td><strong>目標位址</strong></td><td>你要連線的遊戲或服務的位址。</td></tr>
+<tr><td><strong>目標連接埠</strong></td><td>那個位址監聽的連接埠。</td></tr>
+<tr><td><strong>本機監聽連接埠</strong></td><td>系統分給你自己裝置的連接埠，在「轉發規則」裡顯示為「本機連接埠」。遊戲用這個。</td></tr>
+<tr><td><strong>協定</strong></td><td>流量是 TCP、UDP 還是兩者都要。遊戲一般是 UDP。</td></tr>
+<tr><td><strong>用戶端</strong></td><td>在你裝置上承載這條線路的應用。</td></tr>
 <tr><td><strong>Running</strong></td><td>線路通了以後用戶端顯示的狀態。</td></tr>
-<tr><td><strong>最近同步</strong></td><td>用戶端最後一次和面板通訊的時間。時間很新說明用戶端正常。</td></tr>
+<tr><td><strong>線上裝置</strong></td><td>「用戶端」頁面上當前登入著的裝置列表。裝置在列表裡，說明用戶端正常。</td></tr>
+<tr><td><strong>最大線上</strong></td><td>你的套餐允許同時登入的裝置數。滿了以後新裝置登入不上，可以把不用的裝置踢下線。</td></tr>
 <tr><td><strong>ultra</strong></td><td>所有線路都用它承載。它讓你玩的時候線路保持穩定。</td></tr>
-<tr><td><strong>應用程式驗證</strong></td><td>用遊戲本身去測，而不是只 ping 一下。</td></tr>
+<tr><td><strong>應用驗證</strong></td><td>用遊戲本身去測，而不是隻 ping 一下。</td></tr>
 </tbody>
 </table>
 
@@ -1283,7 +1285,7 @@ SELECT
 <p>你讀完一篇指南，中途沒有被任何詞卡住。</p>
 
 <h2>如果沒有成功</h2>
-<p>兩篇指南看起來說法不一致時，<strong>請先停止</strong>，直接問支援。設定不要靠猜——猜錯花的時間比問一句多得多。</p>
+<p>兩篇指南看起來說法不一致時，<strong>先停止</strong>，直接問支援。設定不要靠猜——猜錯花的時間比問一句多得多。</p>
 
 <h2>相關指南</h2>
 <p>先從<a href="/knowledgebase?thread=getting-started-five-minute-overview">五分鐘完成首次連線</a>開始，再把<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>放在手邊。</p>
@@ -1304,45 +1306,45 @@ INSERT INTO knowledgebase_articles (
 )
 SELECT
     topic.id, 'zh-TW', NULL, '無介面執行用戶端', '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。', '<h2>你將完成什麼</h2>
-<p>你會讓一台電腦自己把線路跑起來 —— 一台伺服器、一台小主機，或任何長期開機的機器。沒有人需要登入，桌面上不會出現視窗或圖示。裝一次、確認一次，之後用一條短指令管理它。</p>
+<p>你會讓一臺電腦自己把線路跑起來 —— 一臺伺服器、一臺小主機，或者任何長期開機的機器。沒有人需要登入，桌面上不會出現視窗或圖示。裝一次、確認一次，之後用一條短命令管理它。</p>
 
 <h2>開始前準備</h2>
 <ul>
-  <li>面板「用戶端」頁面上的 <strong>Client ID</strong> 與 <strong>Agent Token</strong>，它們就是這台機器的登入憑證，請像密碼一樣保管。</li>
-  <li>在這台機器上安裝軟體的權限（Windows 需要系統管理員，macOS 需要你自己的密碼）。</li>
+  <li>控制台「用戶端」頁面上的 <strong>用戶端 ID</strong> 和 <strong>用戶端令牌</strong>，它們就是這臺機器的登入憑據，請像密碼一樣保管。</li>
+  <li>在這臺機器上安裝軟體的許可權（Windows 需要管理員，macOS 需要你自己的密碼）。</li>
   <li>兩分鐘時間。macOS 下載約 80 MB，Windows 約 34 MB。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <pre class="mermaid">flowchart TD
 accTitle: 不用螢幕的電腦設定流程
-accDescr: 選擇電腦，安裝背景用戶端，然後在面板確認線路已經在運作。
+accDescr: 選擇電腦，安裝後臺用戶端，然後在控制台確認線路已經在執行。
 A[選擇電腦] --&gt; B{哪個系統}
-B -- macOS --&gt; C[先裝應用程式，再執行一條指令]
-B -- Windows --&gt; D[解壓縮下載包，再執行一條指令]
+B -- macOS --&gt; C[先裝應用，再執行一條命令]
+B -- Windows --&gt; D[解壓下載包，再執行一條命令]
 C --&gt; E[確認顯示 running]
 D --&gt; E
-E --&gt; F[在面板看到裝置在線]</pre>
-<p>整件事就是這張圖：選系統、執行一條指令、確認結果。之後的一切都在背景進行。</p>
+E --&gt; F[在控制台看到裝置線上]</pre>
+<p>整件事就是這張圖：選系統、執行一條命令、確認結果。之後的一切都在後臺進行。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="用戶端頁面，顯示下載入口以及這台機器的 Client ID 與 Agent Token">
-  <figcaption>Client ID 與 Agent Token 就在這個頁面上，旁邊的下載依你的系統選擇。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-tw.png" width="1440" height="960" alt="用戶端頁面，顯示下載入口以及這臺機器的用戶端 ID 與用戶端令牌">
+  <figcaption>用戶端 ID 和用戶端令牌在同一頁，下載按你的系統選擇「無介面版」。</figcaption>
 </figure>
 <ol>
-  <li><strong>挑選電腦。</strong>用一台長期開機的機器，不需要螢幕、不需要鍵盤，也不需要有人登入。</li>
-  <li><strong>先安裝應用程式。</strong>macOS：打開下載的磁碟映像，把 <strong>LeiKwan Bridge</strong> 拖進 <strong>應用程式</strong>。Windows：把無介面版下載包解壓縮到一個資料夾。</li>
-  <li><strong>執行一次安裝指令。</strong>macOS：打開「終端機」，貼上用戶端頁面上的 macOS 指令。Windows：在解壓縮出來的資料夾上按右鍵，以系統管理員身分開啟終端機，貼上頁面上的 Windows 指令。兩條指令裡都已經帶了這台機器的身份。</li>
+  <li><strong>挑選電腦。</strong>用一臺長期開機的機器，不需要顯示器、不需要鍵盤，也不需要有人登入。</li>
+  <li><strong>先安裝應用。</strong>macOS：開啟下載的磁碟映像，把 <strong>LeiKwan Bridge</strong> 拖進 <strong>應用程式</strong>。Windows：把無介面版下載包解壓到一個資料夾。</li>
+  <li><strong>執行一次安裝命令。</strong>macOS：開啟「終端」，貼上用戶端頁面「無介面版」裡「複製 macOS 命令」得到的命令。Windows：在解壓出來的資料夾上右鍵，以管理員身份開啟終端，貼上「複製 Windows 命令」得到的命令。兩條命令裡都已經帶了這臺機器的身份。</li>
   <li><strong>確認已經啟動。</strong>輸入 <code>leikwan status</code>，看到轉發顯示為 running 就對了。</li>
-  <li><strong>回到面板看一眼。</strong>這台裝置會像裝了普通用戶端的電腦一樣顯示在線。</li>
-  <li><strong>之後只需要三條指令。</strong>查看用 <code>leikwan status</code>，覺得卡住用 <code>leikwan restart</code>，升級用 <code>leikwan update</code>；如果只想看看有沒有新版本，用 <code>leikwan update --check</code>。</li>
-  <li><strong>需要移除時：</strong>執行同一個用戶端頁面上的移除指令，或先用 <code>leikwan stop</code> 暫時關掉它。</li>
+  <li><strong>回到控制台看一眼。</strong>這臺裝置會像裝了普通用戶端的電腦一樣出現在「線上裝置」裡。</li>
+  <li><strong>以後只需要三條命令。</strong>檢視用 <code>leikwan status</code>，覺得卡住用 <code>leikwan restart</code>，升級用 <code>leikwan update</code>；如果只想看看有沒有新版本，用 <code>leikwan update --check</code>。</li>
+  <li><strong>需要解除安裝時：</strong>執行同一個用戶端頁面上的解除安裝命令，或者先用 <code>leikwan stop</code> 暫時關掉它。</li>
 </ol>
 
 <h2>如何確認成功</h2>
-<p>兩個簡單檢查。面板裡這台電腦顯示在線，和其他裝置一樣；在電腦上執行 <code>leikwan status</code>，線路顯示為 running，而且指令以成功狀態結束，所以監控工具也可以直接用它。想看細節時，<code>leikwan logs -n 50</code> 顯示最近 50 行日誌，<code>leikwan doctor</code> 一次列清整體狀態。</p>
+<p>兩個簡單檢查。控制台「線上裝置」裡能看到這臺電腦，和其他裝置一樣；在電腦上執行 <code>leikwan status</code>，線路顯示為 running，並且命令以成功狀態結束，所以監控工具也可以直接用它。想看細節時，<code>leikwan logs -n 50</code> 顯示最近 50 行日誌，<code>leikwan doctor</code> 一次列清整體狀態。</p>
 
 <h2>如果沒有成功</h2>
-<p><strong>請先停止把 Agent Token 發給任何人 —— 聊天、工單、截圖都不行。</strong>最常見的原因是 Agent Token 抄錯或已失效：面板會顯示裝置離線，日誌裡會寫著登入被拒絕。回到用戶端頁面重新複製 Client ID 與 Agent Token，再執行一次安裝指令即可。如果面板顯示裝置在線、但某條轉發仍是停止狀態，等半分鐘 —— 轉發由面板決定，電腦會在幾秒內跟上。仍然不通，就把 <code>leikwan doctor</code> 的輸出傳給客服，那份內容不含任何機密。</p>
+<p><strong>先停止把用戶端令牌發給任何人 —— 聊天、工單、截圖都不行。</strong>最常見的原因是用戶端令牌抄錯或已失效：控制台裡看不到這臺裝置線上，日誌裡會寫著登入被拒絕。回到用戶端頁面重新複製用戶端 ID 與用戶端令牌，再執行一次安裝命令即可。如果控制台顯示裝置線上、但某條轉發仍是停止狀態，等半分鐘 —— 轉發由控制台決定，電腦會在幾秒內跟上。仍然不通，就把 <code>leikwan doctor</code> 的輸出發給客服，那份內容不含任何機密。</p>
 
 <h2>相關指南</h2>
 <ul>

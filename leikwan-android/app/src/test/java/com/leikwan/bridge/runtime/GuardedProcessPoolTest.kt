@@ -37,7 +37,59 @@ class GuardedProcessPoolTest {
     }
 
     @Test
-    fun `pool reports fatal when process exits too fast`() {
+    fun `fast exit burst restarts with bounded backoff instead of giving up`() {
+        val processes = CopyOnWriteArrayList<FakeManagedProcess>()
+        val launcher = ProcessLauncher { _, _ ->
+            FakeManagedProcess().also { processes += it }
+        }
+        val fatalErrors = CopyOnWriteArrayList<IOException>()
+        val fastExits = CopyOnWriteArrayList<IOException>()
+        val logs = CopyOnWriteArrayList<String>()
+        val pool = GuardedProcessPool(
+            launcher = launcher,
+            minRestartWindowMs = 250,
+            onFatal = { fatalErrors += it },
+            logLine = { logs += it },
+            restartBackoffBaseMs = 10,
+            restartBackoffCapMs = 40,
+            onFastExit = { fastExits += it },
+        )
+
+        pool.start(listOf("fake", "command"))
+        // A burst of five crashes, each right after its (re)start.
+        for (index in 0 until 5) {
+            assertEventually("expected spawn #${index + 1}") { processes.size == index + 1 }
+            processes[index].finish(9)
+        }
+
+        assertEventually("expected the guard to keep restarting after the burst") { processes.size == 6 }
+        assertTrue("no permanent give-up on a transient burst", fatalErrors.isEmpty())
+        assertEquals(5, fastExits.size)
+        assertTrue(fastExits.first().message!!.contains("exits too fast"))
+        assertTrue(logs.any { it.contains("restart process in 40ms") })
+        assertTrue(processes.last().isAlive())
+
+        pool.close()
+    }
+
+    @Test
+    fun `restart backoff doubles and is capped`() {
+        val pool = GuardedProcessPool(
+            launcher = { _, _ -> FakeManagedProcess() },
+            restartBackoffBaseMs = 1_000,
+            restartBackoffCapMs = 30_000,
+        )
+
+        assertEquals(
+            listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L),
+            (1..7).map(pool::restartDelayMs),
+        )
+        assertEquals(30_000L, pool.restartDelayMs(10_000))
+        pool.close()
+    }
+
+    @Test
+    fun `repeated configuration error exit is reported as fatal`() {
         val processes = CopyOnWriteArrayList<FakeManagedProcess>()
         val launcher = ProcessLauncher { _, _ ->
             FakeManagedProcess().also { processes += it }
@@ -51,17 +103,98 @@ class GuardedProcessPoolTest {
                 fatalErrors += it
                 fatalLatch.countDown()
             },
+            restartBackoffBaseMs = 5,
+            restartBackoffCapMs = 5,
+            permanentExitThreshold = 3,
+        )
+
+        pool.start(listOf("fake", "command"), permanentExitCodes = setOf(1))
+        for (index in 0 until 3) {
+            assertEventually("expected spawn #${index + 1}") { processes.size == index + 1 }
+            processes[index].finish(1)
+        }
+
+        assertTrue("expected fatal callback", fatalLatch.await(2, TimeUnit.SECONDS))
+        Thread.sleep(50)
+        assertEquals("no restart after the configuration error", 3, processes.size)
+        assertTrue(fatalErrors.single().message!!.contains("exit code: 1"))
+
+        pool.close()
+    }
+
+    @Test
+    fun `a crash code outside the permanent set never gives up`() {
+        val processes = CopyOnWriteArrayList<FakeManagedProcess>()
+        val launcher = ProcessLauncher { _, _ ->
+            FakeManagedProcess().also { processes += it }
+        }
+        val fatalErrors = CopyOnWriteArrayList<IOException>()
+        val pool = GuardedProcessPool(
+            launcher = launcher,
+            minRestartWindowMs = 250,
+            onFatal = { fatalErrors += it },
+            restartBackoffBaseMs = 5,
+            restartBackoffCapMs = 5,
+            permanentExitThreshold = 3,
+        )
+
+        // Go panics exit with status 2: a crash, not a configuration error.
+        pool.start(listOf("fake", "command"), permanentExitCodes = setOf(1))
+        for (index in 0 until 4) {
+            assertEventually("expected spawn #${index + 1}") { processes.size == index + 1 }
+            processes[index].finish(2)
+        }
+
+        assertEventually("expected another restart") { processes.size == 5 }
+        assertTrue(fatalErrors.isEmpty())
+        pool.close()
+    }
+
+    @Test
+    fun `close during restart backoff stops the guard`() {
+        val processes = CopyOnWriteArrayList<FakeManagedProcess>()
+        val launcher = ProcessLauncher { _, _ ->
+            FakeManagedProcess().also { processes += it }
+        }
+        val fastExit = CountDownLatch(1)
+        val pool = GuardedProcessPool(
+            launcher = launcher,
+            minRestartWindowMs = 250,
+            restartBackoffBaseMs = 60_000,
+            restartBackoffCapMs = 60_000,
+            onFastExit = { fastExit.countDown() },
         )
 
         pool.start(listOf("fake", "command"))
-        assertEquals(1, processes.size)
-
         processes[0].finish(9)
+        assertTrue(fastExit.await(2, TimeUnit.SECONDS))
+        pool.close()
+        Thread.sleep(100)
 
-        assertTrue("expected fatal callback", fatalLatch.await(2, TimeUnit.SECONDS))
         assertEquals(1, processes.size)
-        assertTrue(fatalErrors.single().message!!.contains("exits too fast"))
+    }
 
+    @Test
+    fun `an alive process is never restarted whatever it reports`() {
+        val processes = CopyOnWriteArrayList<FakeManagedProcess>()
+        val launcher = ProcessLauncher { _, _ ->
+            FakeManagedProcess(holdMs = 10_000).also { processes += it }
+        }
+        val fatalErrors = CopyOnWriteArrayList<IOException>()
+        val pool = GuardedProcessPool(
+            launcher = launcher,
+            minRestartWindowMs = 25,
+            onFatal = { fatalErrors += it },
+        )
+
+        pool.start(listOf("ultra-client", "--config", "forward.json"))
+        // An Ultra runtime waiting for policy stays alive with its listeners bound; the guard
+        // only reacts to exits, so it must not touch it.
+        Thread.sleep(150)
+
+        assertEquals(1, processes.size)
+        assertTrue(processes.single().isAlive())
+        assertTrue(fatalErrors.isEmpty())
         pool.close()
     }
 
@@ -81,7 +214,7 @@ class GuardedProcessPoolTest {
     }
 }
 
-private class FakeManagedProcess : ManagedProcess {
+private class FakeManagedProcess(private val holdMs: Long = 2_000) : ManagedProcess {
     private val finished = CountDownLatch(1)
     @Volatile private var exitCode: Int = 0
     @Volatile private var alive = true
@@ -90,7 +223,7 @@ private class FakeManagedProcess : ManagedProcess {
     override val errorStream: InputStream = ByteArrayInputStream(ByteArray(0))
 
     override fun waitFor(): Int {
-        finished.await(2, TimeUnit.SECONDS)
+        finished.await(holdMs, TimeUnit.MILLISECONDS)
         return exitCode
     }
 

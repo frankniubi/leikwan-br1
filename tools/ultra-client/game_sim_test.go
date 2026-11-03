@@ -706,13 +706,13 @@ func runUDPDataPlane(t *testing.T, relay *gameSimRelay) udpRunResult {
 		Transport:                "udp",
 		UDPPrewarm:               true,
 		UDPKeepaliveIntervalSecs: 5,
-		UDPQueuePackets:          512,
+		UDPQueuePackets:          1024,
 		UDPMaxAssociations:       16,
 		UDPSetupWorkers:          8,
 		ConnectTimeoutSecs:       5,
 	}
 	store := gameSimStore(t, config, relay, "udp")
-	status := newStatusWriter(filepath.Join(t.TempDir(), "game-sim-udp-status.json"), config.ForwardID, 100*time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "game-sim-udp-status.json"), config.ForwardID, 100*time.Millisecond)
 	obs := &gameSimSocketObservations{}
 	uninstall := installGameSimHooks(obs)
 	defer uninstall()
@@ -817,7 +817,7 @@ func runTCPDataPlane(t *testing.T, relay *gameSimRelay) tcpRunResult {
 		ConnectTimeoutSecs: 5,
 	}
 	store := gameSimStore(t, config, relay, "tcp")
-	status := newStatusWriter(filepath.Join(t.TempDir(), "game-sim-tcp-status.json"), config.ForwardID, 100*time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "game-sim-tcp-status.json"), config.ForwardID, 100*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- serveTCP(ctx, config, store, status) }()
@@ -1018,9 +1018,13 @@ func buildGameSimReport(relay *gameSimRelay, udp udpRunResult, tcp tcpRunResult)
 }
 
 func writeGameSimReport(t *testing.T, report string) {
+	repoTmp := filepath.Join("..", "..", ".tmp")
+	_ = os.MkdirAll(repoTmp, 0o755)
 	paths := []string{
 		filepath.FromSlash("C:/Users/frankniubi/Downloads/leikwan-br1/.tmp/game-sim-local.md"),
-		filepath.Join("..", "..", ".tmp", "game-sim-local.md"),
+		filepath.Join(repoTmp, "game-sim-local.md"),
+		// A fresh CI checkout has no .tmp of its own; the report is diagnostic only.
+		filepath.Join(t.TempDir(), "game-sim-local.md"),
 	}
 	var written string
 	for _, path := range paths {

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Release: 2026.09.27.1
 umask 077
 CONFIG_PATH="/etc/leikwan-client-agent/config.json"
 REQUEST_TOKEN=""
@@ -14,6 +15,7 @@ UPDATE_TMP=$(mktemp -d /tmp/leikwan-client-update.XXXXXX)
 TEMP_INSTALLER="$UPDATE_TMP/install.sh"
 TEMP_UPDATE_HELPER="$UPDATE_TMP/update.sh"
 TEMP_AGENT="$UPDATE_TMP/agent.py"
+TEMP_AGENT_BINARY="$UPDATE_TMP/agent.bin"
 VERSIONS_TMP=""
 
 while [[ $# -gt 0 ]]; do
@@ -76,13 +78,26 @@ fi
 write_update_state() {
   local status="$1"
   local error_message="${2:-}"
-  python3 - "${STATE_PATH}" "${REQUEST_TOKEN}" "${status}" "${error_message}" "/usr/local/bin/leikwan-client-agent.py" <<'PY'
-import json, pathlib, re, sys, time
+  python3 - "${STATE_PATH}" "${REQUEST_TOKEN}" "${status}" "${error_message}" "${CONFIG_PATH}" <<'PY'
+import hashlib, json, pathlib, platform, re, subprocess, sys, time
 path = pathlib.Path(sys.argv[1])
 request_token = sys.argv[2]
 status = sys.argv[3]
 error_message = sys.argv[4]
-agent_path = pathlib.Path(sys.argv[5])
+config_path = pathlib.Path(sys.argv[5])
+config = {}
+try:
+    loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if isinstance(loaded_config, dict):
+        config = loaded_config
+except Exception:
+    config = {}
+runtime_mode = str(config.get("runtime_binary_mode", "python") or "python").strip().lower()
+configured_path = str(config.get("client_agent_bin", "") or "").strip()
+agent_path = pathlib.Path(configured_path or (
+    "/usr/local/bin/leikwan-client-agent" if runtime_mode == "frozen"
+    else "/usr/local/bin/leikwan-client-agent.py"
+))
 existing = {}
 if path.exists():
     try:
@@ -92,27 +107,103 @@ if path.exists():
     except Exception:
         existing = {}
 payload = dict(existing)
+now = time.time()
+# Bounded per-token ledger shared with the agent. A single
+# last_completed_request_token let a never-cleared manual token and an
+# auto-release token undo each other; each token now keeps its own outcome.
+LEDGER_MAX_ENTRIES = 16
+ledger = {}
+raw_ledger = payload.get("tokens")
+if isinstance(raw_ledger, dict):
+    for ledger_token, ledger_entry in raw_ledger.items():
+        if isinstance(ledger_token, str) and ledger_token and isinstance(ledger_entry, dict):
+            ledger[ledger_token] = dict(ledger_entry)
+legacy_token = str(payload.get("last_completed_request_token", "") or "")
+if legacy_token and legacy_token not in ledger:
+    try:
+        legacy_at = float(payload.get("last_completed_at", 0) or 0)
+    except (TypeError, ValueError):
+        legacy_at = 0.0
+    ledger[legacy_token] = {
+        "status": "success",
+        "attempts": 1,
+        "last_attempt_at": legacy_at,
+        "completed_at": legacy_at,
+        "source": "legacy",
+    }
 payload["request_token"] = request_token
 payload["status"] = status
-payload["last_attempt_at"] = time.time()
+payload["last_attempt_at"] = now
 payload.setdefault("last_download_bytes", 0)
 payload.setdefault("download_skip", False)
 if error_message:
     payload["last_error"] = error_message
-    payload["last_failed_at"] = time.time()
+    payload["last_failed_at"] = now
 else:
     payload["last_error"] = ""
+entry = dict(ledger.get(request_token) or {}) if request_token else None
+if entry is not None:
+    previous_status = str(entry.get("status", "") or "")
+    try:
+        attempts = int(entry.get("attempts", 0) or 0)
+    except (TypeError, ValueError):
+        attempts = 0
+    if status == "running" and previous_status != "scheduled":
+        # The agent counts attempts it schedules; count manual runs here.
+        attempts += 1
+    entry["attempts"] = max(attempts, 1)
+    entry["status"] = status
+    entry["last_attempt_at"] = now
+    entry["last_error"] = error_message
+    if error_message:
+        entry["last_failed_at"] = now
 if status == "running":
-    payload["last_started_at"] = time.time()
+    payload["last_started_at"] = now
 elif status == "success":
     version = ""
     if agent_path.exists():
-        text = agent_path.read_text(encoding="utf-8")
-        match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
-        version = match.group(1) if match else ""
+        if runtime_mode == "frozen":
+            try:
+                probe = subprocess.run([str(agent_path), "--version"], text=True, capture_output=True, timeout=10, check=False)
+                version = probe.stdout.strip().splitlines()[0] if probe.returncode == 0 and probe.stdout.strip() else ""
+            except Exception:
+                version = ""
+        else:
+            try:
+                text = agent_path.read_text(encoding="utf-8")
+                match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
+                version = match.group(1) if match else ""
+            except (OSError, UnicodeError):
+                version = ""
+    # Legacy fields stay for agents that predate the ledger; completed_at in
+    # the ledger and last_completed_at share one timestamp so a newer agent
+    # does not mistake this write for a second, later completion.
     payload["last_completed_request_token"] = request_token
-    payload["last_completed_at"] = time.time()
+    payload["last_completed_at"] = now
     payload["installed_version"] = version
+    payload["installed_sha256"] = hashlib.sha256(agent_path.read_bytes()).hexdigest() if agent_path.is_file() else ""
+    payload["runtime_binary_mode"] = runtime_mode
+    payload["agent_architecture"] = platform.machine().strip().lower()
+    if entry is not None:
+        entry["completed_at"] = now
+        entry["installed_version"] = version
+if entry is not None:
+    ledger[request_token] = entry
+if len(ledger) > LEDGER_MAX_ENTRIES:
+    def _recency(item):
+        value = item[1]
+        stamps = []
+        for field in ("last_attempt_at", "completed_at", "converge_failed_at"):
+            try:
+                stamps.append(float(value.get(field, 0) or 0))
+            except (TypeError, ValueError):
+                stamps.append(0.0)
+        return max(stamps)
+    for evicted_token, _ in sorted((item for item in ledger.items() if item[0] != request_token), key=_recency):
+        if len(ledger) <= LEDGER_MAX_ENTRIES:
+            break
+        ledger.pop(evicted_token, None)
+payload["tokens"] = ledger
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 PY
@@ -140,7 +231,7 @@ cleanup_update() {
   local status=$?
   trap - EXIT
   restore_previous_runtime_state "$status"
-  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER" "$TEMP_AGENT"
+  rm -f "$TEMP_INSTALLER" "$TEMP_UPDATE_HELPER" "$TEMP_AGENT" "$TEMP_AGENT_BINARY"
   rmdir "$UPDATE_TMP" 2>/dev/null || true
   [[ -z "${VERSIONS_TMP:-}" ]] || rm -f "$VERSIONS_TMP"
   exit "$status"
@@ -382,7 +473,7 @@ def fetch_protected(url, redirects=5):
 
 
 def curl_download(url, path):
-    cmd = ["curl", "--connect-timeout", "15", "--max-time", "300", "--retry", "3", "--retry-delay", "2", "-fsSL", url]
+    cmd = ["curl", "--noproxy", "*", "--connect-timeout", "15", "--max-time", "300", "--retry", "3", "--retry-delay", "2", "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -413,6 +504,12 @@ if [[ -z "${MASTER_URL}" || -z "${CLIENT_ID}" || -z "${AGENT_TOKEN}" ]]; then
   echo "client agent config missing required fields in ${CONFIG_PATH}" >&2
   exit 1
 fi
+
+# Panel/CDN downloads never use a proxy: the panel is reachable directly
+# through its Cloudflare and Aliyun CDNs. The retired installer proxy.env is
+# not read (the installer run below deletes it), and proxy variables are
+# dropped so neither this helper nor the installer it runs can pick one up.
+unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 
 exec 9>"${STATE_DIR%/}/agent-update.lock"
 flock -n 9 || { rmdir "$UPDATE_TMP"; exit 75; }
@@ -459,26 +556,83 @@ if ! echo "$EXPECTED_INSTALLER_SHA256  $TEMP_INSTALLER" | sha256sum -c - >/dev/n
   exit 1
 fi
 
-# Validate the agent payload and requested version before running any installer.
+# Validate the source payload and the architecture-specific frozen executable
+# before running any installer. The source check keeps the fallback path valid;
+# the binary check pins the bytes that a frozen install will actually execute.
 if ! leikwan_protected_download "${ARTIFACT_BASE%/}/artifacts/client-agent.py" "$TEMP_AGENT"; then
   write_update_state "error" "failed to preflight client agent"
   exit 1
 fi
-if ! python3 - "$VERSIONS_TMP" "$TEMP_AGENT" "$REQUEST_TOKEN" <<'PYGUARD'
-import ast,hashlib,json,pathlib,sys
+case "$(uname -m)" in
+  x86_64|amd64) RUNTIME_ARCH=amd64 ;;
+  aarch64|arm64) RUNTIME_ARCH=arm64 ;;
+  *) write_update_state "error" "unsupported client agent architecture: $(uname -m)"; exit 1 ;;
+esac
+AGENT_BINARY_KEY="client_agent_linux_${RUNTIME_ARCH}"
+read -r AGENT_BINARY_URL AGENT_BINARY_SHA256 < <(python3 - "$VERSIONS_TMP" "$AGENT_BINARY_KEY" <<'PYBINARY'
+import json,pathlib,sys
+m=json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+e=m.get(sys.argv[2],{})
+if not isinstance(e,dict):
+    print("- -")
+else:
+    print(str(e.get("artifact_url","") or "-"),str(e.get("sha256","") or "-"))
+PYBINARY
+)
+if [[ "$AGENT_BINARY_URL" != "-" || "$AGENT_BINARY_SHA256" != "-" ]]; then
+  if [[ ! "$AGENT_BINARY_SHA256" =~ ^[0-9a-fA-F]{64}$ || "$AGENT_BINARY_URL" == "-" ]]; then
+    write_update_state "error" "incomplete ${AGENT_BINARY_KEY} manifest entry"
+    exit 1
+  fi
+  if [[ ! "$AGENT_BINARY_URL" =~ ^https?:// ]]; then
+    AGENT_BINARY_URL="${ARTIFACT_BASE%/}/${AGENT_BINARY_URL#/}"
+  fi
+  if ! leikwan_protected_download "$AGENT_BINARY_URL" "$TEMP_AGENT_BINARY"; then
+    write_update_state "error" "failed to preflight ${AGENT_BINARY_KEY}"
+    exit 1
+  fi
+  if [[ ! -s "$TEMP_AGENT_BINARY" ]]; then
+    write_update_state "error" "downloaded ${AGENT_BINARY_KEY} is empty"
+    exit 1
+  fi
+  chmod 0755 "$TEMP_AGENT_BINARY"
+  if [[ ! -x "$TEMP_AGENT_BINARY" ]]; then
+    write_update_state "error" "downloaded ${AGENT_BINARY_KEY} is not executable"
+    exit 1
+  fi
+else
+  TEMP_AGENT_BINARY=""
+fi
+if ! python3 - "$VERSIONS_TMP" "$TEMP_AGENT" "$TEMP_AGENT_BINARY" "$REQUEST_TOKEN" "$AGENT_BINARY_KEY" <<'PYGUARD'
+import ast,hashlib,json,pathlib,subprocess,sys
 m=json.loads(pathlib.Path(sys.argv[1]).read_text())
 data=pathlib.Path(sys.argv[2]).read_bytes()
 e=m.get('client_agent',{})
 if hashlib.sha256(data).hexdigest()!=e.get('sha256'): raise SystemExit('agent hash differs from manifest')
-version=None
+source_version=None
 for node in ast.parse(data).body:
-    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): version=ast.literal_eval(node.value)
-if not version or version!=e.get('version'): raise SystemExit('agent version differs from manifest')
-token=sys.argv[3]
+    if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='AGENT_VERSION' for t in node.targets): source_version=ast.literal_eval(node.value)
+if not source_version or source_version!=e.get('version'): raise SystemExit('agent version differs from manifest')
+binary_path=None
+binary_key='client_agent'
+if len(sys.argv) > 5 and sys.argv[3]:
+    binary_path=pathlib.Path(sys.argv[3])
+    binary_key=sys.argv[5]
+target=e
+version=source_version
+if binary_path is not None:
+    target=m.get(binary_key,{})
+    binary_data=binary_path.read_bytes()
+    if hashlib.sha256(binary_data).hexdigest()!=target.get('sha256'): raise SystemExit('binary hash differs from manifest')
+    probe=subprocess.run([str(binary_path),'--version'],text=True,capture_output=True,timeout=15,check=False)
+    version=probe.stdout.strip().splitlines()[0] if probe.returncode==0 and probe.stdout.strip() else None
+    if not version or version!=target.get('version'): raise SystemExit('binary version differs from manifest')
+    if version!=source_version: raise SystemExit('source and binary versions differ')
+token=sys.argv[4] if len(sys.argv) > 4 else sys.argv[3]
 if token.startswith('auto-release:'):
     fields=dict(part.split('=',1) for part in token[len('auto-release:'):].split('|') if '=' in part)
     if fields.get('agent',version)!=version: raise SystemExit('agent differs from requested version')
-    if fields.get('agent_sha256',e['sha256']).lower()!=e['sha256'].lower(): raise SystemExit('agent differs from requested hash')
+    if fields.get('agent_sha256',target['sha256']).lower()!=target['sha256'].lower(): raise SystemExit('agent differs from requested hash')
 PYGUARD
 then
   write_update_state "error" "agent preflight mismatch; keeping current services"
@@ -498,6 +652,10 @@ if LEIKWAN_SKIP_UPDATE_HELPER=1 "$TEMP_INSTALLER" --master "${MASTER_URL}" --art
     exit 1
   fi
   chmod 0755 "$TEMP_UPDATE_HELPER"
+  if [[ ! -x "$TEMP_UPDATE_HELPER" ]]; then
+    write_update_state "error" "downloaded client-agent update helper is not executable"
+    exit 1
+  fi
   mv "$TEMP_UPDATE_HELPER" /usr/local/bin/leikwan-client-agent-update
   write_update_state "success"
 else

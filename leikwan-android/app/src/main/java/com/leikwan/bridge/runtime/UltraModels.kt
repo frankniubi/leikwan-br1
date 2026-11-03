@@ -9,11 +9,17 @@ import java.time.Instant
 
 private const val ULTRA_POLICY_PROTOCOL = "leikwan-ultra-policy-v2"
 private const val ULTRA_MAX_SESSION_TICKET_LENGTH = 4096
-private const val ULTRA_MAX_TTL_SECONDS = 300L
+/**
+ * Upper bound on how far in the future a policy (and therefore any lease bound to it) may
+ * expire. The panel clamps offline validity to 300..3600 s and this client asks for 1800 s
+ * (see ULTRA_OFFLINE_VALIDITY_SECONDS); the runtime (Go) and desktop hosts use the same 3600 s
+ * ceiling. Older panels keep issuing <= 300 s grants, which remain valid.
+ */
+internal const val ULTRA_MAX_TTL_SECONDS = 3600L
 private const val ULTRA_MAX_QUOTA_BYTES = 107_374_182_400L
 private const val ULTRA_MAX_RATE_MBPS = 100_000L
 
-/** A short-lived, forward-bound authorization returned from the Panel. */
+/** A bounded (<= [ULTRA_MAX_TTL_SECONDS]), forward-bound authorization returned from the Panel. */
 data class UltraPolicy(
     val forwardId: Long,
     val sessionTicket: String,
@@ -25,6 +31,8 @@ data class UltraPolicy(
     val rateLimitMbps: Long,
     val quotaRemainingBytes: Long,
     val targetDigest: String,
+    /** Optional TCP first-flight compatibility the panel attached to this grant. */
+    val tcpFirstFlight: UltraTcpFirstFlight? = null,
 ) {
     companion object {
         fun from(forward: ForwardContract, now: Instant = Instant.now()): UltraPolicy? {
@@ -73,12 +81,63 @@ data class UltraPolicy(
                 rateLimitMbps = rateLimit,
                 quotaRemainingBytes = quota,
                 targetDigest = policyTargetDigest,
+                tcpFirstFlight = access.objectValue("tcp_first_flight")
+                    ?.let { UltraTcpFirstFlight.from(it, forward.target, generation, now) },
             )
         }
 
         fun targetDigest(target: String): String = MessageDigest.getInstance("SHA-256")
             .digest(target.trim().toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+}
+
+/**
+ * The panel's TCP first-flight compatibility for this grant: the first upstream
+ * write of a new stream on a listed candidate is split after [prefixBytes] and
+ * held for [delayMillis]. The runtime matches each stream's authenticated
+ * candidate, so only stable fields reach its config.
+ */
+data class UltraTcpFirstFlight(
+    val target: String,
+    val candidateHashes: List<String>,
+    val prefixBytes: Int,
+    val delayMillis: Int,
+) {
+    fun toBootstrapJson(): JsonObject = JsonObject().apply {
+        addProperty("target", target)
+        add("candidate_hashes", JsonArray().apply { candidateHashes.forEach(::add) })
+        addProperty("prefix_bytes", prefixBytes)
+        addProperty("delay_ms", delayMillis)
+    }
+
+    companion object {
+        /** The panel derives the list from all of a forward's lines; a direction can have more than 4. */
+        const val MAX_CANDIDATE_HASHES = 16
+
+        fun from(raw: JsonObject, forwardTarget: String, policyGeneration: String, now: Instant): UltraTcpFirstFlight? {
+            val target = raw.requiredString("target") ?: return null
+            val generation = raw.requiredString("policy_generation") ?: return null
+            val expiresAt = raw.instant("expires_at") ?: return null
+            val prefix = raw.long("prefix_bytes") ?: return null
+            val delay = raw.long("delay_ms") ?: return null
+            val hashes = (raw.get("candidate_hashes")?.takeIf { it.isJsonArray }?.asJsonArray ?: return null)
+                .mapNotNull { it.requiredStringValue()?.lowercase() }
+                .filter { it.isLowerHex64() }
+                .distinct()
+                .take(MAX_CANDIDATE_HASHES)
+            // Generation and expiry are checked here, at issue time only: grants
+            // renew every few minutes and must not restart the runtime.
+            if (target != forwardTarget.trim()
+                || generation != policyGeneration
+                || !expiresAt.isAfter(now)
+                || prefix !in 1L..16L
+                || delay !in 1L..1000L
+                || hashes.isEmpty()) {
+                return null
+            }
+            return UltraTcpFirstFlight(target, hashes, prefix.toInt(), delay.toInt())
+        }
     }
 }
 

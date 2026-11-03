@@ -37,6 +37,7 @@ type ClientMeta struct {
 	UpdateRequestToken string          `json:"agent_update_request_token"`
 	DesiredAgentVer    string          `json:"desired_agent_version"`
 	DesiredAgentSHA    string          `json:"desired_agent_sha256"`
+	DesiredAgentURL    string          `json:"desired_agent_url"`
 	DesiredUltraVer    string          `json:"desired_ultra_runtime_version"`
 	DesiredUltraSHA    string          `json:"desired_ultra_runtime_sha256"`
 	OnlineDeviceLimit  int             `json:"online_device_limit"`
@@ -97,6 +98,24 @@ type NativeOutboundCapability struct {
 	Forwards          []NativeOutboundForward `json:"forwards"`
 }
 
+const (
+	nativeCapabilityProtocol = "socks5"
+	nativeLeaseProtocol      = "leikwan-ultra-native-socks5-v1"
+	nativeLeasePurpose       = "native_outbound"
+)
+
+func (c *NativeOutboundCapability) carrier(forwardID int) (NativeOutboundForward, bool) {
+	if c == nil {
+		return NativeOutboundForward{}, false
+	}
+	for _, candidate := range c.Forwards {
+		if candidate.ForwardID == forwardID {
+			return candidate, true
+		}
+	}
+	return NativeOutboundForward{}, false
+}
+
 type NativeOutboundForward struct {
 	ForwardID         int      `json:"forward_id"`
 	Direction         string   `json:"direction"`
@@ -130,6 +149,10 @@ type LeaseResponse struct {
 	OK     bool         `json:"ok"`
 	Leases []LeaseFrame `json:"leases"`
 	Error  string       `json:"error,omitempty"`
+
+	// UnsealFailures lists sealed leases that could not be opened and were
+	// therefore dropped from Leases. Local bookkeeping only; never encoded.
+	UnsealFailures []error `json:"-"`
 }
 
 // LeaseFrame is byte-compatible with the frame ultra-client decodes from its
@@ -155,6 +178,19 @@ type LeaseFrame struct {
 	Direction          string        `json:"direction,omitempty"`
 	RouteScope         string        `json:"route_scope,omitempty"`
 	RoutePolicy        string        `json:"route_policy,omitempty"`
+
+	// RelayPayloadCeiling is the per-line datagram ceiling the Panel declared;
+	// 0 means unknown and the runtime measures it.
+	RelayPayloadCeiling int `json:"relay_payload_ceiling,omitempty"`
+	// ScopeDigest is what a native lease carries instead of target_digest.
+	// The runtime expects it under target_digest, which nativeRuntimeFrame
+	// takes care of.
+	ScopeDigest string `json:"scope_digest,omitempty"`
+	// DirectIPCidrs are the addresses this candidate must be reached on
+	// directly (the relay endpoint plus any Panel-declared extras). The
+	// gateway keeps them out of its own TUN so the runtime never dials the
+	// relay through itself. The runtime ignores the field.
+	DirectIPCidrs []string `json:"direct_ip_cidrs,omitempty"`
 }
 
 type LeaseEndpoint struct {

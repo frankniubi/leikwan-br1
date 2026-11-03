@@ -18,12 +18,11 @@ final class UltraInventoryService
     public const ISP_CLASSES = ['telecom', 'unicom', 'mobile', 'generic', 'unknown'];
     public const DISPATCH_CLASSES = ['normal', 'low'];
     /**
-     * Entries whose relay/provider marker contains one of these are dispatched last
-     * (operator instruction 2026-09-11: Tencent-marked entries are low priority).
-     * Matching is applied to the provider field and to the source title, because a
-     * few Tencent lines only carry the marker in the title.
+     * Provider/title labels are not per-line transport-health evidence. Keep this
+     * legacy list empty; low priority must be supplied explicitly by the audited
+     * inventory declaration.
      */
-    public const LOW_PRIORITY_PROVIDER_MARKERS = ['腾讯'];
+    public const LOW_PRIORITY_PROVIDER_MARKERS = [];
     /**
      * Zone codes that count as mainland China for direction classification. The
      * list mirrors ultra_zones; add a code here when a new mainland zone is
@@ -130,12 +129,9 @@ final class UltraInventoryService
             'in_line_type' => self::nullableUnsigned($raw['in_line_type'] ?? null),
             'isp' => self::normalizeIsp($raw['isp'] ?? null),
             'provider' => self::cleanText($raw['provider'] ?? '', 64) ?: null,
-            // A source may declare the dispatch priority: a line whose relay association
-            // drops big datagrams is dispatched last, exactly like the Tencent ones. An
-            // unknown/absent declaration falls back to the provider/title rule.
-            'dispatch_class' => ($declaredDispatch = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES)) !== 'unknown'
-                ? $declaredDispatch
-                : self::dispatchClass($raw),
+            // Dispatch class is an explicit per-line inventory declaration. Provider
+            // names are not transport-health evidence; absent/unknown defaults to normal.
+            'dispatch_class' => self::dispatchClassWithDeclaration($raw),
             'discovery_ip' => $discoveryIp !== '' ? $discoveryIp : null,
             'catalog_ingress_label' => $catalogIngress !== '' ? $catalogIngress : null,
             'catalog_destination_label' => $catalogDestination !== '' ? $catalogDestination : null,
@@ -377,7 +373,7 @@ final class UltraInventoryService
         }
         $dispatchFilter = self::normalizeEnum($filters['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
         if ($dispatchFilter !== 'unknown' && $dispatchFilter !== '') {
-            $where[] = 'ul.dispatch_class = :dispatch_class';
+            $where[] = 'COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = :dispatch_class';
             $params['dispatch_class'] = $dispatchFilter;
         }
         $ispFilter = self::normalizeIsp($filters['isp'] ?? null);
@@ -402,6 +398,7 @@ final class UltraInventoryService
         $materialRequired = self::materialRequiredSql();
         return $this->db->fetchAll(
             'SELECT ul.*,
+                    COALESCE(ul.admin_dispatch_class, ul.dispatch_class) AS dispatch_class,
                     COALESCE(ul.admin_ingress_zone, ul.auto_ingress_zone) AS effective_ingress_zone,
                     COALESCE(ul.admin_destination_zone, ul.auto_destination_zone) AS effective_destination_zone,
                     CASE WHEN ' . $materialRequired . ' THEN 1 ELSE 0 END AS material_required
@@ -635,22 +632,17 @@ final class UltraInventoryService
      * stable code so filters and route_class derivation do not depend on the
      * source host's locale.
      */
-    /**
-     * Dispatch priority of a catalog entry. "low" entries are ordered after every
-     * "normal" entry in the client-facing candidate list, so a client only falls
-     * back to them when nothing better is available.
-     *
-     * @param array<string, mixed> $raw
-     */
+    /** @param array<string, mixed> $raw */
     public static function dispatchClass(array $raw): string
     {
-        $haystack = self::lower(self::cleanText($raw['provider'] ?? '', 64) . '|' . self::cleanText($raw['title'] ?? '', 255));
-        foreach (self::LOW_PRIORITY_PROVIDER_MARKERS as $marker) {
-            if ($marker !== '' && str_contains($haystack, self::lower($marker))) {
-                return 'low';
-            }
-        }
-        return 'normal';
+        $declared = self::normalizeEnum($raw['dispatch_class'] ?? '', self::DISPATCH_CLASSES);
+        return $declared !== 'unknown' ? $declared : 'normal';
+    }
+
+    /** @param array<string, mixed> $raw */
+    private static function dispatchClassWithDeclaration(array $raw): string
+    {
+        return self::dispatchClass($raw);
     }
 
     /** Direction of a route from its resolved ingress/destination zones. */

@@ -1,0 +1,316 @@
+diff --git a/common/listener/listener.go b/common/listener/listener.go
+index cc27a62..87cf23b 100644
+--- a/common/listener/listener.go
++++ b/common/listener/listener.go
+@@ -6,6 +6,7 @@ import (
+ 	"net/netip"
+ 	"runtime"
+ 	"strings"
++	"sync"
+ 	"sync/atomic"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -18,6 +19,7 @@ import (
+ 	N "github.com/sagernet/sing/common/network"
+ 
+ 	"github.com/vishvananda/netns"
++	"golang.org/x/sync/semaphore"
+ )
+ 
+ type Listener struct {
+@@ -40,6 +42,10 @@ type Listener struct {
+ 	udpAddr              M.Socksaddr
+ 	packetOutbound       chan *N.PacketBuffer
+ 	packetOutboundClosed chan struct{}
++	packetOutboundMu     sync.RWMutex
++	packetOutboundBudget *semaphore.Weighted
++	packetQueueBlocked   atomic.Uint64
++	packetQueueTimeout   atomic.Uint64
+ 	shutdown             atomic.Bool
+ }
+ 
+@@ -91,7 +97,8 @@ func (l *Listener) Start() error {
+ 			return err
+ 		}
+ 		l.packetOutboundClosed = make(chan struct{})
+-		l.packetOutbound = make(chan *N.PacketBuffer, 64)
++		l.packetOutbound = make(chan *N.PacketBuffer, 4096)
++		l.packetOutboundBudget = semaphore.NewWeighted(16 << 20)
+ 		go l.loopUDPIn()
+ 		if !l.disablePacketOutput {
+ 			go l.loopUDPOut()
+diff --git a/common/listener/listener_udp.go b/common/listener/listener_udp.go
+index e689c8b..c0340f9 100644
+--- a/common/listener/listener_udp.go
++++ b/common/listener/listener_udp.go
+@@ -2,11 +2,13 @@ package listener
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net"
+ 	"net/netip"
+ 	"os"
+ 	"strings"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/common/redir"
+@@ -53,6 +55,12 @@ func (l *Listener) ListenUDP() (net.PacketConn, error) {
+ 		return nil, err
+ 	}
+ 	l.udpConn = udpConn.(*net.UDPConn)
++	if err := l.udpConn.SetReadBuffer(16 << 20); err != nil {
++		l.logger.Warn("udp receive buffer request failed: ", err)
++	}
++	if err := l.udpConn.SetWriteBuffer(16 << 20); err != nil {
++		l.logger.Warn("udp send buffer request failed: ", err)
++	}
+ 	l.udpAddr = bindAddr
+ 	l.logger.Info("udp server started at ", udpConn.LocalAddr())
+ 	return udpConn, err
+@@ -97,7 +105,11 @@ func (l *Listener) PacketWriter() N.PacketWriter {
+ }
+ 
+ func (l *Listener) loopUDPIn() {
+-	defer close(l.packetOutboundClosed)
++	defer func() {
++		l.packetOutboundMu.Lock()
++		close(l.packetOutboundClosed)
++		l.packetOutboundMu.Unlock()
++	}()
+ 	var buffer *buf.Buffer
+ 	if !l.threadUnsafePacketWriter {
+ 		buffer = buf.NewPacket()
+@@ -154,11 +166,14 @@ func (l *Listener) loopUDPIn() {
+ }
+ 
+ func (l *Listener) loopUDPOut() {
++	defer l.drainUDPOutbound()
+ 	for {
+ 		select {
+ 		case packet := <-l.packetOutbound:
+ 			destination := packet.Destination.AddrPort()
++			_ = l.udpConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+ 			_, err := l.udpConn.WriteToUDPAddrPort(packet.Buffer.Bytes(), destination)
++			l.packetOutboundBudget.Release(int64(packet.Buffer.Len()))
+ 			packet.Buffer.Release()
+ 			N.PutPacketBuffer(packet)
+ 			if err != nil {
+@@ -170,15 +185,27 @@ func (l *Listener) loopUDPOut() {
+ 			}
+ 			continue
+ 		case <-l.packetOutboundClosed:
++			return
+ 		}
+-		for {
+-			select {
+-			case packet := <-l.packetOutbound:
+-				packet.Buffer.Release()
+-				N.PutPacketBuffer(packet)
+-			default:
+-				return
++	}
++}
++
++func (l *Listener) drainUDPOutbound() {
++	l.packetOutboundMu.Lock()
++	defer l.packetOutboundMu.Unlock()
++	var discarded int
++	for {
++		select {
++		case packet := <-l.packetOutbound:
++			l.packetOutboundBudget.Release(int64(packet.Buffer.Len()))
++			packet.Buffer.Release()
++			N.PutPacketBuffer(packet)
++			discarded++
++		default:
++			if discarded > 0 {
++				l.logger.Warn("udp listener closed with queued packets=", discarded)
+ 			}
++			return
+ 		}
+ 	}
+ }
+@@ -186,6 +213,32 @@ func (l *Listener) loopUDPOut() {
+ type packetWriter Listener
+ 
+ func (w *packetWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
++	w.packetOutboundMu.RLock()
++	defer w.packetOutboundMu.RUnlock()
++	if w.shutdown.Load() {
++		buffer.Release()
++		return os.ErrClosed
++	}
++	select {
++	case <-w.packetOutboundClosed:
++		buffer.Release()
++		return os.ErrClosed
++	default:
++	}
++	ctx, cancel := context.WithTimeout(w.ctx, 250*time.Millisecond)
++	defer cancel()
++	size := int64(buffer.Len())
++	if !w.packetOutboundBudget.TryAcquire(size) {
++		w.packetQueueBlocked.Add(1)
++		if err := w.packetOutboundBudget.Acquire(ctx, size); err != nil {
++			buffer.Release()
++			if errors.Is(err, context.DeadlineExceeded) {
++				w.packetQueueTimeout.Add(1)
++			}
++			w.logger.Error("udp outbound byte budget admission failed: ", err)
++			return err
++		}
++	}
+ 	packet := N.NewPacketBuffer()
+ 	packet.Buffer = buffer
+ 	packet.Destination = destination
+@@ -193,13 +246,20 @@ func (w *packetWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr)
+ 	case w.packetOutbound <- packet:
+ 		return nil
+ 	default:
++		w.packetQueueBlocked.Add(1)
++	}
++	select {
++	case w.packetOutbound <- packet:
++		return nil
++	case <-ctx.Done():
++		w.packetOutboundBudget.Release(size)
+ 		buffer.Release()
+ 		N.PutPacketBuffer(packet)
+-		if w.shutdown.Load() {
+-			return os.ErrClosed
++		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++			w.packetQueueTimeout.Add(1)
+ 		}
+-		w.logger.Trace("dropped packet to ", destination)
+-		return nil
++		w.logger.Error("udp outbound packet queue admission failed: ", ctx.Err())
++		return ctx.Err()
+ 	}
+ }
+ 
+diff --git a/common/listener/listener_udp_backpressure_test.go b/common/listener/listener_udp_backpressure_test.go
+new file mode 100644
+index 0000000..c0adfe9
+--- /dev/null
++++ b/common/listener/listener_udp_backpressure_test.go
+@@ -0,0 +1,117 @@
++package listener
++
++import (
++	"context"
++	"errors"
++	"os"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing/common/buf"
++	"github.com/sagernet/sing/common/logger"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++	"golang.org/x/sync/semaphore"
++)
++
++func testPacketWriter(ctx context.Context, capacity int) *packetWriter {
++	return &packetWriter{
++		ctx: ctx, logger: logger.NOP(),
++		packetOutbound:       make(chan *N.PacketBuffer, capacity),
++		packetOutboundClosed: make(chan struct{}),
++		packetOutboundBudget: semaphore.NewWeighted(8192),
++	}
++}
++
++func releaseTestPacket(w *packetWriter, packet *N.PacketBuffer) {
++	w.packetOutboundBudget.Release(int64(packet.Buffer.Len()))
++	packet.Buffer.Release()
++	N.PutPacketBuffer(packet)
++}
++
++func TestEnterpriseOutboundWaitsInsteadOfSilentlyDropping(t *testing.T) {
++	w := testPacketWriter(context.Background(), 1)
++	if err := w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{}); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 1)
++	go func() { done <- w.WritePacket(buf.As(make([]byte, 1201)), M.Socksaddr{}) }()
++	select {
++	case err := <-done:
++		t.Fatalf("full queue returned before admission: %v", err)
++	case <-time.After(20 * time.Millisecond):
++	}
++	releaseTestPacket(w, <-w.packetOutbound)
++	if err := <-done; err != nil {
++		t.Fatal(err)
++	}
++	packet := <-w.packetOutbound
++	if packet.Buffer.Len() != 1201 {
++		t.Fatal("second datagram was lost")
++	}
++	releaseTestPacket(w, packet)
++	if w.packetQueueBlocked.Load() != 1 || w.packetQueueTimeout.Load() != 0 {
++		t.Fatal("incorrect admission counters")
++	}
++}
++
++func TestEnterpriseOutboundTimeoutIsExplicitAndReleasesBudget(t *testing.T) {
++	w := testPacketWriter(context.Background(), 0)
++	err := w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{})
++	if !errors.Is(err, context.DeadlineExceeded) || w.packetQueueTimeout.Load() != 1 {
++		t.Fatalf("silent timeout: %v", err)
++	}
++	if !w.packetOutboundBudget.TryAcquire(8192) {
++		t.Fatal("admission leaked byte reservation")
++	}
++}
++
++func TestEnterpriseOutboundCancellationAndClosedWriter(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	w := testPacketWriter(ctx, 0)
++	done := make(chan error, 1)
++	go func() { done <- w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{}) }()
++	cancel()
++	if err := <-done; !errors.Is(err, context.Canceled) {
++		t.Fatal(err)
++	}
++	if w.packetQueueTimeout.Load() != 0 {
++		t.Fatal("cancellation counted as timeout")
++	}
++	w.shutdown.Store(true)
++	if err := w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{}); !errors.Is(err, os.ErrClosed) {
++		t.Fatal(err)
++	}
++	if !w.packetOutboundBudget.TryAcquire(8192) {
++		t.Fatal("shutdown leaked byte reservation")
++	}
++}
++
++func TestEnterpriseOutboundByteCap(t *testing.T) {
++	w := testPacketWriter(context.Background(), 2)
++	if !w.packetOutboundBudget.TryAcquire(8192) {
++		t.Fatal("initial reserve")
++	}
++	err := w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{})
++	if !errors.Is(err, context.DeadlineExceeded) || len(w.packetOutbound) != 0 {
++		t.Fatalf("byte cap bypassed: %v", err)
++	}
++	w.packetOutboundBudget.Release(8192)
++	if !w.packetOutboundBudget.TryAcquire(8192) {
++		t.Fatal("failed admission changed reservation")
++	}
++}
++
++func TestEnterpriseOutboundShutdownDrainReleasesQueuedBytes(t *testing.T) {
++	w := testPacketWriter(context.Background(), 2)
++	for i := 0; i < 2; i++ {
++		if err := w.WritePacket(buf.As(make([]byte, 1200)), M.Socksaddr{}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	w.shutdown.Store(true)
++	(*Listener)(w).drainUDPOutbound()
++	if len(w.packetOutbound) != 0 || !w.packetOutboundBudget.TryAcquire(8192) {
++		t.Fatal("shutdown retained queued packets or byte reservations")
++	}
++}

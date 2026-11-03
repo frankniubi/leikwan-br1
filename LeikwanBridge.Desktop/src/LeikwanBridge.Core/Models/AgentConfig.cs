@@ -68,7 +68,10 @@ public sealed class AgentConfig
     public int HealthCheckIntervalSeconds { get; set; } = 20;
 
     [JsonPropertyName("log_level")]
-    public string LogLevel { get; set; } = "INFO";
+    public string LogLevel { get; set; } = "WARNING";
+
+    [JsonPropertyName("preferred_egress_interface")]
+    public string PreferredEgressInterface { get; set; } = "";
 
     [JsonPropertyName("bond_bin")]
     public string BondBin { get; set; } = "";
@@ -271,6 +274,13 @@ public sealed class AgentConfig
             return ProxyChinaIpList;
         return Path.Combine(AppContext.BaseDirectory, "bin", "CN.conf");
     }
+
+    /// <summary>
+    /// Directory holding the bundled geoip-cn.srs / geosite-cn.srs sing-box
+    /// rule-sets, installed next to CN.conf.
+    /// </summary>
+    public string GetEffectiveProxyRuleSetDirectory()
+        => Path.Combine(AppContext.BaseDirectory, "bin");
 
     public string GetEffectiveProxyNetchModePath()
     {

@@ -3,16 +3,21 @@ declare(strict_types=1);
 
 use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
+use Leikwan\Master\Support\HttpSecurity;
 use Leikwan\Master\Support\MigrationRunner;
 
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
+
+HttpSecurity::removeServerBanner();
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
+    HttpSecurity::startSession();
 }
 
 header('Cache-Control: no-store');
 header('Pragma: no-cache');
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: DENY');
+header("Content-Security-Policy: frame-ancestors 'none'");
 header('Referrer-Policy: no-referrer');
 
 spl_autoload_register(static function (string $class): void {
@@ -542,7 +547,7 @@ function buildStatusHtml(array $payload): string
 function renderShell(string $title, string $body): string
 {
     return '<!doctype html>
-<html lang="en">
+<html lang="' . h(Leikwan\Master\Support\LocaleResolver::fromGlobals()) . '">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -559,14 +564,7 @@ function renderShell(string $title, string $body): string
         <p class="muted">Idempotent setup and upgrade entrypoint for the Master panel.</p>
       </div>
       <div class="toolbar">
-        <div class="locale-switch">
-          <label for="locale-switcher" class="locale-label">Language</label>
-          <select id="locale-switcher" class="locale-select">
-            <option value="en">EN</option>
-            <option value="zh-Hans">Simplified Chinese</option>
-            <option value="zh-TW">Traditional Chinese</option>
-          </select>
-        </div>
+        ' . Leikwan\Master\Support\LocaleSwitcher::html(Leikwan\Master\Support\LocaleResolver::fromGlobals()) . '
       </div>
     </div>
     ' . $body . '

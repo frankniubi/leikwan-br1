@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -82,7 +83,7 @@ func TestHAUDPFirstPacketRetriesBackup(t *testing.T) {
 	if err := store.ReplaceCandidates(snapshot.Policy, bad, []ProviderLease{bad, good}); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,7 +106,7 @@ func TestHAUDPFirstPacketRetriesBackup(t *testing.T) {
 }
 
 func TestHAStatusHistorySurvivesSuccessfulProbe(t *testing.T) {
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	st.RecordHAEvent("udp", "keepalive_timeout", "generation")
 	st.RecordUDPAttached("actual-session", "paid")
@@ -135,7 +136,7 @@ func TestHACeilingUnusableAssociationMovesToNextCandidate(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Revoke("") })
 
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer status.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status,
@@ -287,7 +288,7 @@ func tcpPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	client, local := tcpPair(t)
 	remote, provider := tcpPair(t)
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	limiter := NewPolicyLimiter()
 	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {
@@ -323,10 +324,7 @@ func TestHATCPHalfCloseDrainsResponse(t *testing.T) {
 	}
 }
 
-// A relay that takes the connection and answers with nothing is the failure
-// mode that kept a dead candidate selected for minutes: the dial succeeds and
-// EOF looks like a normal close. Two such streams must quarantine the path.
-func TestHATCPRelayQuarantinesSilentRelay(t *testing.T) {
+func TestHATCPRelayDoesNotScoreLocalSilentStream(t *testing.T) {
 	now := time.Now()
 	policy := testPolicy(now, strings.Repeat("a", 64))
 	lease := testLease(policy, strings.Repeat("b", 64))
@@ -336,41 +334,123 @@ func TestHATCPRelayQuarantinesSilentRelay(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
-	limiter := NewPolicyLimiter()
-	if err := limiter.Replace(20, 1024, time.Now().Add(time.Minute), "test"); err != nil {
-		t.Fatal(err)
-	}
 	ident := relayIdentity{
 		forward: 42, generation: policy.PolicyGeneration, selection: lease.SelectionRef,
 		pathKey: haPathKey(lease), candidateKey: lease.CandidateKeyHash, leaseHash: lease.LeaseHash,
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		client, local := tcpPair(t)
-		remote, provider := tcpPair(t)
-		done := make(chan struct{})
-		go func() {
-			relayTCP(context.Background(), local, remote, limiter, st, store, ident)
-			close(done)
-		}()
-		if _, err := client.Write([]byte("request")); err != nil {
-			t.Fatal(err)
-		}
-		// Accept the connection, then close it without sending a single byte.
-		provider.Close()
-		client.Close()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Fatal("relay did not finish after the provider closed")
-		}
+	noteRelayOutcome(
+		store,
+		st,
+		ident,
+		time.Now(),
+		7,
+		0,
+		relayStreamOrder{
+			upstreamEnded:   time.Now(),
+			downstreamEnded: time.Now().Add(100 * time.Millisecond),
+		},
+	)
+	store.mu.RLock()
+	until, isolated := store.isolated["tcp:"+ident.pathKey]
+	store.mu.RUnlock()
+	if isolated && until.After(time.Now()) {
+		t.Fatal("local-first silent streams must not isolate the path")
+	}
+}
+
+func TestHATCPRelayAvoidsRepeatedRemoteReadResetLocally(t *testing.T) {
+	now := time.Now()
+	policy := testPolicy(now, strings.Repeat("a", 64))
+	lease := testLease(policy, strings.Repeat("b", 64))
+	lease.CandidateKeyHash = strings.Repeat("c", 64)
+	lease.LeaseHash = strings.Repeat("d", 64)
+	store := NewPolicyStore(testPolicyConfig())
+	if err := store.Replace(policy, lease); err != nil {
+		t.Fatal(err)
+	}
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	defer st.Close()
+	ident := relayIdentity{
+		forward: 42, generation: policy.PolicyGeneration, selection: lease.SelectionRef,
+		pathKey: haPathKey(lease), candidateKey: lease.CandidateKeyHash, leaseHash: lease.LeaseHash,
+	}
+	for range 2 {
+		noteRelayOutcome(
+			store,
+			st,
+			ident,
+			time.Now(),
+			7,
+			0,
+			relayStreamOrder{
+				upstreamEnded:   time.Now().Add(10 * time.Millisecond),
+				downstreamEnded: time.Now(),
+				remoteReadError: syscall.ECONNRESET,
+			},
+		)
 	}
 	store.mu.RLock()
 	until, isolated := store.isolated["tcp:"+ident.pathKey]
 	store.mu.RUnlock()
 	if !isolated || !until.After(time.Now()) {
-		t.Fatal("two silent relay streams did not quarantine the path")
+		t.Fatal("repeated remote-first silent streams did not isolate the path")
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.status.CandidateFeedback) != 0 {
+		t.Fatal("target-specific resets must not penalize global candidate reputation")
+	}
+	if store.isolated["udp:"+ident.pathKey].After(time.Now()) {
+		t.Fatal("TCP resets must not isolate UDP")
+	}
+}
+
+func TestHATCPRelayAmbiguousSilentStreamsRemainEligible(t *testing.T) {
+	now := time.Now()
+	for name, tc := range map[string]struct {
+		order   relayStreamOrder
+		age     time.Duration
+		streams int
+	}{
+		"local_first_20ms":  {order: relayStreamOrder{upstreamEnded: now, downstreamEnded: now.Add(20 * time.Millisecond), remoteReadError: syscall.ECONNRESET}},
+		"tie":               {order: relayStreamOrder{upstreamEnded: now, downstreamEnded: now, remoteReadError: syscall.ECONNRESET}},
+		"local_write_error": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now}},
+		"unknown_order":     {order: relayStreamOrder{remoteReadError: syscall.ECONNRESET}},
+		// Below the zero-byte strike count, a fast clean remote close is still
+		// an ordinary short exchange.
+		"remote_eof_below_strikes": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF},
+			streams: zeroByteCloseStrikes - 1},
+		"remote_eof_slow": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF},
+			age: haZeroByteCloseMaxAge + 500*time.Millisecond},
+		"remote_eof_after_read": {order: relayStreamOrder{upstreamEnded: now.Add(time.Millisecond), downstreamEnded: now, remoteReadError: io.EOF,
+			remoteReadBytes: 12}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, policy, leases := haStore(t)
+			key := haPathKey(leases[0])
+			status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+			defer status.Close()
+			streams := tc.streams
+			if streams == 0 {
+				streams = 3
+			}
+			for range streams {
+				noteRelayOutcome(store, status, relayIdentity{pathKey: key, generation: policy.PolicyGeneration}, time.Now().Add(-tc.age), 7, 0, tc.order)
+			}
+			store.mu.RLock()
+			isolated := store.isolated["tcp:"+key].After(time.Now())
+			store.mu.RUnlock()
+			if isolated {
+				t.Fatal("ambiguous/normal end isolated the path")
+			}
+			status.mu.Lock()
+			defer status.mu.Unlock()
+			if len(status.status.CandidateFeedback) != 0 {
+				t.Fatal("ambiguous/normal end emitted global candidate failure")
+			}
+		})
 	}
 }
 
@@ -449,7 +529,7 @@ func TestHAUDPSilentPathRecoversWithoutListenerRestart(t *testing.T) {
 	if err := store.ReplaceCandidates(ss.Policy, a, []ProviderLease{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	st := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	st := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer st.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

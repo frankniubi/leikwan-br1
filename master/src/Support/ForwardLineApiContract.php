@@ -108,9 +108,13 @@ final class ForwardLineApiContract
     public static function mergePatch(array $current, array $changes): array
     {
         $currentSource = (string) ($current['target_source'] ?? 'manual');
+        // The stored column is `native_outbound_enabled`; reading the wrong key
+        // made every existing native forward look non-native, so a patch could
+        // silently rewrite its target and the documented
+        // forbidden_for_native_outbound guard never fired.
         $native = array_key_exists('native_outbound', $changes)
             ? self::boolean($changes['native_outbound'], 'native_outbound')
-            : !empty($current['native_outbound']);
+            : !empty($current['native_outbound_enabled'] ?? $current['native_outbound'] ?? false);
         if ($native) {
             if (array_key_exists('target', $changes)
                 || array_key_exists('target_host', $changes)
@@ -242,7 +246,28 @@ final class ForwardLineApiContract
 
         if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
             || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            // Security (SSRF): a non-native forward target is dialed by our
+            // slave/sidecar/relay, not by the user's own device. Loopback,
+            // link-local (incl. 169.254.169.254 cloud metadata), unspecified and
+            // other reserved ranges would turn our infrastructure into an open
+            // proxy into internal networks, so they are rejected here. RFC1918
+            // private ranges stay allowed for genuine tenant-owned backends.
+            // (DNS names resolve on the node; authoritative resolution-time
+            // filtering still belongs on the data-plane agents.)
+            if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_RES_RANGE) === false
+                || self::isNonRoutableTarget($host)) {
+                self::invalid(['target.host' => 'reserved_range']);
+            }
             return $host;
+        }
+
+        // A name whose last label is numeric or hex is not a hostname but a
+        // shorthand IPv4 literal (2130706433, 0x7f000001, 127.1, 0177.0.0.1,
+        // 0). inet_aton on the nodes resolves these to loopback or 0.0.0.0,
+        // so they would slip past the reserved-range check above.
+        $labels = explode('.', rtrim($host, '.'));
+        if (preg_match('/\A(?:0x[0-9a-f]*|[0-9]+)\z/iD', (string) end($labels)) === 1) {
+            self::invalid(['target.host' => 'invalid']);
         }
 
         $label = '[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?';
@@ -250,7 +275,151 @@ final class ForwardLineApiContract
             self::invalid(['target.host' => 'invalid']);
         }
 
+        // Defense-in-depth against the obvious loopback hostnames, including
+        // the Debian /etc/hosts aliases for ::1.
+        $lower = strtolower(rtrim($host, '.'));
+        if ($lower === 'localhost' || str_ends_with($lower, '.localhost')
+            || $lower === 'ip6-localhost' || $lower === 'ip6-loopback'
+            || str_ends_with($lower, '.internal') || str_ends_with($lower, '.local')) {
+            self::invalid(['target.host' => 'reserved_range']);
+        }
+        // A single-label name resolves through the node's search domains and
+        // /etc/hosts, never to a tenant's public backend.
+        if (!str_contains($lower, '.')) {
+            self::invalid(['target.host' => 'invalid']);
+        }
+
         return $host;
+    }
+
+    /**
+     * Ranges FILTER_FLAG_NO_RES_RANGE lets through that a node must never dial
+     * for a tenant: multicast, 100.64.0.0/10 (shared address space, which holds
+     * Alibaba Cloud's 100.100.100.200 metadata service and Tailscale),
+     * 198.18.0.0/15, and the NAT64 / 6to4 prefixes that embed an arbitrary
+     * IPv4 address such as 127.0.0.1.
+     */
+    private static function isNonRoutableTarget(string $ip): bool
+    {
+        $packed = inet_pton($ip);
+        if ($packed === false) {
+            return true;
+        }
+        $b = array_values(unpack('C*', $packed));
+        if (count($b) === 4) {
+            return ($b[0] & 0xf0) === 0xe0
+                || ($b[0] === 100 && ($b[1] & 0xc0) === 64)
+                || ($b[0] === 198 && ($b[1] & 0xfe) === 18);
+        }
+        return $b[0] === 0xff
+            || ($b[0] === 0x20 && $b[1] === 0x02)
+            || substr($packed, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00";
+    }
+
+    /**
+     * Whether a RESOLVED address of a hostname target is one our relays must
+     * never dial for a tenant: loopback, private (RFC 1918, fc00::/7),
+     * link-local (169.254.0.0/16 incl. the 169.254.169.254 metadata service,
+     * fe80::/10), unspecified, multicast, 0.0.0.0/8, 100.64.0.0/10 (CGNAT),
+     * 192.0.0.0/24, 198.18.0.0/15, 240.0.0.0/4 incl. broadcast, and the
+     * IPv4-mapped, IPv4-compatible, NAT64 (64:ff9b::/96) and 6to4 (2002::/16)
+     * forms of those. The external UoT sidecar applies the same list when it
+     * dials a hostname target (tools/uot-sidecar/target_guard.go).
+     *
+     * IP-literal targets are NOT judged by this: they keep the checks in
+     * validateTargetHost() and ProvisioningService::assertTenantTargetIsPublic.
+     */
+    public static function isNonGlobalAddress(string $ip): bool
+    {
+        $packed = @inet_pton($ip);
+        if ($packed === false) {
+            return true;
+        }
+        if (strlen($packed) === 16) {
+            $prefix = substr($packed, 0, 12);
+            if ($prefix === "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff") {
+                $packed = substr($packed, 12);
+            } elseif ($prefix === str_repeat("\x00", 12)) {
+                // ::/96: ::, ::1 and the deprecated IPv4-compatible form.
+                return true;
+            }
+        }
+        $b = array_values(unpack('C*', $packed));
+        if (count($b) === 4) {
+            return self::isNonGlobalIpv4Bytes($b);
+        }
+        if ($b[0] === 0xff                                   // ff00::/8 multicast
+            || ($b[0] & 0xfe) === 0xfc                       // fc00::/7 unique local
+            || ($b[0] === 0xfe && ($b[1] & 0x80) === 0x80)) { // fe80::/10 link-local, fec0::/10 site-local
+            return true;
+        }
+        if (substr($packed, 0, 12) === "\x00\x64\xff\x9b\x00\x00\x00\x00\x00\x00\x00\x00") {
+            return self::isNonGlobalIpv4Bytes(array_slice($b, 12, 4));
+        }
+        if ($b[0] === 0x20 && $b[1] === 0x02) {
+            return self::isNonGlobalIpv4Bytes(array_slice($b, 2, 4));
+        }
+        return false;
+    }
+
+    /** @param array<int, int> $b four IPv4 octets */
+    private static function isNonGlobalIpv4Bytes(array $b): bool
+    {
+        return $b[0] === 0
+            || $b[0] === 10
+            || $b[0] === 127
+            || ($b[0] === 100 && ($b[1] & 0xc0) === 64)
+            || ($b[0] === 169 && $b[1] === 254)
+            || ($b[0] === 172 && ($b[1] & 0xf0) === 16)
+            || ($b[0] === 192 && $b[1] === 0 && $b[2] === 0)
+            || ($b[0] === 192 && $b[1] === 168)
+            || ($b[0] === 198 && ($b[1] & 0xfe) === 18)
+            || $b[0] >= 224;
+    }
+
+    /**
+     * Resolve a hostname target's A and AAAA records the way a node would,
+     * for the panel-side SSRF check. Best effort: RES_OPTIONS keeps a dead
+     * resolver from stalling the request (glibc re-reads it per lookup), and
+     * any failure yields [] so an unresolvable name is accepted as before.
+     * The data plane re-checks at dial time; this only refuses the obvious.
+     *
+     * @return list<string>
+     */
+    public static function resolveTargetHostAddresses(string $host): array
+    {
+        $addresses = [];
+        $previous = getenv('RES_OPTIONS');
+        putenv('RES_OPTIONS=timeout:2 attempts:1');
+        try {
+            if (function_exists('dns_get_record')) {
+                $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+                if (is_array($records)) {
+                    foreach ($records as $record) {
+                        $ip = $record['ip'] ?? $record['ipv6'] ?? null;
+                        if (is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+                            $addresses[] = $ip;
+                        }
+                    }
+                }
+            }
+            if ($addresses === [] && function_exists('gethostbynamel')) {
+                // Falls back to the system resolver, which also reads /etc/hosts.
+                $ipv4 = @gethostbynamel($host);
+                if (is_array($ipv4)) {
+                    foreach ($ipv4 as $ip) {
+                        if (is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+                            $addresses[] = $ip;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            return [];
+        } finally {
+            putenv($previous === false ? 'RES_OPTIONS' : 'RES_OPTIONS=' . $previous);
+        }
+        return array_values(array_unique($addresses));
     }
 
     /** @param array<string, mixed> $normalized */
@@ -263,6 +432,25 @@ final class ForwardLineApiContract
         }
     }
 
+    /**
+     * Field reasons for validation errors raised by the provisioning layer,
+     * which predates the `fields` contract. Without these, those errors
+     * reached tenants as a bare validation_failed with no hint of the cause.
+     *
+     * @return array<string, string>|null
+     */
+    public static function fieldsForInternalCode(string $internalCode): ?array
+    {
+        return match ($internalCode) {
+            'invalid_forward_target_source' => ['target.source' => 'invalid'],
+            'target_service_not_found' => ['target.service_id' => 'not_found'],
+            'target_service_not_allowed' => ['target.service_id' => 'not_allowed'],
+            'target_service_ip_missing' => ['target.service_id' => 'no_public_ip'],
+            'invalid_forward_payload' => ['forward' => 'invalid'],
+            default => null,
+        };
+    }
+
     /** @param array<string, mixed> $forward */
     public static function etag(array $forward): string
     {
@@ -272,7 +460,17 @@ final class ForwardLineApiContract
     /** @param array<string, mixed> $forward */
     public static function matchesEtag(?string $ifMatch, array $forward): bool
     {
-        return is_string($ifMatch) && hash_equals(self::etag($forward), $ifMatch);
+        if (!is_string($ifMatch)) {
+            return false;
+        }
+        // Cloudflare weakens the ETag when it compresses the response, so the
+        // only value a client ever receives is W/"forward-{id}-r{rev}". The
+        // revision is exact either way, so the weak form names the same version.
+        $candidate = trim($ifMatch);
+        if (str_starts_with($candidate, 'W/')) {
+            $candidate = substr($candidate, 2);
+        }
+        return hash_equals(self::etag($forward), $candidate);
     }
 
     /** @param array<string, mixed> $forward */
@@ -288,6 +486,10 @@ final class ForwardLineApiContract
             $transport = 'tcp';
         }
 
+        // ingress is a reserved field and the published contract fixes both
+        // members to null. forwards.public_port is the internal ingress port
+        // (443 for every CDN forward), so reporting it leaked topology and
+        // contradicted the docs; cdn_host was dropped for the same reason.
         return [
             'id' => (int) ($forward['id'] ?? 0),
             'service_id' => (int) ($forward['service_id'] ?? 0),
@@ -308,8 +510,8 @@ final class ForwardLineApiContract
                 'service_id' => isset($forward['target_service_id']) ? (int) $forward['target_service_id'] : null,
             ],
             'ingress' => [
-                'host' => (string) ($forward['ingress_host'] ?? $forward['public_host'] ?? $forward['cdn_host'] ?? ''),
-                'port' => (int) ($forward['ingress_port'] ?? $forward['public_port'] ?? 0),
+                'host' => null,
+                'port' => null,
             ],
             'state' => !empty($forward['enabled']) ? 'active' : 'deleted',
             'endpoint_count' => $endpointCount,

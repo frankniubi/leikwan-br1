@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"runtime"
 	"strings"
@@ -39,6 +38,7 @@ type PanelClient struct {
 	deviceNme string
 	clientID  int
 	http      *http.Client
+	egress    *panelEgress
 	backoff   time.Duration
 	lastErr   error
 
@@ -47,6 +47,10 @@ type PanelClient struct {
 	// to "linux" once, which the deployed access-policy allow-list accepts.
 	platformTag     string
 	platformRetried bool
+
+	// leaseKeys supplies the device key for sealed leases. It is attached by
+	// the agent; a bare client (tests, one-shot probes) sends no lease key.
+	leaseKeys *leaseKeyStore
 }
 
 func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string) *PanelClient {
@@ -67,7 +71,19 @@ func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string
 			pool = append(pool, candidate)
 		}
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	egress := newPanelEgress(cfg.PanelEgressInterface)
+	transport := &http.Transport{
+		// The Panel is always reached directly. A router's environment may
+		// carry HTTP(S)_PROXY for other tools; the control plane must not
+		// depend on that proxy being up, so the environment is ignored.
+		Proxy:                 nil,
+		DialContext:           egress.DialContext,
+		MaxIdleConns:          8,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 40 * time.Second,
+	}
+	egress.onChange = transport.CloseIdleConnections
 	return &PanelClient{
 		endpoints:   pool,
 		token:       secrets.AgentToken,
@@ -75,17 +91,18 @@ func newPanelClient(cfg Config, secrets SecretState, deviceID, deviceName string
 		deviceNme:   deviceName,
 		clientID:    secrets.ClientID,
 		platformTag: platformName,
+		egress:      egress,
 		http: &http.Client{
-			Timeout: 45 * time.Second,
-			Transport: &http.Transport{
-				DialContext:           dialer.DialContext,
-				MaxIdleConns:          8,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 40 * time.Second,
-			},
+			Timeout:   45 * time.Second,
+			Transport: transport,
 		},
 	}
+}
+
+// egressView reports which device Panel traffic is pinned to, and why.
+func (c *PanelClient) egressView() (device, reason, override, bindErr string) {
+	device, reason, bindErr = c.egress.view()
+	return device, reason, c.egress.overrideValue(), bindErr
 }
 
 func (c *PanelClient) setToken(token string, clientID int) {
@@ -175,6 +192,10 @@ func (c *PanelClient) headers(req *http.Request) {
 	// Form factor is additive and ignored by Panels that do not know it yet.
 	req.Header.Set("X-Device-Form-Factor", "router")
 	req.Header.Set("X-Device-Architecture", runtime.GOARCH)
+	// Package-manager flavour is additive and ignored by Panels that do not
+	// know it yet: OpenWrt 25.12+ boxes have apk and need .apk updates, older
+	// ones have opkg and need .ipk. Probed once per process, not per request.
+	req.Header.Set("X-Device-Package-Manager", packageManagerFlavour())
 	req.Header.Set("X-Device-Id", c.deviceID)
 	req.Header.Set("X-Device-UUID", c.deviceID)
 	if c.deviceNme != "" {
@@ -192,6 +213,11 @@ func (c *PanelClient) headers(req *http.Request) {
 // do performs a request against the active endpoint and transparently retries
 // the next endpoint on transport failure.
 func (c *PanelClient) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWithHeaders(ctx, method, path, body, out, nil)
+}
+
+// doWithHeaders is do with additional request headers for this call only.
+func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extra map[string]string) error {
 	if c.baseURL() == "" {
 		return errNoEndpoint
 	}
@@ -215,6 +241,9 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 			return err
 		}
 		c.headers(req)
+		for name, value := range extra {
+			req.Header.Set(name, value)
+		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
@@ -253,7 +282,10 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 			// An older Panel validates the platform against a fixed allow-list
 			// and rejects "openwrt". Degrade once to "linux" — which every
 			// deployed Panel accepts — and replay the request unchanged.
-			if pe, ok := businessErr.(*panelError); ok && pe.Code == "location_platform_invalid" && c.degradePlatform() {
+			if pe, ok := businessErr.(*panelError); ok && platformRejected(pe) && c.degradePlatform() {
+				// The replay targets the same endpoint, so it does not use up
+				// a failover attempt (degradePlatform succeeds only once).
+				attempt--
 				continue
 			}
 			// Business error: do not rotate the endpoint, but surface the
@@ -275,12 +307,28 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 	return lastErr
 }
 
+// codeClientOnlineLimit is the Panel's refusal for a device that is not
+// already online while the client's online device limit is full. Devices that
+// are already online are never kicked; a slot frees when another device has
+// been silent for 180s, the tenant kicks one, or the limit is raised.
+const codeClientOnlineLimit = "client_online_limit_reached"
+
+// onlineLimitRetryInterval is the steady retry cadence while the device limit
+// is full. A slot cannot free faster than the Panel's 180s silence window, so
+// retrying every few seconds would only add load and log noise.
+const onlineLimitRetryInterval = 60 * time.Second
+
 // panelError carries the Panel's structured error envelope. It is deliberately
 // not retried: the code tells the operator exactly what to fix.
 type panelError struct {
 	Status int
 	Code   string
 	Msg    string
+
+	// OnlineDeviceLimit and ActiveOnlineDevices are filled for
+	// client_online_limit_reached; zero means the Panel did not send them.
+	OnlineDeviceLimit   int
+	ActiveOnlineDevices int
 }
 
 func (e *panelError) Error() string {
@@ -290,26 +338,114 @@ func (e *panelError) Error() string {
 	return fmt.Sprintf("panel error %d", e.Status)
 }
 
+// onlineLimitReached reports whether the Panel refused this device because the
+// client's online device limit is full.
+func (e *panelError) onlineLimitReached() bool {
+	return e != nil && e.Code == codeClientOnlineLimit
+}
+
+// platformRejected reports a Panel refusal of the "openwrt" platform tag. A
+// Panel whose exception handler does not know location_platform_invalid masks
+// it as a generic 422 validation_failed, so that shape counts too; the degrade
+// it triggers happens at most once and only while the tag is still "openwrt".
+func platformRejected(e *panelError) bool {
+	if e == nil {
+		return false
+	}
+	return e.Code == "location_platform_invalid" ||
+		(e.Status == http.StatusUnprocessableEntity && e.Code == "validation_failed")
+}
+
 func decodePanelError(status int, payload []byte) error {
 	out := &panelError{Status: status, Code: "http_" + itoa(status)}
 	var envelope struct {
-		OK     bool   `json:"ok"`
-		Error  string `json:"error"`
+		OK      bool            `json:"ok"`
+		Error   json.RawMessage `json:"error"`
+		Limit   *int            `json:"online_device_limit"`
+		Active  *int            `json:"active_online_devices"`
+		Details struct {
+			Limit  *int `json:"online_device_limit"`
+			Active *int `json:"active_online_devices"`
+		} `json:"details"`
 		Detail struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error_detail"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err == nil {
-		if envelope.Error != "" {
-			out.Code = envelope.Error
+		// "error" is a bare code on the agent endpoints, but the Panel's
+		// generic exception handler answers {"code","message","reference_id"}.
+		var code string
+		var object struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(envelope.Error, &code) == nil && code != "" {
+			out.Code = code
+		} else if json.Unmarshal(envelope.Error, &object) == nil && object.Code != "" {
+			out.Code = object.Code
+			out.Msg = object.Message
 		}
 		if envelope.Detail.Code != "" {
 			out.Code = envelope.Detail.Code
 		}
-		out.Msg = envelope.Detail.Message
+		if envelope.Detail.Message != "" {
+			out.Msg = envelope.Detail.Message
+		}
+		if out.onlineLimitReached() {
+			// The flat fields are canonical; details mirrors them for clients
+			// that only read the nested object.
+			out.OnlineDeviceLimit = firstCount(envelope.Limit, envelope.Details.Limit)
+			out.ActiveOnlineDevices = firstCount(envelope.Active, envelope.Details.Active)
+		}
 	}
 	return out
+}
+
+func firstCount(values ...*int) int {
+	for _, value := range values {
+		if value != nil && *value >= 0 {
+			return *value
+		}
+	}
+	return 0
+}
+
+// asOnlineLimitError extracts a client_online_limit_reached refusal from err.
+func asOnlineLimitError(err error) (*panelError, bool) {
+	var pe *panelError
+	if errors.As(err, &pe) && pe.onlineLimitReached() {
+		return pe, true
+	}
+	return nil, false
+}
+
+// onlineLimitMessage is the operator-facing explanation shown in LuCI, in
+// "leikwand ctl status" and in the log. Without it a refused router looks
+// like a bug rather than a full device quota.
+func onlineLimitMessage(pe *panelError) string {
+	counts := ""
+	if pe != nil && pe.OnlineDeviceLimit > 0 {
+		counts = fmt.Sprintf(" (%d of %d devices online)", pe.ActiveOnlineDevices, pe.OnlineDeviceLimit)
+	}
+	return "Device limit reached" + counts + ". Disconnect another device or ask your provider to raise the device limit. " +
+		"This router reconnects automatically about 3 minutes after another device disconnects."
+}
+
+// describePanelFailure turns a Panel call failure into the text an operator
+// reads plus a stable machine-readable code ("" for transport failures).
+func describePanelFailure(err error) (message, code string) {
+	if err == nil {
+		return "", ""
+	}
+	if pe, ok := asOnlineLimitError(err); ok {
+		return onlineLimitMessage(pe), pe.Code
+	}
+	var pe *panelError
+	if errors.As(err, &pe) {
+		return redactSecrets(err.Error()), pe.Code
+	}
+	return redactSecrets(err.Error()), ""
 }
 
 // Pull performs one long-poll cycle. A 304 is reported as errNotModified so
@@ -333,12 +469,27 @@ func (c *PanelClient) Pull(ctx context.Context, sinceRevision string, waitSecond
 	return &out, nil
 }
 
+// Lease requests a candidate batch. When the agent has a device lease key the
+// request carries its public half and sealed leases in the reply are opened
+// with it (docs/specs/2026-10-02-ultra-sealed-lease-v1.md). Leases that fail
+// to open are dropped and listed in UnsealFailures.
 func (c *PanelClient) Lease(ctx context.Context, request LeaseRequest) (*LeaseResponse, error) {
-	var out LeaseResponse
-	if err := c.do(ctx, http.MethodPost, "/api/client/ultra/lease", request, &out); err != nil {
+	const path = "/api/client/ultra/lease"
+	key := c.leaseKeys.get()
+	var extra map[string]string
+	if key != nil {
+		extra = map[string]string{leaseKeyHeader: leaseKeyHeaderValue(key.PublicKey())}
+	}
+	var raw json.RawMessage
+	if err := c.doWithHeaders(ctx, http.MethodPost, path, request, &raw, extra); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	out, failures, err := decodeLeaseResponse(raw, key)
+	if err != nil {
+		return nil, fmt.Errorf("panel %s: %w", path, err)
+	}
+	out.UnsealFailures = failures
+	return out, nil
 }
 
 func (c *PanelClient) Heartbeat(ctx context.Context, payload HeartbeatPayload) (*HeartbeatResponse, error) {
@@ -353,51 +504,6 @@ func (c *PanelClient) DiagnosticsResult(ctx context.Context, payload any) error 
 	return c.do(ctx, http.MethodPost, "/api/client/diagnostics/result", payload, nil)
 }
 
-// Login exchanges operator credentials for a client list, then selects the
-// target client and returns its agent token. This is the same two-step flow
-// the desktop app uses, so no Panel change is required for basic onboarding.
-func (c *PanelClient) Login(ctx context.Context, email, password string) (*loginResponse, error) {
-	var out loginResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/login", map[string]string{
-		"email":    email,
-		"password": password,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *PanelClient) SelectClient(ctx context.Context, sessionToken string, clientID int) (*selectResponse, error) {
-	var out selectResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/select", map[string]any{
-		"session_token": sessionToken,
-		"client_id":     clientID,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// PairWithCode redeems a router pairing code. The Panel endpoint is additive:
-// when it is absent (older Panel) the error is surfaced verbatim so LuCI can
-// fall back to the account flow.
-func (c *PanelClient) PairWithCode(ctx context.Context, code, deviceID, deviceName string) (*pairResponse, error) {
-	var out pairResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/devices/openwrt/pair", map[string]string{
-		"pairing_code": code,
-		"device_id":    deviceID,
-		"device_name":  deviceName,
-		"platform":     platformName,
-		"architecture": runtime.GOARCH,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // Probe performs an authenticated pull with no wait. It is the "Test
 // connection" action in LuCI and intentionally costs one round trip only.
 func (c *PanelClient) Probe(ctx context.Context) error {
@@ -407,30 +513,47 @@ func (c *PanelClient) Probe(ctx context.Context) error {
 	return err
 }
 
-type loginResponse struct {
-	OK           bool   `json:"ok"`
-	SessionToken string `json:"session_token"`
-	UserID       int    `json:"user_id"`
-	Username     string `json:"username"`
-	Email        string `json:"email"`
-	Clients      []struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"clients"`
-}
+// downloadTimeout bounds one artifact download. The control-plane client's
+// 45s budget is sized for JSON, not a multi-megabyte ipk over a slow uplink.
+const downloadTimeout = 5 * time.Minute
 
-type selectResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
-}
-
-type pairResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
+// Download fetches a Panel-relative artifact path (for example
+// "/artifacts/files/openwrt/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk")
+// into w, reading at most limit bytes. Only paths on the Panel itself are
+// accepted: the caller verifies the sha256 the same Panel published, so
+// letting the pull name an arbitrary host would add nothing but exposure.
+func (c *PanelClient) Download(ctx context.Context, path string, limit int64, w io.Writer) (int64, error) {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return 0, fmt.Errorf("artifact path %q is not panel-relative", path)
+	}
+	base := c.baseURL()
+	if base == "" {
+		return 0, errNoEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.headers(req)
+	req.Header.Set("Accept", "*/*")
+	client := &http.Client{Timeout: downloadTimeout, Transport: c.http.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.noteError(err)
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("artifact %s returned %d", path, resp.StatusCode)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("artifact %s exceeds %d bytes", path, limit)
+	}
+	return n, nil
 }
 
 // urlEncode escapes the small set of characters that appear in revisions.

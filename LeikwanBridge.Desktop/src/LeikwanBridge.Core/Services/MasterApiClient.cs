@@ -7,7 +7,7 @@ using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
-public sealed class MasterApiClient : IDisposable
+public sealed partial class MasterApiClient : IDisposable
 {
     public const string AgentVersion = "2026.04.09.1";
     public const string NativeOutboundLeaseProtocol = "leikwan-ultra-native-socks5-v1";
@@ -19,8 +19,14 @@ public sealed class MasterApiClient : IDisposable
     private readonly bool _ownsHttpClient;
     private readonly Action<HttpRequestMessage>? _onRequestForTest;
     private readonly ControlPlaneEndpointSupervisor _endpointSupervisor;
+    private readonly ExternalUotPolicyGrantCache _externalUotPolicyGrants = new();
+    private UltraLeaseKeyStore? _leaseKeyStore;
 
     public string LastErrorMessage { get; private set; } = "";
+
+    /// <summary>Set when the last TestConnectionAsync was refused by the online device limit.</summary>
+    public DeviceLimitReachedException? LastDeviceLimit { get; private set; }
+
     public Uri CurrentControlPlaneEndpoint => _endpointSupervisor.CurrentEndpoint;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -39,8 +45,12 @@ public sealed class MasterApiClient : IDisposable
         bool ownsHttpClient = true,
         Action<HttpRequestMessage>? onRequestForTest = null,
         ClientPlatformIdentity? platformIdentity = null,
-        IReadOnlyList<string>? fallbackEndpoints = null)
+        IReadOnlyList<string>? fallbackEndpoints = null,
+        UltraLeaseKeyStore? leaseKeyStore = null)
     {
+        // The store (and the key) is resolved on the first lease request, so
+        // clients that only sign in or pull never touch the key file.
+        _leaseKeyStore = leaseKeyStore;
         if (platformIdentity is not null)
         {
             deviceId = platformIdentity.DeviceId;
@@ -95,6 +105,21 @@ public sealed class MasterApiClient : IDisposable
                ?? throw new InvalidOperationException("null client selection response");
     }
 
+    /// <summary>
+    /// Reads the account's access policy (home province for the login-region rule).
+    /// The request carries the same bearer token and device headers as the pull.
+    /// </summary>
+    public async Task<AccessPolicyStatus> GetAccessPolicyAsync(CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/access/policy";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var response = await SendAsync(request, ct);
+        await EnsureSuccessOrThrowAsync(response, ct);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<AccessPolicyStatus>(json, JsonOptions)
+            ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+    }
+
     public async Task<PullResponse> PullConfigsAsync(string? sinceRevision = null, int waitSeconds = 0, CancellationToken ct = default)
     {
         var query = new List<string>();
@@ -109,6 +134,7 @@ public sealed class MasterApiClient : IDisposable
 
         Log.Debug("pulling configs from {Url}", url);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        AddOfflineValidityHeader(request);
         var response = await SendAsync(request, ct);
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotModified)
@@ -118,8 +144,14 @@ public sealed class MasterApiClient : IDisposable
         var json = await response.Content.ReadAsStringAsync(ct);
         try
         {
-            return JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
-                   ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+            var result = JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
+                ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+            if (result.Ok && !result.NotModified)
+            {
+                using var document = JsonDocument.Parse(json);
+                _externalUotPolicyGrants.Replace(result, document.RootElement);
+            }
+            return result;
         }
         catch (JsonException ex)
         {
@@ -301,8 +333,9 @@ public sealed class MasterApiClient : IDisposable
             {
                 Content = content,
             };
+            var leaseKey = AddLeaseKeyHeader(request);
             var response = await SendAsync(request, ct);
-            await EnsureSuccessOrThrowAsync(response, ct);
+            await EnsureLeaseSuccessOrThrowAsync(response, forward.ForwardId, ct);
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
             try
             {
@@ -311,10 +344,11 @@ public sealed class MasterApiClient : IDisposable
                     || leases.ValueKind != JsonValueKind.Array
                     || leases.GetArrayLength() is < 1 or > 4)
                     return [];
+                using var opened = OpenLeaseBatch(leases, autoSelect ? 4 : 1, leaseKey, forward.ForwardId, response);
                 var parsed = new List<NativeOutboundLease>(Math.Min(leases.GetArrayLength(), autoSelect ? 4 : 1));
                 try
                 {
-                    foreach (var item in leases.EnumerateArray().Take(autoSelect ? 4 : 1))
+                    foreach (var item in opened.Items)
                     {
                         var parsedLease = ParseNativeOutboundLease(
                             item,
@@ -438,8 +472,10 @@ public sealed class MasterApiClient : IDisposable
             using var content = new ByteArrayContent(requestBytes);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_masterUrl}/api/client/ultra/lease") { Content = content };
+            AddOfflineValidityHeader(request);
+            var leaseKey = AddLeaseKeyHeader(request);
             var response = await SendAsync(request, ct);
-            await EnsureSuccessOrThrowAsync(response, ct);
+            await EnsureLeaseSuccessOrThrowAsync(response, forward.ForwardId, ct);
             var responseBytes = await response.Content.ReadAsByteArrayAsync(ct);
             try
             {
@@ -450,14 +486,19 @@ public sealed class MasterApiClient : IDisposable
                     || leases.GetArrayLength() is < 1
                     || leases.GetArrayLength() > 4)
                     return [];
+                // Every candidate is opened before any is parsed: an envelope
+                // that does not open fails the whole batch, and nothing parsed
+                // so far is left holding credentials.
+                using var opened = OpenLeaseBatch(leases, maxCandidates, leaseKey, forward.ForwardId, response);
                 var parsed = new List<UltraLease>(Math.Min(leases.GetArrayLength(), maxCandidates));
                 try
                 {
-                    foreach (var item in leases.EnumerateArray().Take(maxCandidates))
+                    foreach (var item in opened.Items)
                     {
                         var lease = ParseUltraLease(item, forward, policy);
-                        if (lease is null)
+                        if (lease is null || !_externalUotPolicyGrants.TryAttach(forward, lease))
                         {
+                            lease?.Dispose();
                             foreach (var parsedLease in parsed)
                                 parsedLease.Dispose();
                             return [];
@@ -539,6 +580,47 @@ public sealed class MasterApiClient : IDisposable
             && (candidateKeyHash.Length != 64
                 || candidateKeyHash.Any(character => character is < '0' or > '9' and < 'a' or > 'f')))
             return null;
+        // An enabled but unusable sidecar grant invalidates the lease. Dropping
+        // it would silently select native UDP instead of the required UoT route.
+        ExternalUotGrant? externalUot = null;
+        if (item.TryGetProperty("external_uot", out var externalUotElement))
+        {
+            externalUot = ExternalUotGrant.TryParse(externalUotElement, out var externalUotFailure);
+            if (externalUot is null && externalUotFailure.Length != 0)
+            {
+                Log.Warning(
+                    "Ultra lease for forward {ForwardId} rejected an unusable external_uot grant ({Reason})",
+                    forward.ForwardId,
+                    externalUotFailure);
+                return null;
+            }
+        }
+        var policyExpiresAt = item.TryGetProperty("policy_expires_at", out var policyExpiresAtElement)
+            ? policyExpiresAtElement.GetDateTimeOffset()
+            : default;
+        var policyRenewAfter = item.TryGetProperty("policy_renew_after", out var policyRenewAfterElement)
+            ? policyRenewAfterElement.GetDateTimeOffset()
+            : default;
+        if (policyExpiresAt > policy.ExpiresAt
+            && UltraGrantValidity.IsWithinAcceptedWindow(policyExpiresAt, DateTimeOffset.UtcNow)
+            && (policyRenewAfter == default || policyRenewAfter < policyExpiresAt))
+        {
+            forward.UltraAccess = new UltraPolicy
+            {
+                ProtocolValue = policy.ProtocolValue,
+                ForwardId = policy.ForwardId,
+                PolicyGeneration = policy.PolicyGeneration,
+                SessionTicket = policy.SessionTicket,
+                IssuedAt = policy.IssuedAt,
+                RenewAfter = policyRenewAfter == default ? policy.RenewAfter : policyRenewAfter,
+                ExpiresAt = policyExpiresAt,
+                ServiceState = policy.ServiceState,
+                Transport = policy.Transport,
+                RateLimitMbps = policy.RateLimitMbps,
+                QuotaRemainingBytes = policy.QuotaRemainingBytes,
+                TargetDigest = policy.TargetDigest,
+            };
+        }
         return new UltraLease
         {
             Protocol = protocol,
@@ -559,6 +641,9 @@ public sealed class MasterApiClient : IDisposable
             ProviderPort = endpoint.GetProperty("port").GetInt32(),
             User = Encoding.UTF8.GetBytes(credential.GetProperty("user").GetString() ?? ""),
             Password = Encoding.UTF8.GetBytes(credential.GetProperty("password").GetString() ?? ""),
+            ExternalUot = externalUot,
+            PolicyExpiresAt = policyExpiresAt,
+            PolicyRenewAfter = policyRenewAfter,
         };
     }
 
@@ -596,7 +681,7 @@ public sealed class MasterApiClient : IDisposable
         var expiresAt = item.GetProperty("expires_at").GetDateTimeOffset();
         var now = DateTimeOffset.UtcNow;
         if (expiresAt <= now || expiresAt > policy.ExpiresAt.AddSeconds(1)
-            || expiresAt > now.AddMinutes(5).AddSeconds(30))
+            || !UltraGrantValidity.IsWithinAcceptedWindow(expiresAt, now))
             return null;
 
         var endpoint = item.GetProperty("endpoint");
@@ -668,6 +753,7 @@ public sealed class MasterApiClient : IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         Log.Debug("sending heartbeat to {Url}", url);
         var response = await SendAsync(request, ct);
+        await ThrowIfDeviceLimitReachedAsync(response, ct);
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadAsStringAsync(ct);
         if (string.IsNullOrWhiteSpace(body))
@@ -685,6 +771,7 @@ public sealed class MasterApiClient : IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         Log.Debug("submitting diagnostics to {Url}", url);
         var response = await SendAsync(request, ct);
+        await ThrowIfDeviceLimitReachedAsync(response, ct);
         response.EnsureSuccessStatusCode();
     }
 
@@ -718,8 +805,18 @@ public sealed class MasterApiClient : IDisposable
         try
         {
             LastErrorMessage = "";
+            LastDeviceLimit = null;
             var result = await PullConfigsAsync(ct: ct);
             return result.Ok;
+        }
+        catch (DeviceLimitReachedException ex)
+        {
+            // The token was accepted; only the online device limit is full.
+            LastErrorMessage = ex.Message;
+            LastDeviceLimit = ex;
+            Log.Warning("master API test connection refused: online device limit reached ({Active}/{Limit})",
+                ex.ActiveOnlineDevices, ex.OnlineDeviceLimit);
+            return false;
         }
         catch (MasterApiException ex)
         {
@@ -743,6 +840,125 @@ public sealed class MasterApiClient : IDisposable
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"windows|{clientId}|{normalizedMachine}")))
             .ToLowerInvariant()[..16];
         return $"windows-client-{clientId}-{hash}";
+    }
+
+    /// <summary>
+    /// Asks the panel for a grant that outlives a short control-plane outage
+    /// (W1). Only the ordinary Ultra config pull and lease resolve/renew carry
+    /// it: the native-outbound lease keeps today's short grant, and a panel
+    /// that does not know the header answers exactly as before. The header is
+    /// set on the request, so <see cref="SendAsync"/> copies it to every mirror
+    /// attempt.
+    /// </summary>
+    internal static void AddOfflineValidityHeader(HttpRequestMessage request)
+    {
+        request.Headers.Remove(UltraGrantValidity.OfflineValidityHeader);
+        request.Headers.TryAddWithoutValidation(
+            UltraGrantValidity.OfflineValidityHeader,
+            UltraGrantValidity.RequestedOfflineValidityHeaderValue);
+    }
+
+    /// <summary>
+    /// Presents this device's lease public key on a lease request so the panel
+    /// can seal the relay material to it (ultra sealed lease v1). Like the
+    /// offline-validity header it is copied to every mirror attempt.
+    /// </summary>
+    private UltraLeaseDeviceKey AddLeaseKeyHeader(HttpRequestMessage request)
+    {
+        _leaseKeyStore ??= UltraLeaseKeyStore.Default;
+        var key = _leaseKeyStore.GetOrCreate();
+        request.Headers.Remove(UltraLeaseDeviceKey.HeaderName);
+        request.Headers.TryAddWithoutValidation(UltraLeaseDeviceKey.HeaderName, key.HeaderValue);
+        return key;
+    }
+
+    /// <summary>
+    /// Lease refusals that concern the lease key surface like every other lease
+    /// error (a MasterApiException carrying the panel code). A key conflict is
+    /// deliberately not answered with a new key: that would fight the device
+    /// that legitimately holds the pin. The normal lease cadence retries.
+    /// </summary>
+    private static async Task EnsureLeaseSuccessOrThrowAsync(HttpResponseMessage response, int forwardId, CancellationToken ct)
+    {
+        try
+        {
+            await EnsureSuccessOrThrowAsync(response, ct);
+        }
+        catch (MasterApiException ex) when (UltraLeaseSeal.IsKeyRefusal(ex.ErrorCode))
+        {
+            Log.Warning(
+                "Ultra lease for forward {ForwardId} refused by the panel ({ErrorCode}, status={StatusCode}); keeping the current device lease key",
+                forwardId,
+                ex.ErrorCode,
+                ex.StatusCode);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Opens the sealed envelope of every candidate that will be parsed. A
+    /// lease without "sealed" is used as-is; one that does not open fails the
+    /// request with lease_unseal_failed and never falls back to anything else.
+    /// </summary>
+    private static OpenedLeaseBatch OpenLeaseBatch(
+        JsonElement leases,
+        int maxCandidates,
+        UltraLeaseDeviceKey leaseKey,
+        int forwardId,
+        HttpResponseMessage response)
+    {
+        var batch = new OpenedLeaseBatch();
+        try
+        {
+            foreach (var item in leases.EnumerateArray().Take(maxCandidates))
+            {
+                if (!UltraLeaseSeal.TryOpenLease(item, leaseKey, out var opened, out var failure))
+                {
+                    Log.Warning(
+                        "Ultra lease for forward {ForwardId} could not be unsealed ({Reason})",
+                        forwardId,
+                        failure);
+                    throw new MasterApiException(
+                        (int) response.StatusCode,
+                        UltraLeaseSeal.UnsealFailedCode,
+                        errorCode: UltraLeaseSeal.UnsealFailedCode);
+                }
+                batch.Add(item, opened);
+            }
+            return batch;
+        }
+        catch
+        {
+            batch.Dispose();
+            throw;
+        }
+    }
+
+    private sealed class OpenedLeaseBatch : IDisposable
+    {
+        private readonly List<JsonElement> _items = [];
+        private readonly List<UltraOpenedLease> _opened = [];
+
+        public IReadOnlyList<JsonElement> Items => _items;
+
+        public void Add(JsonElement original, UltraOpenedLease? opened)
+        {
+            if (opened is null)
+            {
+                _items.Add(original);
+                return;
+            }
+            _opened.Add(opened);
+            _items.Add(opened.Element);
+        }
+
+        public void Dispose()
+        {
+            foreach (var opened in _opened)
+                opened.Dispose();
+            _opened.Clear();
+            _items.Clear();
+        }
     }
 
     private void AddOptionalHeader(string name, string value)
@@ -805,61 +1021,171 @@ public sealed class MasterApiClient : IDisposable
             return;
 
         var body = await response.Content.ReadAsStringAsync(ct);
-        var message = BuildApiErrorMessage(response, body);
-        throw new MasterApiException((int) response.StatusCode, message);
+        throw BuildApiException(response, body);
     }
 
-    private static string BuildApiErrorMessage(HttpResponseMessage response, string body)
+    /// <summary>
+    /// Endpoints that historically used EnsureSuccessStatusCode (heartbeat,
+    /// diagnostics) keep throwing HttpRequestException for every other failure,
+    /// but a refused device must not be reported as a transport error.
+    /// </summary>
+    private static async Task ThrowIfDeviceLimitReachedAsync(HttpResponseMessage response, CancellationToken ct)
     {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (TryParseDeviceLimit((int) response.StatusCode, body) is { } limit)
+            throw limit;
+    }
+
+    private static MasterApiException BuildApiException(HttpResponseMessage response, string body)
+    {
+        var statusCode = (int) response.StatusCode;
+        if (TryParseDeviceLimit(statusCode, body) is { } limit)
+            return limit;
+
         try
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
-            var error = root.TryGetProperty("error", out var errorElement)
-                ? errorElement.GetString() ?? ""
-                : "";
-
-            if (string.Equals(error, "client_online_limit_reached", StringComparison.OrdinalIgnoreCase))
-            {
-                var limit = 0;
-                var active = 0;
-                if (root.TryGetProperty("details", out var details) && details.ValueKind == JsonValueKind.Object)
-                {
-                    if (details.TryGetProperty("online_device_limit", out var limitElement))
-                        limit = limitElement.GetInt32();
-                    if (details.TryGetProperty("active_online_devices", out var activeElement))
-                        active = activeElement.GetInt32();
-                }
-
-                var suffix = limit > 0 ? $" ({active} / {limit})" : "";
-                return $"Online device limit reached{suffix}. Close another active client for this profile or raise the client device limit in the panel.";
-            }
-
+            var error = root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("error", out var errorElement)
+                && errorElement.ValueKind == JsonValueKind.String
+                    ? errorElement.GetString() ?? ""
+                    : "";
             if (!string.IsNullOrWhiteSpace(error))
-                return error;
+                return new MasterApiException(statusCode, error, errorCode: error);
         }
         catch
         {
             // Fall through to HTTP fallback.
         }
 
-        return $"HTTP {(int) response.StatusCode} {response.ReasonPhrase}".Trim();
+        return new MasterApiException(statusCode, $"HTTP {statusCode} {response.ReasonPhrase}".Trim());
+    }
+
+    /// <summary>
+    /// Recognizes the panel's client_online_limit_reached answer. The counts
+    /// are read from the top-level fields first and from the nested details
+    /// object that older panels sent.
+    /// </summary>
+    internal static DeviceLimitReachedException? TryParseDeviceLimit(int statusCode, string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("error", out var errorElement)
+                || errorElement.ValueKind != JsonValueKind.String
+                || !string.Equals(errorElement.GetString(), DeviceLimitReachedException.Code, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var hasDetails = root.TryGetProperty("details", out var details) && details.ValueKind == JsonValueKind.Object;
+            var limit = ReadCount(root, "online_device_limit")
+                ?? (hasDetails ? ReadCount(details, "online_device_limit") : null)
+                ?? 0;
+            var active = ReadCount(root, "active_online_devices")
+                ?? (hasDetails ? ReadCount(details, "active_online_devices") : null)
+                ?? 0;
+            return new DeviceLimitReachedException(statusCode, limit, active);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static int? ReadCount(JsonElement owner, string name)
+    {
+        if (!owner.TryGetProperty(name, out var element))
+            return null;
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var number))
+            return Math.Max(0, number);
+        if (element.ValueKind == JsonValueKind.String
+            && int.TryParse(element.GetString(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        return null;
     }
 
     public void Dispose()
     {
+        _externalUotPolicyGrants.Dispose();
         if (_ownsHttpClient)
             _http.Dispose();
     }
 }
 
-public sealed class MasterApiException : Exception
+public class MasterApiException : Exception
 {
-    public MasterApiException(int statusCode, string message, Exception? innerException = null)
+    public MasterApiException(int statusCode, string message, Exception? innerException = null, string errorCode = "")
         : base(message, innerException)
     {
         StatusCode = statusCode;
+        ErrorCode = errorCode ?? string.Empty;
     }
 
     public int StatusCode { get; }
+
+    /// <summary>The panel's machine-readable error code, or empty when the body had none.</summary>
+    public string ErrorCode { get; }
+}
+
+/// <summary>
+/// The panel refused this device because the client's online device limit is
+/// full (HTTP 429 client_online_limit_reached). Devices that are already
+/// online are never refused, so this is a business answer, not an outage: the
+/// saved profile stays valid and a slot frees when another device has been
+/// silent for about three minutes, is kicked, or the limit is raised.
+/// </summary>
+public sealed class DeviceLimitReachedException : MasterApiException
+{
+    public const string Code = "client_online_limit_reached";
+
+    public DeviceLimitReachedException(int statusCode, int onlineDeviceLimit, int activeOnlineDevices)
+        : base(statusCode, FormatMessage(activeOnlineDevices, onlineDeviceLimit), errorCode: Code)
+    {
+        OnlineDeviceLimit = Math.Max(0, onlineDeviceLimit);
+        ActiveOnlineDevices = Math.Max(0, activeOnlineDevices);
+    }
+
+    /// <summary>The client's online device limit; 0 when the panel did not say.</summary>
+    public int OnlineDeviceLimit { get; }
+
+    /// <summary>Devices online for the client when this one was refused; 0 when unknown.</summary>
+    public int ActiveOnlineDevices { get; }
+
+    public bool HasCounts => OnlineDeviceLimit > 0;
+
+    /// <summary>English text; the desktop UIs substitute their localized copy.</summary>
+    public static string FormatMessage(int activeOnlineDevices, int onlineDeviceLimit)
+    {
+        var counts = onlineDeviceLimit > 0
+            ? $" ({Math.Max(0, activeOnlineDevices)} of {onlineDeviceLimit} devices online)"
+            : string.Empty;
+        return $"Device limit reached{counts}. Disconnect another device or ask your provider to raise the device limit. "
+            + "This device reconnects automatically about 3 minutes after another device disconnects.";
+    }
+
+    /// <summary>Finds a device-limit refusal in an exception or its inner exceptions.</summary>
+    public static bool TryFind(Exception? exception, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out DeviceLimitReachedException? limit)
+    {
+        for (var depth = 0; exception is not null && depth < 8; depth++)
+        {
+            if (exception is DeviceLimitReachedException found)
+            {
+                limit = found;
+                return true;
+            }
+            exception = exception is AggregateException { InnerExceptions.Count: 1 } aggregate
+                ? aggregate.InnerExceptions[0]
+                : exception.InnerException;
+        }
+        limit = null;
+        return false;
+    }
 }

@@ -36,10 +36,10 @@ cleanup() {
 	# Keep the evidence: a failing integration run is worthless without the
 	# daemon's own view of what happened.
 	mkdir -p "$ART"
-	for f in daemon.log panel.log relay.log echo.log; do
+	for f in daemon.log panel.log relay.log echo.log usage.jsonl usage_totals.json; do
 		[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$ART/$f"
 	done
-	for f in status.json status2.json forwards.json forwards2.json diag.json; do
+	for f in status.json status2.json status3.json status4.json forwards.json forwards2.json diag.json; do
 		[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$ART/$f"
 	done
 	[ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
@@ -97,13 +97,25 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1])))==0 else 1)" "$1"; }
 
 # forward_echo sends a marker through the supervised listener and returns the
 # response — the only assertion that proves the whole data path works.
+# The response must be read to completion: TCP may deliver it in any number of
+# segments, and a client that closes after a partial recv() flushes an RST at
+# the runtime (unread bytes in the receive buffer), which both kills the
+# session this step is supposed to observe and makes the failure look like a
+# data-path fault.
 forward_echo() { python3 -c "
 import socket,sys
 try:
-    s=socket.socket(); s.settimeout(4)
+    s=socket.socket(); s.settimeout(8)
     s.connect(('127.0.0.1', int(sys.argv[1])))
     s.sendall(sys.argv[2].encode())
-    print(s.recv(4096).decode(errors='replace'))
+    chunks=b''
+    while True:
+        part=s.recv(4096)
+        if not part: break
+        chunks+=part
+        if b'echo:' in chunks and len(chunks) >= 5+len(sys.argv[2]): break
+    print(chunks.decode(errors='replace'))
+    s.close()
 except Exception as e:
     print('ERR', e)" "$1" "$2"; }
 
@@ -128,7 +140,18 @@ cat > "$ROOT/leikwan.uci" <<EOF
 config leikwan 'main'
 	option enabled '1'
 	option panel_url 'http://127.0.0.1:$PANEL_PORT'
-	option mode 'forward'
+	# Never let a test reach the production fallback panel: it ships in the
+	# binary, and one transport hiccup against the mock would send it a fake
+	# token (the real panel answers 401, which reads like an auth bug). A
+	# closed port keeps the failure local and visible.
+	option fallback_panel_url 'http://127.0.0.1:1'
+	# The mock panel is on loopback. The Panel egress pin would bind panel
+	# sockets to the physical WAN, and a device-bound dial to 127.0.0.1 cannot
+	# succeed, so the daemon would fall through to its production fallback URL
+	# and see a 401. A router in service never points at loopback, so disabling
+	# the pin here tests the daemon rather than an impossible deployment.
+	option panel_egress_interface 'none'
+	# router edition: no mode option
 	option poll_interval '2'
 	option heartbeat_interval '2'
 	option health_interval '3'
@@ -187,6 +210,25 @@ done
 [ "$(jsonq "$ROOT/status2.json" "d['data']['enrolled']")" = "True" ] && ok "agent reports enrolled" || bad "agent did not pick up the token"
 [ "$(jsonq "$ROOT/status2.json" "d['data']['client_id']")" = "42" ] && ok "panel client id adopted" || bad "client id not adopted"
 
+step "the panel's register command line"
+ctl sign_out > "$ROOT/signout.json" 2>/dev/null
+SIGNED_OUT=0
+for _ in $(seq 1 20); do
+	ctl status > "$ROOT/status3.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status3.json" "d['data']['enrolled']")" = "False" ]; then SIGNED_OUT=1; break; fi
+	sleep 1
+done
+[ "$SIGNED_OUT" = "1" ] && ok "sign_out cleared the credential" || bad "sign_out left the device enrolled"
+CLI_REG=$(ctl register client_id=42 agent_token=it-agent-token 2>&1)
+echo "$CLI_REG" | grep -q '"ok":true' && ok "ctl register accepted the card's command" || bad "ctl register failed: $CLI_REG"
+ENROLLED_AGAIN=0
+for _ in $(seq 1 20); do
+	ctl status > "$ROOT/status4.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status4.json" "d['data']['enrolled']")" = "True" ]; then ENROLLED_AGAIN=1; break; fi
+	sleep 1
+done
+[ "$ENROLLED_AGAIN" = "1" ] && ok "device is enrolled after the CLI register" || bad "not enrolled after ctl register"
+
 step "runtime supervision"
 wait_for 40 port_open "$LISTEN_PORT" && ok "forward listen port $LISTEN_PORT is serving" || bad "forward port never became ready"
 ctl forwards > "$ROOT/forwards.json" 2>/dev/null
@@ -217,6 +259,37 @@ REQ="$STATE/last_lease_request.json"
 [ "$(jsonq "$REQ" "d['forwards'][0]['max_candidates']")" = "4" ] && ok "lease asks for up to 4 candidates" || bad "max_candidates wrong"
 [ "$(jsonq "$REQ" "d['device_id']")" = "openwrt-integration" ] && ok "lease carries the router device id" || bad "device id missing from the lease request"
 
+step "sealed lease v1 (device lease key)"
+# The mock panel runs in "optional" sealing mode, so the lease that carried the
+# data-path round trip above was sealed to this router's own key and opened by
+# the daemon before it reached the runtime.
+LEASE_KEY_HEADER=$(cat "$STATE/last_lease_key_header" 2>/dev/null)
+[ "$(python3 -c "
+import base64,sys
+v=sys.argv[1]
+try:
+    raw=base64.urlsafe_b64decode(v+'='*(-len(v)%4))
+except Exception:
+    raw=b''
+print(len(raw)==65 and raw[:1]==b'\x04' and '=' not in v)" "$LEASE_KEY_HEADER")" = "True" ] \
+	&& ok "lease request carries a 65-byte P-256 X-Leikwan-Lease-Key" || bad "lease key header missing or malformed"
+case "$(cat "$STATE/last_lease_sealed" 2>/dev/null)" in
+	sealed*) ok "panel answered with sealed leases ($(cat "$STATE/last_lease_sealed"))" ;;
+	*) bad "panel did not seal the lease ($(cat "$STATE/last_lease_sealed" 2>/dev/null))" ;;
+esac
+[ -f "$DATA/lease_key.json" ] && ok "device lease key persisted in the data directory" || bad "lease_key.json missing"
+[ "$(stat -c %a "$DATA/lease_key.json" 2>/dev/null)" = "600" ] && ok "lease_key.json is owner-only (0600)" || bad "lease_key.json mode is $(stat -c %a "$DATA/lease_key.json" 2>/dev/null)"
+grep -q "lease_unseal_failed" "$ROOT/daemon.log" && bad "daemon reported lease_unseal_failed" || ok "every sealed lease opened"
+if [ -f "$DATA/lease_key.json" ]; then
+	SCALAR=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['private_scalar'])" "$DATA/lease_key.json" 2>/dev/null)
+	if [ -n "$SCALAR" ] && grep -rqF "$SCALAR" "$ROOT/daemon.log" "$STATE" "$DATA/secret.json" 2>/dev/null; then
+		bad "device private key leaked into a log, the panel or secret.json"
+	else
+		ok "device private key never left lease_key.json"
+	fi
+	grep -qF "pass-1" "$ROOT/daemon.log" && bad "relay credential appeared in the daemon log" || ok "relay credential not logged"
+fi
+
 step "a refused grant never drops a healthy session"
 # The panel now reports that no approved candidate exists. A forward that
 # already holds a valid lease must keep serving: refusing a *new* grant is a
@@ -235,6 +308,74 @@ step "heartbeat reporting"
 wait_for 20 test -f "$STATE/last_heartbeat.json" && ok "heartbeat reached the panel" || bad "no heartbeat received"
 HB="$STATE/last_heartbeat.json"
 [ "$(jsonq "$HB" "bool(d['agent_version'])")" = "True" ] && ok "heartbeat carries the agent version" || bad "agent_version missing"
+
+step "usage accounting"
+# The traffic above was real; the panel must be billed for it, and a snapshot
+# must never be counted twice (the agent only clears its queue on the ack).
+wait_for 20 test -s "$STATE/usage.jsonl" && ok "usage snapshots reached the panel" || bad "no usage reached the panel"
+USAGE_SUM=$(python3 -c "
+import json,sys
+total=0
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    total+=int(item.get('bytes_in',0))+int(item.get('bytes_out',0))
+print(total)" "$STATE/usage.jsonl" 2>/dev/null)
+[ "${USAGE_SUM:-0}" -gt 0 ] && ok "billed bytes are non-zero ($USAGE_SUM)" || bad "usage totals are zero"
+DUPES=$(python3 -c "
+import json,sys
+seen=set(); dupes=0
+for line in open(sys.argv[1]):
+    item=json.loads(line)
+    key=(item.get('forward_id'), item.get('sequence'))
+    if key in seen: dupes+=1
+    seen.add(key)
+print(dupes)" "$STATE/usage.jsonl" 2>/dev/null)
+[ "${DUPES:-0}" = "0" ] && ok "no usage snapshot was billed twice" || bad "$DUPES duplicate usage snapshots"
+
+step "configuration sync: a line rotation reaches the panel"
+# A new policy generation is the panel's line rotation. The router must pull it
+# on its next poll; the leases that follow it are only requested when the
+# current grant nears renewal (LeaseRenewLeadSecs), which is minutes away for a
+# grant that was just installed — so the pull is what proves delivery here.
+# The VM suite makes the same distinction for the same reason.
+NEWGEN=$(printf 'b%.0s' $(seq 1 64))
+echo "$NEWGEN" > "$STATE/policy_generation"
+ROTATED=0
+for _ in $(seq 1 40); do
+	if grep -q "$NEWGEN" "$STATE/generations.jsonl" 2>/dev/null; then ROTATED=1; break; fi
+	sleep 1
+done
+[ "$ROTATED" = "1" ] && ok "agent pulled the new generation" || bad "rotation never reached the panel"
+RESP=$(forward_echo "$LISTEN_PORT" "after-rotation")
+case "$RESP" in echo:*) ok "traffic kept flowing across the rotation" ;; *) bad "traffic broke on rotation ($RESP)" ;; esac
+
+step "panel unreachable: the installed grant keeps serving"
+# A 503 from every endpoint is what a router sees when the panel is down.
+# Nothing on the data path depends on it, so an existing lease must keep
+# serving; only a *refusal* may stop traffic.
+echo "1" > "$STATE/offline"
+OFFLINE_SEEN=0
+for _ in $(seq 1 30); do
+	ctl status > "$ROOT/status_offline.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status_offline.json" "bool(d['data']['last_pull_error'])")" = "True" ]; then OFFLINE_SEEN=1; break; fi
+	sleep 1
+done
+[ "$OFFLINE_SEEN" = "1" ] && ok "agent reports the panel as unreachable" || bad "outage was not noticed"
+RESP=$(forward_echo "$LISTEN_PORT" "during-outage")
+case "$RESP" in echo:*) ok "traffic kept flowing while the panel was unreachable" ;; *) bad "traffic dropped during the outage ($RESP)" ;; esac
+kill -0 "$DAEMON_PID" 2>/dev/null && ok "daemon survived the outage" || bad "daemon died during the outage"
+
+step "panel recovery"
+rm -f "$STATE/offline"
+RECOVERED=0
+for _ in $(seq 1 40); do
+	ctl status > "$ROOT/status_recovered.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status_recovered.json" "d['data']['last_pull_error']")" = "" ]; then RECOVERED=1; break; fi
+	sleep 1
+done
+[ "$RECOVERED" = "1" ] && ok "agent reconnected to the panel" || bad "agent never reconnected"
+RESP=$(forward_echo "$LISTEN_PORT" "after-recovery")
+case "$RESP" in echo:*) ok "traffic flows after recovery" ;; *) bad "traffic did not recover ($RESP)" ;; esac
 
 step "layer-1 high availability: runtime death is recovered"
 ULTRA_PID=$(runtime_pids "$ULTRA" | head -1)

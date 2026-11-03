@@ -106,7 +106,14 @@ public sealed class HeartbeatService
         {
             ultraUsage = CollectUltraUsage(usage, out pendingUltraState);
         }
+        var ultraStatus = CollectUltraStatus();
         var ultraCandidateFeedback = CollectUltraCandidateFeedback();
+        var runtimeAttestation = ultraStatus
+            .Select(UltraRuntimeStatus.ReadAttestation)
+            .FirstOrDefault(item => item is not null)
+            // Explicitly empty suppresses the legacy server fallback to usage
+            // batches, which may belong to an already stopped, older binary.
+            ?? new RuntimeAttestationSnapshot();
 
         if (!hasPendingUltra)
         {
@@ -130,6 +137,8 @@ public sealed class HeartbeatService
             WireguardListenPort = _wireguardListenPort,
             WireguardFallbackTcpPort = _wireguardFallbackTcpPort,
             UltraUsage = ultraUsage,
+            UltraStatus = ultraStatus,
+            RuntimeAttestation = runtimeAttestation,
             UltraCandidateFeedback = ultraCandidateFeedback,
         };
 
@@ -152,7 +161,8 @@ public sealed class HeartbeatService
             UltraActionsReceived?.Invoke(response.UltraActions);
         }
 
-        Log.Debug("heartbeat sent: in={BytesIn} out={BytesOut}", bytesIn, bytesOut);
+        Log.Debug("heartbeat acknowledged: ok={Ok} status_accepted={StatusAccepted} status_sent={StatusSent} usage_ack={UsageAck} in={BytesIn} out={BytesOut}",
+            response.Ok, response.UltraStatusAccepted, ultraStatus.Count, response.UltraUsageAcknowledged, bytesIn, bytesOut);
     }
 
     private List<UltraUsageSnapshot> CollectUltraUsage(
@@ -451,6 +461,68 @@ public sealed class HeartbeatService
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// Publishes the newest complete runtime snapshot for each forward even
+    /// when no usage delta exists. Usage rows are intentionally delta-based;
+    /// status is a liveness/health signal and must not go stale on idle Macs.
+    /// </summary>
+    private List<JsonElement> CollectUltraStatus()
+    {
+        var latest = new Dictionary<int, (JsonElement Root, DateTimeOffset UpdatedAt, DateTime LastWrite)>();
+        foreach (var (path, _) in EnumerateUltraStatusFiles())
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists || info.Length <= 0 || info.Length > 64 * 1024)
+                    continue;
+                using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+                var root = document.RootElement;
+                if (!root.TryGetProperty("forward_id", out var forwardElement)
+                    || !forwardElement.TryGetInt32(out var forwardId)
+                    || forwardId <= 0
+                    || root.ValueKind != JsonValueKind.Object)
+                    continue;
+                var updatedAt = DateTimeOffset.MinValue;
+                if (root.TryGetProperty("updated_at", out var updatedElement)
+                    && updatedElement.ValueKind == JsonValueKind.String
+                    && DateTimeOffset.TryParse(updatedElement.GetString(), out var parsed))
+                    updatedAt = parsed;
+                // Archived native-usage snapshots are still needed for billing,
+                // not for the current runtime identity/health. Reporting one
+                // after restart can poison attestation and block new leases.
+                var observedAt = updatedAt == DateTimeOffset.MinValue
+                    ? new DateTimeOffset(info.LastWriteTimeUtc)
+                    : updatedAt;
+                if (observedAt < DateTimeOffset.UtcNow.AddMinutes(-5)
+                    || ReadBounded(root, "error_code", 64) == "runtime_stopped"
+                    || ReadBounded(root, "state", 32) == "stopped")
+                    continue;
+                var clone = root.Clone();
+                if (!latest.TryGetValue(forwardId, out var previous)
+                    || updatedAt > previous.UpdatedAt
+                    || (updatedAt == previous.UpdatedAt && info.LastWriteTimeUtc > previous.LastWrite))
+                    latest[forwardId] = (clone, updatedAt, info.LastWriteTimeUtc);
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or JsonException
+                    or InvalidOperationException
+                    or FormatException
+                    or OverflowException)
+            {
+                Log.Debug(exception, "skipping malformed Ultra status file {Path}", path);
+            }
+        }
+
+        return latest
+            .OrderByDescending(item => item.Value.UpdatedAt)
+            .ThenByDescending(item => item.Value.LastWrite)
+            .Take(32)
+            .Select(item => item.Value.Root)
+            .ToList();
     }
 
     private static string ReadOpaqueHash(JsonElement item, string property)

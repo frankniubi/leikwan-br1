@@ -61,6 +61,17 @@ class AccessPolicyStore
         return $this->db->fetchAll($sql, $params);
     }
 
+    /**
+     * Rule entity types that can only be decided from a client location
+     * report; keep in step with hasActiveGeographicRules().
+     */
+    public const GEOGRAPHIC_ENTITY_TYPES = [
+        'province', 'city', 'country',
+        'cn_province', 'province_cn', 'mainland_province',
+        'cn_city', 'city_cn', 'prefecture', 'prefecture_city',
+        'country_region', 'region', 'country_code',
+    ];
+
     public function hasActiveGeographicRules(): bool
     {
         $row = $this->db->fetchOne(

@@ -29,11 +29,15 @@ public sealed class SystemPhysicalEgressInterfaceProvider : IPhysicalEgressInter
 
     public bool IsDefaultRoutePhysical(AddressFamily family)
         => _inner.IsDefaultRoutePhysical(family);
+
+    public void SetPreferredInterface(string? interfaceName)
+        => _inner.SetPreferredInterface(interfaceName);
 }
 
 public sealed class WindowsPhysicalEgressProvider : IPhysicalEgressInterfaceProvider
 {
     private readonly ISystemInterfaceEnumerator _enumerator;
+    private string _preferredInterface = string.Empty;
 
     public WindowsPhysicalEgressProvider(ISystemInterfaceEnumerator enumerator)
     {
@@ -41,16 +45,21 @@ public sealed class WindowsPhysicalEgressProvider : IPhysicalEgressInterfaceProv
     }
 
     public PhysicalEgressInterface? GetPreferredInterface(AddressFamily family)
-        => PhysicalInterfaceSelector.SelectPreferred(_enumerator.Enumerate(), family);
+        => PhysicalInterfaceSelector.SelectPreferred(_enumerator.Enumerate(), family,
+            preferredInterfaceName: _preferredInterface);
 
     public bool IsDefaultRoutePhysical(AddressFamily family)
         => PhysicalInterfaceSelector.IsDefaultRoutePhysical(_enumerator.Enumerate(), family);
+
+    public void SetPreferredInterface(string? interfaceName)
+        => _preferredInterface = interfaceName?.Trim() ?? string.Empty;
 }
 
 internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvider
 {
     private readonly ISystemInterfaceEnumerator _enumerator;
     private readonly MacDefaultRouteProbe _probe;
+    private string _preferredInterface = string.Empty;
 
     public MacPhysicalEgressProvider(ISystemInterfaceEnumerator enumerator, MacDefaultRouteProbe probe)
     {
@@ -62,7 +71,8 @@ internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvid
     {
         var familyFlag = family == AddressFamily.InterNetworkV6 ? "-inet6" : "-inet";
         var selected = PhysicalInterfaceSelector.SelectPreferred(
-            _enumerator.Enumerate(), family, preferMacPhysicalNaming: true);
+            _enumerator.Enumerate(), family, preferMacPhysicalNaming: true,
+            preferredInterfaceName: _preferredInterface);
         if (selected is null)
             return null;
 
@@ -88,6 +98,9 @@ internal sealed class MacPhysicalEgressProvider : IPhysicalEgressInterfaceProvid
                 adapter.Name, probed.InterfaceName, StringComparison.OrdinalIgnoreCase));
         return holder is null || !holder.IsTunnelLike;
     }
+
+    public void SetPreferredInterface(string? interfaceName)
+        => _preferredInterface = interfaceName?.Trim() ?? string.Empty;
 }
 
 internal sealed class PassivePhysicalEgressProvider : IPhysicalEgressInterfaceProvider

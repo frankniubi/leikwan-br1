@@ -7,6 +7,9 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
+use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\AuthRateLimiter;
+use Leikwan\Master\Support\HomePageContent;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebaseOutline;
 use Leikwan\Master\Support\KnowledgebaseService;
@@ -37,81 +40,15 @@ final class AuthController extends BaseController
     public function home(Request $request, array $params): Response
     {
         $user = SessionAuth::currentUser($this->db);
-        $routeCatalog = [
-            ['index' => '01', 'label' => '沪日', 'destination' => 'TOKYO', 'note' => '东亚 · 东京'],
-            ['index' => '02', 'label' => '沪韩', 'destination' => 'SEOUL', 'note' => '东亚 · 首尔'],
-            ['index' => '03', 'label' => '沪德', 'destination' => 'FRANKFURT', 'note' => '欧洲 · 法兰克福'],
-            ['index' => '04', 'label' => '沪俄', 'destination' => 'MOSCOW', 'note' => '欧亚 · 莫斯科'],
-            ['index' => '05', 'label' => '沪港', 'destination' => 'HONG KONG', 'note' => '大湾区 · 香港'],
-        ];
-        $routeCards = '';
-        foreach ($routeCatalog as $route) {
-            $routeCards .= '<div class="bridge-home-route-card">'
-                . '<span class="bridge-home-route-index">' . $this->escape($route['index']) . '</span>'
-                . '<strong>' . $this->escape($route['label']) . '</strong>'
-                . '<span class="bridge-home-route-destination">SHANGHAI &rarr; ' . $this->escape($route['destination']) . '</span>'
-                . '<small>' . $this->escape($route['note']) . '</small>'
-                . '</div>';
-        }
-
         $consoleHref = $user === null
             ? '/login'
-            : $this->escape($this->dashboardPathForUser($user));
+            : $this->dashboardPathForUser($user);
 
-        $body = '
-            <section class="bridge-home-hero" aria-labelledby="bridge-home-title">
-              <div class="bridge-home-hero-copy">
-                <div class="bridge-home-kicker"><span>BRIDGE CONTROL</span><span>控制平面 / 01</span></div>
-                <h1 id="bridge-home-title">利群會聚 <span>Bridge Control</span></h1>
-                <p class="bridge-home-lede">分布式传输，清晰可控。<span>让每一条可用路径，都能被看见、管理和验证。</span></p>
-                <div class="bridge-home-actions">
-                  <a class="button bridge-home-primary" href="' . $consoleHref . '">进入控制台 <span aria-hidden="true">&rarr;</span></a>
-                  <a class="bridge-home-link" href="#network">查看网络路径 <span aria-hidden="true">&darr;</span></a>
-                </div>
-                <div class="bridge-home-path-note" aria-label="服务路径">
-                  <span>CLIENT</span><i aria-hidden="true">/</i><span>SLAVE</span><i aria-hidden="true">/</i><span>SIDECAR</span><i aria-hidden="true">/</i><span>TARGET</span>
-                </div>
-              </div>
-              <aside class="bridge-home-status" aria-label="固定路线目录">
-                <div class="bridge-home-status-head"><span>ROUTE CATALOG</span><span class="bridge-home-status-mark" aria-hidden="true"></span></div>
-                <strong>上海出发</strong>
-                <p>沪日、沪韩、沪德、沪俄、沪港</p>
-                <div class="bridge-home-status-rule"></div>
-                <div class="bridge-home-status-meta"><span>ROUTE SET</span><span>CURATED</span></div>
-              </aside>
-            </section>
-            <section class="bridge-home-route-catalog" aria-labelledby="route-catalog-title">
-              <header class="bridge-home-catalog-heading">
-                <span>01 / ROUTE CATALOG</span>
-                <h2 id="route-catalog-title">从上海出发，连接五个方向。</h2>
-                <p>按目的地整理基础线路，让每个方向都清晰、易读、可进入控制台继续配置。</p>
-              </header>
-              <div class="bridge-home-route-grid" aria-label="沪日、沪韩、沪德、沪俄、沪港固定线路目录">' . $routeCards . '</div>
-            </section>
-            <section id="network" class="bridge-home-network" aria-labelledby="network-title">
-              <header class="bridge-home-section-heading">
-                <span>02 / 传输路径</span>
-                <h2 id="network-title">一条服务，多条路径。</h2>
-                <p>客户端在本地选择方向，控制平面负责路径编排、聚合端点和目标服务的可见性。</p>
-              </header>
-              <div class="bridge-home-route" role="img" aria-label="客户端、Slave 节点、Sidecar、目标服务的传输路径">
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">01</span><span><strong>客户端</strong><small>本地选择路径</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">02</span><span><strong>Slave 节点</strong><small>分布式接入</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">03</span><span><strong>Sidecar</strong><small>聚合与转发</small></span></div>
-                <div class="bridge-home-route-node"><span class="bridge-home-route-index">04</span><span><strong>目标服务</strong><small>最终目的地</small></span></div>
-              </div>
-            </section>
-            <section class="bridge-home-footer-grid">
-              <div class="bridge-home-footer-copy">
-                <span>03 / 运行原则</span>
-                <h2>每条路径都应该能被解释。</h2>
-                <p>节点状态、端点配置和服务拓扑集中在一个控制平面内，方便排查、调整和复核。</p>
-              </div>
-              <div class="bridge-home-footer-links">
-                <a href="' . $consoleHref . '"><span>进入控制台</span><span aria-hidden="true">&rarr;</span></a>
-                <a href="/knowledgebase"><span>打开知识库</span><span aria-hidden="true">&rarr;</span></a>
-              </div>
-            </section>';
+        $body = HomePageContent::render(
+            $this->displayBrandName(),
+            $consoleHref,
+            LocaleResolver::resolve($request)
+        );
 
         return $this->publicPage($this->displayBrandName(), $body, $user, 'bridge-home');
     }
@@ -677,7 +614,16 @@ final class AuthController extends BaseController
     {
         try {
             SessionAuth::validateCsrf($request);
-            $this->passwordResetService()->requestReset((string) $request->input('email', ''));
+            $email = strtolower(trim((string) $request->input('email', '')));
+            try {
+                $this->authRateLimiter()->hit([
+                    AuthRateLimiter::bucket('password-reset:email', $email, AuthRateLimiter::RESET_EMAIL_LIMIT, AuthRateLimiter::RESET_WINDOW_SECONDS),
+                    AuthRateLimiter::bucket('password-reset:ip', $this->clientIp($request), AuthRateLimiter::RESET_IP_LIMIT, AuthRateLimiter::RESET_WINDOW_SECONDS),
+                ]);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many password reset requests. Please wait %s before requesting another reset email.', '/forgot-password', 'Back');
+            }
+            $this->passwordResetService()->requestReset($email);
             SessionAuth::flash('success', 'If that email belongs to an active account, a password reset link has been sent.');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Unable to send the reset email: ' . $this->displayThrowableMessage($throwable));
@@ -767,24 +713,36 @@ final class AuthController extends BaseController
 
         $email = strtolower(trim((string) $request->input('email', '')));
         $password = (string) $request->input('password', '');
-        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        $limiter = $this->authRateLimiter();
+        $buckets = AuthRateLimiter::loginBuckets('login', $this->clientIp($request), $email);
+        try {
+            $limiter->hit($buckets);
+        } catch (ApiException $exception) {
+            return $this->tooManyAttemptsPage($exception, 'Too many sign-in attempts. Please wait %s and try again.', '/login?legacy=1', 'Back to Login');
+        }
 
-        if ($user !== null && (string) ($user['status'] ?? '') === 'pending_verification') {
+        $user = $this->db->fetchOne('SELECT * FROM users WHERE email = :email LIMIT 1', ['email' => $email]);
+        // Always run one bcrypt verification so the response time does not
+        // tell whether the email has an account.
+        $passwordMatches = AuthRateLimiter::verifyPassword($password, $user['password_hash'] ?? null) && $user !== null;
+
+        // Only someone who knows the password learns that the account is
+        // still waiting for email verification; everyone else gets the same
+        // answer as for an unknown email.
+        if ($passwordMatches && (string) ($user['status'] ?? '') === 'pending_verification') {
+            $limiter->reset([$buckets[0]]);
+            $limiter->refund([$buckets[1]]);
             SessionAuth::flash('error', 'This account is waiting for email verification. Please open the verification email first.');
             return Response::redirect('/login?legacy=1');
         }
 
-        if (
-            $user === null ||
-            (string) $user['status'] !== 'active' ||
-            !is_string($user['password_hash']) ||
-            $user['password_hash'] === '' ||
-            !password_verify($password, (string) $user['password_hash'])
-        ) {
+        if (!$passwordMatches || (string) ($user['status'] ?? '') !== 'active') {
             SessionAuth::flash('error', 'Email or password is incorrect, or this account has not set a local password yet.');
             return Response::redirect('/login?legacy=1');
         }
 
+        $limiter->reset([$buckets[0]]);
+        $limiter->refund([$buckets[1]]);
         SessionAuth::login($user);
         SessionAuth::flash('success', 'Signed in successfully.');
         return Response::redirect('/');
@@ -799,11 +757,22 @@ final class AuthController extends BaseController
                 throw new \RuntimeException('buy_login_not_configured');
             }
 
+            $email = (string) $request->input('email', '');
+            $limiter = $this->authRateLimiter();
+            $buckets = AuthRateLimiter::loginBuckets('buy-login', $this->clientIp($request), $email);
+            try {
+                $limiter->hit($buckets);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many sign-in attempts. Please wait %s and try again.', '/login?buy=1', 'Back to Login');
+            }
+
             $identity = $service->authenticate(
-                (string) $request->input('email', ''),
+                $email,
                 (string) $request->input('password', '')
             );
             $user = $service->loginWithAuthenticatedIdentity($identity);
+            $limiter->reset([$buckets[0]]);
+            $limiter->refund([$buckets[1]]);
             SessionAuth::login($user);
             SessionAuth::flash('success', 'Signed in with LeiKwan Buy.');
             return Response::redirect('/');
@@ -838,9 +807,16 @@ final class AuthController extends BaseController
                 return Response::redirect('/tenant/account');
             }
 
-            $ticketLabel = $result['ticket_tid'] !== '' ? '#' . $result['ticket_tid'] : '#' . (int) $result['ticket_id'];
-            SessionAuth::flash('success', 'Verification ticket ' . $ticketLabel . ' has been created. Open it in your Buy station account, copy the code, and finish binding.');
+            // Worded the same whether or not the email has a Buy station
+            // account (see WhmcsIdentityService::decoyChallenge()).
+            SessionAuth::flash('success', 'If that email belongs to a Buy station account that can be linked, a verification ticket has been opened in it. Open the ticket, copy the code, and finish binding.');
             return Response::redirect('/buy-binding/verify?challenge=' . urlencode((string) $result['public_token']));
+        } catch (ApiException $exception) {
+            if ($exception->getMessage() === 'rate_limited') {
+                return $this->tooManyAttemptsPage($exception, 'Too many Buy station verification requests. Please wait %s before requesting another code.', '/tenant/account', 'Back');
+            }
+            SessionAuth::flash('error', 'Buy station binding failed: ' . $this->displayThrowableMessage($exception));
+            return Response::redirect('/tenant/account');
         } catch (\Throwable $throwable) {
             SessionAuth::flash('error', 'Buy station binding failed: ' . $this->displayThrowableMessage($throwable));
             return Response::redirect('/tenant/account');
@@ -857,23 +833,20 @@ final class AuthController extends BaseController
             $details = $this->whmcsIdentityService()->challengeDetails($challengeToken);
             $challenge = is_array($details['challenge'] ?? null) ? $details['challenge'] : [];
             $user = is_array($details['user'] ?? null) ? $details['user'] : [];
-            $ticketLabel = trim((string) ($challenge['ticket_tid'] ?? '')) !== ''
-                ? '#' . $this->escape((string) $challenge['ticket_tid'])
-                : '#' . (int) ($challenge['ticket_id'] ?? 0);
 
             $body = '
                 <section class="auth-hero">
                   <div>
                     <span class="eyebrow">Buy Station Binding</span>
                     <h1>Finish linking your Buy station account</h1>
-                    <p>We created a verification ticket for ' . $this->escape((string) ($challenge['whmcs_email'] ?? '')) . '. Open that ticket, copy the code, and submit it here.</p>
+                    <p>If ' . $this->escape((string) ($challenge['whmcs_email'] ?? '')) . ' belongs to a Buy station account that can be linked, a verification ticket has been opened in it. Open that ticket, copy the code, and submit it here.</p>
                   </div>
                 </section>
                 <section class="auth-grid">
                   <section class="surface-card">
                     <span class="card-kicker">Verification Code</span>
                     <h2>Enter the code from the ticket</h2>
-                    <p class="muted">Ticket ' . $ticketLabel . ' expires at ' . $this->escape((string) ($challenge['expires_at'] ?? '')) . ' UTC.</p>
+                    <p class="muted">The code expires at ' . $this->escape((string) ($challenge['expires_at'] ?? '')) . ' UTC and is cancelled after ' . WhmcsIdentityService::MAX_CHALLENGE_ATTEMPTS . ' incorrect attempts.</p>
                     <form method="post" action="/buy-binding/verify">
                       <input type="hidden" name="csrf_token" value="' . $csrf . '">
                       <input type="hidden" name="challenge" value="' . $this->escape($challengeToken) . '">
@@ -918,10 +891,20 @@ final class AuthController extends BaseController
     {
         try {
             SessionAuth::validateCsrf($request);
+            // The per-challenge attempt cap stops guessing one code; this
+            // per-address budget stops spraying guesses across challenges.
+            $limiter = $this->authRateLimiter();
+            $ipBucket = [AuthRateLimiter::bucket('whmcs-binding-verify:ip', $this->clientIp($request), AuthRateLimiter::BINDING_VERIFY_IP_LIMIT, AuthRateLimiter::BINDING_VERIFY_WINDOW_SECONDS)];
+            try {
+                $limiter->hit($ipBucket);
+            } catch (ApiException $exception) {
+                return $this->tooManyAttemptsPage($exception, 'Too many verification attempts. Please wait %s and try again.', '/buy-binding/verify?challenge=' . urlencode((string) $request->input('challenge', '')), 'Back');
+            }
             $user = $this->whmcsIdentityService()->verifyLoginChallenge(
                 (string) $request->input('challenge', ''),
                 (string) $request->input('code', '')
             );
+            $limiter->refund($ipBucket);
             SessionAuth::login($user);
             SessionAuth::flash('success', 'Your Buy station account has been linked successfully.');
             return Response::redirect('/tenant/account');
@@ -949,20 +932,49 @@ final class AuthController extends BaseController
             return $this->adminNavigationItems('knowledgebase');
         }
 
-        return [
-            ['group' => 'Overview', 'href' => '/tenant', 'label' => 'Overview'],
-            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'Forwards'],
-            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Packages'],
-            ['group' => 'Clients', 'href' => '/tenant/clients', 'label' => 'Clients'],
-            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Account'],
-            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase / Docs', 'active' => true],
-            ['group' => 'Advanced', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups'],
-        ];
+        return $this->tenantNavigationItems('knowledgebase');
     }
 
     private function knowledgebaseStyles(): string
     {
         return '<link rel="stylesheet" href="/assets/knowledgebase-docs.css?v=20260914a">';
+    }
+
+    private function authRateLimiter(): AuthRateLimiter
+    {
+        return new AuthRateLimiter($this->db);
+    }
+
+    private function clientIp(Request $request): string
+    {
+        return AuthRateLimiter::clientIp($this->config, $request);
+    }
+
+    /**
+     * HTTP 429 page for a throttled form post. $message holds one %s for the
+     * wait ("about 12 minutes"). No credential was checked for this request.
+     */
+    private function tooManyAttemptsPage(ApiException $exception, string $message, string $backHref, string $backLabel): Response
+    {
+        if ($exception->getMessage() !== 'rate_limited') {
+            throw $exception;
+        }
+        $retryAfter = max(1, (int) ($exception->details()['retry_after'] ?? 60));
+        $minutes = max(1, (int) ceil($retryAfter / 60));
+        $wait = 'about ' . $minutes . ' minute' . ($minutes === 1 ? '' : 's');
+        $body = '
+            <section class="surface-card">
+              <span class="card-kicker">Please Wait</span>
+              <h2>Too many attempts</h2>
+              <p class="muted">' . $this->escape(sprintf($message, $wait)) . '</p>
+              <div class="actions">
+                <a class="button" href="' . $this->escape($backHref) . '">' . $this->escape($backLabel) . '</a>
+              </div>
+            </section>';
+
+        $page = $this->publicPage($this->displayBrandName() . ' Too Many Attempts', $body, SessionAuth::currentUser($this->db));
+        return (new Response(429, $page->headers(), $page->body()))
+            ->withHeaders(['Retry-After' => (string) $retryAfter]);
     }
 
     private function registrationService(): TenantRegistrationService

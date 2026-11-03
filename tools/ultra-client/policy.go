@@ -14,10 +14,22 @@ import (
 )
 
 const (
-	policyProtocol             = "leikwan-ultra-policy-v2"
-	nativeSocks5Protocol       = "leikwan-ultra-native-socks5-v1"
-	nativeSocks5Purpose        = "native_outbound"
-	maxPolicyTTL               = 5 * time.Minute
+	policyProtocol       = "leikwan-ultra-policy-v2"
+	nativeSocks5Protocol = "leikwan-ultra-native-socks5-v1"
+	nativeSocks5Purpose  = "native_outbound"
+	// maxPolicyTTL is the longest validity a grant may carry. Clients that
+	// announce X-Leikwan-Ultra-Offline-Validity get up to 30 minutes (panel
+	// ceiling 3600 s) so a panel outage does not stop a working forward; online
+	// clients still renew every few minutes, so revocation lands just as fast.
+	maxPolicyTTL = 3600 * time.Second
+	// maxPolicyTTLSkew absorbs RFC 3339 second rounding and a small clock
+	// offset between the panel and this host on top of maxPolicyTTL.
+	maxPolicyTTLSkew           = 30 * time.Second
+
+	// maxLeaseGrace bounds how far past the Panel-issued expiry an installed
+	// grant may keep serving while the router cannot renew it. It is measured
+	// from the issued expiry, never from the previous extension.
+	maxLeaseGrace = 10 * time.Minute
 	maxQuotaBytes        int64 = 107374182400
 	maxRateMbps          int64 = 100000
 	selectionTierPaid          = "paid"
@@ -81,7 +93,7 @@ func (p Policy) Validate(config Config, now time.Time) error {
 			return ErrPolicyInvalid
 		}
 	}
-	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+time.Second)) {
+	if p.ExpiresAt.IsZero() || !p.ExpiresAt.After(now) || p.ExpiresAt.After(now.Add(maxPolicyTTL+maxPolicyTTLSkew)) {
 		return ErrPolicyExpired
 	}
 	if !p.Native && p.Transport != "tcp" && p.Transport != "udp" && p.Transport != "tcp+udp" {
@@ -180,6 +192,16 @@ func (l *PolicyLimiter) Replace(rateMbps int64, quotaBytes int64, expiresAt time
 	return nil
 }
 
+// extendExpiry moves the expiry of the held generation without touching the
+// rate or quota state, so an extension cannot refill quota already consumed.
+func (l *PolicyLimiter) extendExpiry(generation string, until time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.generation == generation && until.After(l.expiresAt) {
+		l.expiresAt = until
+	}
+}
+
 func (l *PolicyLimiter) Revoke(generation string) {
 	l.mu.Lock()
 	if generation == "" || l.generation == generation {
@@ -227,6 +249,58 @@ func (l *PolicyLimiter) Consume(n int) error {
 		}
 		time.Sleep(time.Duration(wait*float64(time.Second)) + time.Millisecond)
 	}
+}
+
+// errQuotaWaitAbandoned is returned by WaitQuota when the local quota slice
+// stayed below the requested chunk for the whole wait bound. It carries the
+// same "stop this copy" meaning as ErrQuotaExhausted, but names the wait, so
+// a host log can tell "no slice ever arrived" from "the slice ran out once".
+var errQuotaWaitAbandoned = errors.New("policy quota wait abandoned")
+
+// quotaExhaustedWaitBound is how long a TCP copy may pause on an exhausted
+// local quota slice before it gives up and ends the stream. The host renews
+// the lease on its own cadence (native: before expiry; ordinary ultra: after
+// a failure-driven renewal, minutes at most), so waiting here bridges the
+// slice refill instead of tearing down a healthy download mid-flight. UDP
+// callers keep the immediate drop: a datagram wait is a loss, not a stall.
+// A variable so tests can bound the pause.
+var quotaExhaustedWaitBound = 120 * time.Second
+
+// WaitQuota admits n bytes like Consume, but when the local slice is drained
+// it parks the copy until either the policy is replaced (Replace resets
+// quota to the new slice) or the bound lapses. ErrPolicyStopped (revocation,
+// expiry) returns immediately - that is an authorization verdict, not a
+// refill in flight. The final short Consume is re-checked without the rate
+// limiter's token wait because Consume already did the token accounting for
+// this loop and only the refill changed.
+func (l *PolicyLimiter) WaitQuota(n int, bound time.Duration) error {
+	if n <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(bound)
+	for {
+		err := l.Consume(n)
+		if err == nil || !errors.Is(err, ErrQuotaExhausted) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %w", errQuotaWaitAbandoned, ErrQuotaExhausted)
+		}
+		// Sleep a short poll: Replace() takes no notification channel, so
+		// waiters cannot be woken directly. 50 ms adds at most ~2% CPU on one
+		// goroutine while paused, and a refill lands at the next lease
+		// delivery regardless of this loop.
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// QuotaRemaining reports the local slice's remaining bytes. The host reads it
+// from the status snapshot to renew a lease before the slice drains: a
+// renewal (Replace) resets quota to the replacement grant's slice.
+func (l *PolicyLimiter) QuotaRemaining() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.quota
 }
 
 type ProviderLease struct {
@@ -309,6 +383,10 @@ type RuntimeSnapshot struct {
 type PolicyStore struct {
 	isolated              map[string]time.Time
 	pathFailures          map[string]int
+	businessPathIsolation map[string]bool
+	zeroByteCloses        map[string][]time.Time // protocol:path:target -> recent zero-byte closes
+	zeroByteTrips         map[string]zeroByteTrip
+	zeroByteTargetSide    map[string]time.Time // protocol:target -> suppression deadline
 	mu                    sync.RWMutex
 	config                Config
 	policy                *Policy
@@ -319,8 +397,12 @@ type PolicyStore struct {
 	seenNonces            map[string]struct{}
 	seenGens              map[string]struct{}
 	revoked               map[string]struct{}
+	revocations           uint64
 	limiter               *PolicyLimiter
 	updates               chan struct{}
+	// graceBase is the Panel-issued expiry of the installed policy. Grace is
+	// always measured from it so repeated extensions cannot move the bound.
+	graceBase time.Time
 }
 
 func NewPolicyStore(config Config) *PolicyStore {
@@ -393,6 +475,7 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	for key, until := range s.isolated {
 		if !until.After(now) {
 			delete(s.isolated, key)
+			delete(s.businessPathIsolation, key)
 		}
 	}
 	for nonce := range batchNonces {
@@ -401,6 +484,7 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	s.seenGens[policy.PolicyGeneration] = struct{}{}
 	policyCopy := policy
 	s.policy = &policyCopy
+	s.graceBase = policy.ExpiresAt
 	s.candidates = make([]*ProviderLease, 0, len(leases))
 	selectedKey := providerLeaseIdentity(selected)
 	for index := range leases {
@@ -418,9 +502,60 @@ func (s *PolicyStore) ReplaceBatch(policy Policy, selected ProviderLease, leases
 	return nil
 }
 
+// ExtendGrace keeps the installed policy serving until until. It only moves the
+// validity of the grant and leases already held: no credential is accepted, the
+// limiter keeps its quota and rate state, and the bound is absolute, measured
+// from the Panel-issued expiry. Refused when the generation is not the one held
+// or the policy has already lapsed.
+func (s *PolicyStore) ExtendGrace(generation string, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.policy == nil || s.graceBase.IsZero() || s.policy.PolicyGeneration != generation {
+		return ErrPolicyExpired
+	}
+	if !s.policy.ExpiresAt.After(now) {
+		return ErrPolicyExpired
+	}
+	if !until.After(now) || until.After(s.graceBase.Add(maxLeaseGrace)) {
+		return ErrPolicyInvalid
+	}
+	if !until.After(s.policy.ExpiresAt) {
+		return nil
+	}
+	s.policy.ExpiresAt = until
+	for _, lease := range s.candidates {
+		if lease.ExpiresAt.Before(until) {
+			lease.ExpiresAt = until
+		}
+	}
+	s.limiter.extendExpiry(generation, until)
+	s.notifyLocked()
+	return nil
+}
+
+// StopGrace ends a grant that was being kept alive past its Panel expiry. It is
+// used when the Panel refuses the router explicitly. Unlike Revoke it does not
+// remember the generation, so a grant the Panel issues later can still install.
+func (s *PolicyStore) StopGrace(generation string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.policy == nil || s.policy.PolicyGeneration != generation {
+		return ErrPolicyExpired
+	}
+	s.wipeCandidatesLocked()
+	s.policy = nil
+	s.lease = nil
+	s.graceBase = time.Time{}
+	s.limiter.Revoke(generation)
+	s.notifyLocked()
+	return nil
+}
+
 func (s *PolicyStore) Revoke(generation string) {
 	s.mu.Lock()
 	s.revoked[generation] = struct{}{}
+	s.revocations++
 	if s.policy != nil && (generation == "" || s.policy.PolicyGeneration == generation) {
 		s.wipeCandidatesLocked()
 		s.policy = nil
@@ -429,6 +564,53 @@ func (s *PolicyStore) Revoke(generation string) {
 	}
 	s.notifyLocked()
 	s.mu.Unlock()
+}
+
+// RevokedAny reports whether the store has ever been told to revoke a
+// generation. A revocation is an authorization decision and must tear the
+// listeners down at once, unlike a policy that merely lapsed or was never
+// issued: those are outages, and serving is already refused while
+// CandidateSnapshots has nothing valid.
+func (s *PolicyStore) RevokedAny() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.revoked) > 0
+}
+
+// RevocationCount counts Revoke calls. A runtime compares it with the value it
+// saw when it started, so a revocation that happened before the current policy
+// was installed does not make every later lapse look like a revocation.
+func (s *PolicyStore) RevocationCount() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revocations
+}
+
+// PolicyView is the non-secret state a host needs to tell a runtime that is
+// idle on purpose (no or lapsed policy) from one that is broken.
+type PolicyView struct {
+	Valid     bool
+	Held      bool // a policy is installed, valid or not
+	Transport string
+	ExpiresAt time.Time
+}
+
+// View reports whether a usable policy and lease are held, plus the policy's
+// transport and expiry. It never exposes lease material.
+func (s *PolicyStore) View() PolicyView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectActiveLocked("")
+	now := time.Now()
+	if s.policy == nil {
+		return PolicyView{}
+	}
+	return PolicyView{
+		Valid:     s.lease != nil && s.policy.ExpiresAt.After(now) && s.lease.ExpiresAt.After(now),
+		Held:      true,
+		Transport: s.policy.Transport,
+		ExpiresAt: s.policy.ExpiresAt,
+	}
 }
 
 func (s *PolicyStore) ClearExpired() {
@@ -447,6 +629,16 @@ func (s *PolicyStore) Snapshot() (RuntimeSnapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.selectActiveLocked("")
+	return s.snapshotLocked(time.Now())
+}
+
+// ActiveSnapshot returns the path the runtime was already using without
+// reselecting around a locally isolated candidate. It is used only as a last
+// resort when a fresh probe batch says every candidate is unhealthy: the
+// caller still has to prove the same path with a real forwarding attempt.
+func (s *PolicyStore) ActiveSnapshot() (RuntimeSnapshot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.snapshotLocked(time.Now())
 }
 

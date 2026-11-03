@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 
 namespace LeikwanBridge.Mac.ViewModels;
@@ -34,7 +35,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     public int ListenPort { get; }
 
     [ObservableProperty]
-    private string _savedNodeName = "未选择已保存节点";
+    private string _savedNodeName = NoNodeText;
 
     [ObservableProperty]
     private MacConnectionProfile? _selectedNode;
@@ -49,7 +50,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
         SelectedNode = profile;
         _suppressPairCallback = false;
         SavedNodeName = string.IsNullOrWhiteSpace(profile?.Name)
-            ? "未选择已保存节点"
+            ? NoNodeText
             : profile.Name.Trim();
         OnPropertyChanged(nameof(IsPaired));
     }
@@ -63,7 +64,7 @@ public sealed partial class ForwardRowViewModel : ObservableObject
             _suppressPairCallback = false;
             return;
         }
-        SavedNodeName = string.IsNullOrWhiteSpace(value?.Name) ? "未选择已保存节点" : value.Name.Trim();
+        SavedNodeName = string.IsNullOrWhiteSpace(value?.Name) ? NoNodeText : value.Name.Trim();
         OnPropertyChanged(nameof(IsPaired));
         if (!_suppressPairCallback && PairNode is not null)
             _ = PairNode(value?.Id ?? 0);
@@ -84,6 +85,28 @@ public sealed partial class ForwardRowViewModel : ObservableObject
     /// offers, and never honours, an agent-side start/stop action.
     /// </summary>
     public bool IsNativeOutboundRule { get; }
+
+    private static string NoNodeText => L.T("NoSavedNodeSelected", "No saved node selected");
+
+    /// <summary>The runtime status code in the active language (unknown codes are shown as-is).</summary>
+    public string StatusText => Status?.Trim().ToLowerInvariant() switch
+    {
+        "running" => L.T("ForwardStatusRunning", "Running"),
+        "stopped" => L.T("ForwardStatusStopped", "Stopped"),
+        "starting" => L.T("ForwardStatusStarting", "Starting"),
+        "error" or "failed" => L.T("ForwardStatusError", "Error"),
+        _ => Status ?? string.Empty,
+    };
+
+    partial void OnStatusChanged(string value) => OnPropertyChanged(nameof(StatusText));
+
+    /// <summary>Re-reads localized texts after a language switch.</summary>
+    public void RefreshLocalizedText()
+    {
+        if (SelectedNode is null)
+            SavedNodeName = NoNodeText;
+        OnPropertyChanged(nameof(StatusText));
+    }
 
     public string PortText => $"127.0.0.1:{ListenPort}";
     public bool CanStart => !IsNativeOutboundRule && !IsBusy && !IsRunning;

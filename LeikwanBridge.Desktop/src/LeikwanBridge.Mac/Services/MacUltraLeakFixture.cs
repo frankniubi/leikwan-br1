@@ -61,19 +61,30 @@ internal static class MacUltraLeakFixture
                 "canary-contract",
                 "canary_fixture");
             if (!host.Refresh(forward, CreateLease(canary, generation, targetDigest, 'c')))
+            {
+                Console.Out.WriteLine("FAILED refresh");
                 return 1;
+            }
 
             Console.Out.WriteLine("READY");
             Console.Out.Flush();
-            var deadline = DateTime.UtcNow.AddSeconds(60);
+            // The gate scans the app bundle, the update ZIP and the mounted DMG
+            // before it releases the fixture; on a hosted Intel runner that took
+            // longer than the previous 60 s.
+            var deadline = DateTime.UtcNow.AddMinutes(10);
             while (!File.Exists(releaseFile) && DateTime.UtcNow < deadline)
                 await Task.Delay(50, ct);
             if (!File.Exists(releaseFile))
+            {
+                Console.Out.WriteLine("FAILED release_timeout");
                 return 1;
+            }
             return 0;
         }
-        catch
+        catch (Exception error)
         {
+            // The type only: a message could carry the canary material.
+            Console.Out.WriteLine($"FAILED {error.GetType().Name}");
             return 1;
         }
         finally

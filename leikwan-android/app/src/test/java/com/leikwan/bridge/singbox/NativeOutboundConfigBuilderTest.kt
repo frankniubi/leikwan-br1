@@ -398,7 +398,6 @@ class NativeOutboundConfigBuilderTest {
                 nativeLocalProxy = NativeOutboundLocalProxy(port = 31245),
                 nativeProtectedEndpoints = setOf("203.0.113.10", "2001:db8::10"),
                 nativeRouteScope = "cn_only",
-                enableIpv6Tun = true,
             ).configJson,
         ).asJsonObject
 

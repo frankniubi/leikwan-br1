@@ -226,7 +226,10 @@ class CfwgLatencyWatchdog:
             normalized = str(action or "").strip().lower().replace("-", "_")
             if normalized in {"", "service"}:
                 normalized = "wstunnel"
-            if normalized not in {"wstunnel", "forward_service", "client_service", "wireguard", "wg", "client_agent", "rotate_cf_ip", "cf_ip", "path_correction"}:
+            if normalized == "client_agent":
+                logging.warning("cfwg latency watchdog: dropping disallowed restart_action client_agent (decoupled from Ultra)")
+                continue
+            if normalized not in {"wstunnel", "forward_service", "client_service", "wireguard", "wg", "rotate_cf_ip", "cf_ip", "path_correction"}:
                 continue
             if normalized not in normalized_actions:
                 normalized_actions.append(normalized)
@@ -284,6 +287,10 @@ class CfwgLatencyWatchdog:
             sorted(configured_forward_ids),
         )
         for forward_id in sorted(desired_forward_ids):
+            forward = self._latest_forwards_by_id.get(forward_id, {})
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
+                logging.info("cfwg latency watchdog ultra forward %s ignored (decoupled from CFWG)", forward_id)
+                continue
             target = self.load_target(forward_id)
             if target is None:
                 if forward_id in configured_forward_ids:
@@ -300,6 +307,8 @@ class CfwgLatencyWatchdog:
             if not isinstance(forward, dict):
                 continue
             if str(forward.get("service_status", "active") or "active") != "active":
+                continue
+            if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
                 continue
             try:
                 forward_id = int(forward.get("forward_id", 0) or 0)
@@ -523,12 +532,8 @@ class CfwgLatencyWatchdog:
                     executed.append(wg_service)
                     wireguard_restarted = True
             elif normalized == "client_agent":
-                if not service_restarted:
-                    self.command_runner(["systemctl", "restart", service_name])
-                    executed.append(service_name)
-                    service_restarted = True
-                self.command_runner(["systemctl", "restart", "leikwan-client-agent.service"])
-                executed.append("leikwan-client-agent.service")
+                logging.warning("cfwg latency watchdog refusing client_agent restart for forward=%s (decoupled)", forward_id)
+                continue
         if not any(not item.startswith("cf_pin:") for item in executed):
             self.command_runner(["systemctl", "restart", service_name])
             executed.append(service_name)

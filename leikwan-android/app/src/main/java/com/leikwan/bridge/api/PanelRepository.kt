@@ -9,6 +9,7 @@ import com.leikwan.bridge.clientrules.ClientRuleWriteDraft
 import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import com.leikwan.bridge.data.hosted.HostedNodeSync
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -25,25 +26,35 @@ import com.leikwan.bridge.runtime.nativeDirectionsMatch
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
+import com.leikwan.bridge.net.PanelNetwork
+import com.leikwan.bridge.net.PanelNetworkFallbackInterceptor
 import com.leikwan.bridge.security.AndroidAttestationProofFactory
 import com.leikwan.bridge.security.AndroidDeviceIdentity
+import com.leikwan.bridge.security.AndroidUltraLeaseKeyStore
 import com.leikwan.bridge.security.AttestationProof
 import com.leikwan.bridge.security.DeviceSecurity
 import com.leikwan.bridge.security.DeviceSecurityResult
+import com.leikwan.bridge.security.UltraLeaseKey
+import com.leikwan.bridge.security.UltraLeaseSeal
 import com.leikwan.bridge.session.DeviceAckRequest
 import com.leikwan.bridge.session.DeviceChallengeRequest
 import com.leikwan.bridge.session.DeviceChallengeResponse
 import com.leikwan.bridge.session.DeviceEnrollRequest
 import com.leikwan.bridge.session.DeviceEnrollResponse
 import com.leikwan.bridge.session.DeviceIdentityEnrollRequest
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.DeviceRenewRequest
 import com.leikwan.bridge.session.EnrollmentCodeChallengeRequest
 import com.leikwan.bridge.session.EnrollmentCodeEnrollRequest
 import com.leikwan.bridge.session.EnrollmentCodeIdentityEnrollRequest
 import com.leikwan.bridge.session.EnrollmentResult
 import com.leikwan.bridge.session.PanelControlException
+import com.leikwan.bridge.update.AppUpdateController
+import com.leikwan.bridge.update.ClientUpdatePolicy
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.CancellationException
 import retrofit2.Retrofit
@@ -72,10 +83,33 @@ class PanelRepository(
     },
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val panelEndpointOverride: PanelEndpoint? = null,
+    private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
+    private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
+    private val hostedNodeApiOverride: HostedNodeApi? = null,
+    hostedNodeSyncOverride: HostedNodeSync? = null,
+    /** Fetches the update manifest once a pull says this build is below the panel minimum. */
+    private val onClientUpdateRequired: (Context) -> Unit = AppUpdateController::checkForRequiredUpdate,
 ) {
     private val prefs = prefsOverride ?: Prefs.get(context)
 
     private val api: PanelApi = apiOverride ?: buildApi(panelEndpointOverride?.url ?: prefs.panelUrl)
+
+    private val hostedNodeApi: HostedNodeApi by lazy {
+        hostedNodeApiOverride ?: buildRetrofit(panelEndpointOverride?.url ?: prefs.panelUrl).create(HostedNodeApi::class.java)
+    }
+
+    /**
+     * Hosted user nodes ("上云"): two-way sync of the client's own nodes and their forward pairings.
+     * Built lazily so callers that never touch hosted nodes never open the node database.
+     */
+    val hostedNodes: HostedNodeSync by lazy {
+        hostedNodeSyncOverride ?: HostedNodeSync.from(
+            context = context,
+            api = { hostedNodeApi },
+            authHeader = ::authHeader,
+            clientIdProvider = { prefs.clientId },
+        )
+    }
     private var cachedForwardConfigs = mutableMapOf<Long, JsonElement>()
     private var cachedForwardContracts = mutableMapOf<Long, ForwardContract>()
     private var cachedEffectiveForwards = mutableMapOf<Long, AndroidEffectiveForward>()
@@ -86,7 +120,9 @@ class PanelRepository(
         val authorization: String,
     )
 
-    private fun buildApi(baseUrl: String): PanelApi {
+    private fun buildApi(baseUrl: String): PanelApi = buildRetrofit(baseUrl).create(PanelApi::class.java)
+
+    private fun buildRetrofit(baseUrl: String): Retrofit {
         val url = baseUrl.trimEnd('/') + "/"
         val host = runCatching { URI(url).host }.getOrNull()
         val clientBuilder = httpClientOverride?.newBuilder() ?: OkHttpClient.Builder()
@@ -100,6 +136,11 @@ class PanelRepository(
             MirrorNoSni.applyTo(clientBuilder)
         }
 
+        // Panel traffic never follows another app's HTTP proxy, and leaves on a physical
+        // (non-VPN) network when one can be bound, so the panel sees this device's own address.
+        val networkBinder = if (httpClientOverride == null) PanelNetwork.ensureInstalled(context) else null
+        PanelNetwork.applyTo(clientBuilder, networkBinder)
+
         clientBuilder
             .addInterceptor(
                 PanelDeviceInterceptor(
@@ -110,6 +151,10 @@ class PanelRepository(
                 ),
             )
             .addInterceptor(PanelControlInterceptor())
+        if (networkBinder != null) {
+            // Innermost, so panel refusals thrown above never count as a network failure.
+            clientBuilder.addInterceptor(PanelNetworkFallbackInterceptor { networkBinder })
+        }
 
         val client = clientBuilder.build()
         return Retrofit.Builder()
@@ -117,7 +162,6 @@ class PanelRepository(
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
-            .create(PanelApi::class.java)
     }
 
     private fun authHeader(): String {
@@ -373,7 +417,10 @@ class PanelRepository(
         }
     }
 
-    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog {
+    suspend fun pullCatalog(selectedForwardId: Long = prefs.selectedForwardId): ForwardCatalog =
+        reportingDeviceLimit { pullCatalogOnce(selectedForwardId) }
+
+    private suspend fun pullCatalogOnce(selectedForwardId: Long): ForwardCatalog {
         requireActiveSession()
         try {
             api.heartbeat(authHeader(), HeartbeatRequest())
@@ -381,12 +428,17 @@ class PanelRepository(
             throw e
         } catch (e: PanelControlException) {
             throw e
+        } catch (e: DeviceLimitReachedException) {
+            throw e
         } catch (_: Exception) {
             // Capability advertisement is best-effort; older or temporarily unavailable
             // panels must not block the authoritative pull.
         }
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
+        DeviceLimitGate.clear()
+        // Every pull re-applies the minimum-version gate; the VPN keeps running either way.
+        if (ClientUpdatePolicy.applyFromPull(resp.clientUpdate)) onClientUpdateRequired(context)
         routeRuleStore.replaceFromPull(
             routeDirections = resp.routeDirections.orEmpty(),
             entitlements = resp.routeRuleEntitlements.orEmpty(),
@@ -398,6 +450,7 @@ class PanelRepository(
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
+        syncHostedNodesAfterPull(resp.client)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -417,6 +470,25 @@ class PanelRepository(
         ).copy(nativeOutbound = cachedNativeOutbound)
     }
 
+    /**
+     * Cloud -> local half of hosted-node sync: the pull carries only a change marker
+     * (client.hosted_nodes_revision); the nodes are fetched when it moves. Best effort: a failure
+     * keeps the last synced nodes and never fails the pull.
+     */
+    private suspend fun syncHostedNodesAfterPull(client: JsonElement?) {
+        val revision = runCatching {
+            client?.takeIf { it.isJsonObject }?.asJsonObject?.get("hosted_nodes_revision")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull() ?: return
+        try {
+            hostedNodes.syncIfRevisionChanged(revision)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Retried on the next pull: the stored revision only advances after a successful apply.
+        }
+    }
+
     fun getCachedConfig(forwardId: Long): JsonElement? = cachedForwardConfigs[forwardId]
 
     fun getCachedContract(forwardId: Long): ForwardContract? = cachedForwardContracts[forwardId]
@@ -425,17 +497,41 @@ class PanelRepository(
 
     fun getCachedNativeOutbound(): NativeOutboundCapability? = cachedNativeOutbound
 
-    suspend fun heartbeat(): Boolean {
+    /**
+     * Returns false for a transient failure. A terminal control or a full online device limit is
+     * thrown instead, so the caller can tell "panel unreachable" from "panel refused this device".
+     */
+    suspend fun heartbeat(): Boolean = reportingDeviceLimit {
         requireActiveSession()
-        return try {
-            api.heartbeat(authHeader()).ok
+        // Ultra usage rides the heartbeat: unacknowledged rows stay pending and are resent.
+        val ledger = runCatching { ultraUsageLedgerProvider() }.getOrNull()
+        val usage = ledger?.let { runCatching { it.collect() }.getOrNull() }.orEmpty()
+        try {
+            val response = api.heartbeat(
+                authHeader(),
+                HeartbeatRequest(ultraUsage = usage.takeIf { it.isNotEmpty() }),
+            )
+            if (usage.isNotEmpty()) {
+                runCatching { ledger?.acknowledge(usage, response.ultraUsageAcknowledged ?: response.ok) }
+            }
+            response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: PanelControlException) {
             throw e
+        } catch (e: DeviceLimitReachedException) {
+            throw e
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** Publishes a device-limit refusal (from the session renewal or the call itself) to the UI. */
+    private suspend fun <T> reportingDeviceLimit(block: suspend () -> T): T = try {
+        block()
+    } catch (limit: DeviceLimitReachedException) {
+        DeviceLimitGate.report(limit)
+        throw limit
     }
 
     /** Resolves one ephemeral Ultra lease for the currently trusted device session. */
@@ -453,6 +549,7 @@ class PanelRepository(
         val session = requireActiveSession()
         val nonce = ByteArray(16).also(SecureRandom()::nextBytes)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        val leaseKey = ultraLeaseKeyProvider()
         val response = try {
             api.resolveUltraLease(
                 authHeader(),
@@ -471,6 +568,7 @@ class PanelRepository(
                         )
                     ),
                 ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
             )
         } catch (e: CancellationException) {
             throw e
@@ -491,7 +589,7 @@ class PanelRepository(
         val leases = mutableListOf<UltraLease>()
         try {
             body.leases.forEach { rawLease ->
-                leases += UltraLease.from(rawLease, policy, now)
+                leases += UltraLease.from(UltraLeaseSeal.openLease(rawLease, leaseKey), policy, now)
                     ?: throw IllegalStateException("ultra_lease_invalid")
             }
             return leases
@@ -603,6 +701,7 @@ class PanelRepository(
                 normalizedScope,
             )
         }
+        val leaseKey = ultraLeaseKeyProvider()
         val response = try {
             api.resolveUltraLease(
                 authHeader(),
@@ -624,6 +723,7 @@ class PanelRepository(
                         ),
                     ),
                 ),
+                leaseKey?.let(UltraLeaseSeal::headerValue),
             )
         } catch (e: CancellationException) {
             throw e
@@ -648,7 +748,7 @@ class PanelRepository(
         try {
             body.leases.forEach { rawLease ->
                 leases += NativeOutboundLease.from(
-                    rawLease,
+                    UltraLeaseSeal.openLease(rawLease, leaseKey),
                     policy,
                     carrier,
                     normalizedScope,

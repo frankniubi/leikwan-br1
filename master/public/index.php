@@ -6,10 +6,14 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 
-require_once __DIR__ . '/../src/Bootstrap.php';
+use Leikwan\Master\Support\HttpSecurity;
 
+require_once __DIR__ . '/../src/Bootstrap.php';
+require_once __DIR__ . '/../src/Support/HttpSecurity.php';
+
+HttpSecurity::removeServerBanner();
 if (session_status() !== PHP_SESSION_ACTIVE) {
-    session_start();
+    HttpSecurity::startSession();
 }
 
 if (!is_file(__DIR__ . '/../.env')) {
@@ -39,7 +43,7 @@ try {
     $response = publicErrorResponse($request, $exception);
 }
 
-$response->send();
+HttpSecurity::withSecurityHeaders($response)->send();
 
 function publicErrorResponse(?Request $request, Throwable $exception): Response
 {
@@ -48,7 +52,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
     } catch (Throwable) {
         $referenceId = substr(hash('sha256', microtime(true) . ':' . getmypid()), 0, 16);
     }
-    error_log('unhandled application exception [' . $referenceId . ']: ' . $exception::class);
+    error_log('unhandled application exception [' . $referenceId . ']: ' . $exception::class . ' :: ' . $exception->getMessage() . ' @ ' . $exception->getFile() . ':' . $exception->getLine());
 
     $status = $exception instanceof ApiException ? $exception->statusCode() : 500;
     $path = $request?->path() ?? (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
@@ -64,6 +68,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'device_banned',
         'device_untrusted',
         'account_banned',
+        'client_online_limit_reached',
         'debug_collection_invalid',
         'debug_collection_not_found',
         'debug_collection_expired',
@@ -99,10 +104,18 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         foreach ([
             'challenge_token', 'challenge_expires_at', 'attempt_id', 'required_collection_mode',
             'retry_after_seconds', 'blocked_until', 'next_location_check_at', 'matched_entity_type',
+            'online_device_limit', 'active_online_devices',
         ] as $field) {
             if (array_key_exists($field, $details)) {
                 $payload[$field] = $details[$field];
             }
+        }
+        if (array_key_exists('online_device_limit', $details)) {
+            // Shipped desktop builds read the counts from a nested object.
+            $payload['details'] = [
+                'online_device_limit' => $details['online_device_limit'],
+                'active_online_devices' => $details['active_online_devices'] ?? 0,
+            ];
         }
         if (isset($details['violation_count'])) {
             $payload['remaining_geo_violations'] = max(0, 3 - (int) $details['violation_count']);
@@ -116,6 +129,32 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
             ];
         }
         return Response::json($status, $payload)->withHeaders([
+            'Cache-Control' => 'no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+    // The WHMCS module shows these to the billing admin as the provisioning error.
+    $whmcsSafeMessages = [
+        'whmcs_auth_failed' => 'The webhook token does not match WHMCS_WEBHOOK_TOKEN.',
+        'whmcs_binding_conflict' => 'The panel account with this email is linked to another billing account.',
+        'whmcs_binding_not_supported' => 'The billing email belongs to a non-tenant panel account.',
+        'whmcs_email_owned_by_unbound_account' => 'A panel account with this email already exists. Sign in to the panel and link the billing account, then retry provisioning.',
+        'whmcs_sso_not_allowed' => 'This billing client is not linked to the panel account that owns the service.',
+        'service_not_found' => 'The panel has no service for this WHMCS service id.',
+        'service_terminated' => 'The panel service is terminated.',
+        'service_renewal_disabled' => 'Renewal is disabled for this panel plan.',
+        'plan_not_found' => 'The panel plan does not exist.',
+        'missing_required_field' => 'A required field is missing.',
+    ];
+    $whmcsCode = $exception instanceof ApiException ? $exception->getMessage() : '';
+    if (str_starts_with($path, '/api/whmcs/')
+        && isset($whmcsSafeMessages[$whmcsCode])
+        && $status >= 400 && $status < 500) {
+        return Response::json($status, [
+            'ok' => false,
+            'error' => $whmcsCode,
+            'message' => $whmcsSafeMessages[$whmcsCode],
+        ])->withHeaders([
             'Cache-Control' => 'no-store',
             'X-Content-Type-Options' => 'nosniff',
         ]);

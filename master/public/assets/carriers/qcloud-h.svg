@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="56" viewBox="0 0 360 56" role="img" aria-label="Tencent Cloud 腾讯云">
+  <!-- Horizontal lockup: cloud mark + Tencent Cloud / 腾讯云 stacked -->
+  <!-- Mark: clipped three-lobe cloud, dark fill inverts to white on dark card -->
+  <g fill="#111827">
+    <path d="M12 36.6c-5.2 0-8.2-2.6-7-6.8.4-1.6 1.6-2.9 3.2-3.8C6.9 19.8 9.9 15.9 15.1 15.6c1.9-2 4.4-3 7-3 2.5 0 4.9 1 6.7 2.7 5.6-1.8 10.2 1 10.8 6.1 1.6.9 2.8 2.2 3.3 3.8 1.2 4.2-1.8 6.8-7 6.8H12Z"/>
+    <path d="M15.6 22.2c2-2.4 5.5-3.2 8.3-1.8" fill="none" stroke="#FFFFFF" stroke-width="1.25" stroke-linecap="round" opacity="0.96"/>
+  </g>
+  <!-- Wordmark -->
+  <g font-family="'Inter var','Helvetica Neue',Arial,sans-serif" fill="#111827">
+    <text x="52" y="22.5" font-size="18" font-weight="800" letter-spacing="-0.02em">Tencent Cloud</text>
+    <text x="52" y="38.2" font-size="11.5" font-weight="600" letter-spacing="0.14em">腾讯云</text>
+  </g>
+  <!-- thin divider for true horizontal feel -->
+  <rect x="228" y="12" width="1.2" height="32" rx="0.6" fill="#111827" opacity="0.14"/>
+  <g font-family="'Inter var','Helvetica Neue',Arial,sans-serif" fill="#111827" opacity="0.62">
+    <text x="235" y="22.5" font-size="10" font-weight="600" letter-spacing="0.14em">TENCENT</text>
+    <text x="235" y="36" font-size="10" font-weight="600" letter-spacing="0.14em">CLOUD</text>
+  </g>
+</svg>

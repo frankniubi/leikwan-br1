@@ -432,6 +432,44 @@ public sealed class ForwardRuntimeManagerTests
         Assert.False(manager.IsForwardRunning(880));
     }
 
+    [Fact]
+    public void ComputeContractSignature_ReadsTheExternalUotGrantFromTheAttachedLeases()
+    {
+        using var temp = new TempStateDirectory();
+        var manager = new ForwardRuntimeManager(
+            CreateConfig(),
+            new TestProcessSupervisor(),
+            new StateManager(temp.Path),
+            binaryExists: _ => true,
+            portListeningProbe: _ => true,
+            ultraRuntimeHost: new RecordingUltraRuntimeHost());
+        var forward = CreateUltraForward();
+        var baseline = manager.ComputeContractSignature(forward);
+        var lease = forward.RuntimeLease!;
+        lease.ExternalUot = CreateExternalUotGrant();
+
+        forward.RuntimeLeases = [lease];
+        var withCandidates = manager.ComputeContractSignature(forward);
+
+        forward.RuntimeLeases = [];
+        var withSingleLease = manager.ComputeContractSignature(forward);
+
+        forward.RuntimeLease = null;
+        var withoutLease = manager.ComputeContractSignature(forward);
+
+        Assert.NotEqual(baseline, withCandidates);
+        Assert.Equal(withCandidates, withSingleLease);
+        Assert.Equal(baseline, withoutLease);
+    }
+
+    private static ExternalUotGrant CreateExternalUotGrant()
+    {
+        using var document = JsonDocument.Parse(
+            """{"enabled":true,"sidecar_target":"sidecar-a.example.com:7443","token":"token-a"}""");
+        return ExternalUotGrant.TryParse(document.RootElement, out var failure)
+            ?? throw new InvalidOperationException(failure);
+    }
+
     private static ForwardConfig CreateUltraForward(int forwardId = 880, int listenPort = 11880)
     {
         var now = DateTimeOffset.UtcNow;

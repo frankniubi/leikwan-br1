@@ -49,6 +49,13 @@ public sealed class ClientMeta
 
     [JsonPropertyName("desired_mptcp_runtime_sha256")]
     public string DesiredMptcpRuntimeSha256 { get; set; } = "";
+
+    /// <summary>
+    /// Hosted user nodes change marker (no node content). Null when the panel
+    /// predates hosted nodes; empty when the client hosts none.
+    /// </summary>
+    [JsonPropertyName("hosted_nodes_revision")]
+    public string? HostedNodesRevision { get; set; }
 }
 
 public sealed class DebugCollectionMeta

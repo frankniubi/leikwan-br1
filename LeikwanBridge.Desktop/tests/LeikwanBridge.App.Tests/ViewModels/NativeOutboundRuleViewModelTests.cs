@@ -144,7 +144,7 @@ public sealed class NativeOutboundRuleViewModelTests
     private sealed class RecordingForwardRuntimeManager : ForwardRuntimeManager
     {
         public RecordingForwardRuntimeManager(StateManager stateManager, ProcessSupervisor supervisor)
-            : base(new AgentConfig(), supervisor, stateManager, _ => true, _ => true)
+            : base(new AgentConfig(), supervisor, stateManager, binaryExists: _ => true, portListeningProbe: _ => true)
         {
         }
 

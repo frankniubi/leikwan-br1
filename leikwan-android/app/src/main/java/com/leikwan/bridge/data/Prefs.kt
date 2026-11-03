@@ -5,9 +5,11 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.leikwan.bridge.BuildConfig
+import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.security.AndroidDeviceIdentity
 import com.leikwan.bridge.service.ProxyConnectionMode
+import com.leikwan.bridge.ui.theme.ThemeMode
 
 class Prefs internal constructor(private val prefs: SharedPreferences) {
     init {
@@ -113,6 +115,19 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getLong("selected_proxy_id", 0L)
         set(v) = prefs.edit().putLong("selected_proxy_id", v).apply()
 
+    /**
+     * The user left the VPN connected. Set after a user connect succeeds, cleared when the user
+     * disconnects; while set, a service restarted by Android (or the device booting) rebuilds the
+     * connection from the persisted picks. Only the intent is stored: the sing-box config is bound
+     * to runtimes and short-lived credentials of the process that built it, so it is rebuilt.
+     */
+    var vpnConnectIntent: Boolean
+        get() = prefs.getBoolean("vpn_connect_intent", false)
+        set(v) {
+            // Written through at once: Android may kill the process right after a connect.
+            prefs.edit().putBoolean("vpn_connect_intent", v).commit()
+        }
+
     var proxyConnectionMode: ProxyConnectionMode
         get() = ProxyConnectionMode.fromStored(prefs.getString("proxy_connection_mode", ProxyConnectionMode.SERVICES.storedValue))
         set(v) = prefs.edit().putString("proxy_connection_mode", v.storedValue).apply()
@@ -158,6 +173,17 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
      * Master switch for user-authored country/category routing rules.
      * Default OFF keeps the Proxies-selected node authoritative for new installs.
      */
+    /** Day / night / follow-system choice for the app theme. */
+    var themeMode: ThemeMode
+        get() = runCatching { ThemeMode.valueOf(prefs.getString("theme_mode", ThemeMode.SYSTEM.name) ?: "") }
+            .getOrDefault(ThemeMode.SYSTEM)
+        set(v) = prefs.edit().putString("theme_mode", v.name).apply()
+
+    /** Per-app VPN scope and in-VPN app rules; applied on the next connect. */
+    var appRouting: AppRoutingConfig
+        get() = AppRoutingConfig.fromJson(prefs.getString("app_routing", null))
+        set(v) = prefs.edit().putString("app_routing", v.toJson()).apply()
+
     var routingSelectorEnabled: Boolean
         get() = prefs.getBoolean("routing_selector_enabled", false)
         set(v) = prefs.edit().putBoolean("routing_selector_enabled", v).apply()
@@ -231,6 +257,7 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
             .remove("native_outbound_route_scope")
             .remove("native_outbound_bypass_china")
             .remove("native_outbound_route_policy")
+            .remove("vpn_connect_intent")
             .commit()
         check(cleared) { "failed to clear enrollment state" }
         if (clearIdentity) {

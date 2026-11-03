@@ -121,7 +121,8 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(2, vm.ConnectionRoutes.Count);
         Assert.Empty(vm.PairedConnectionRoutes);
         Assert.Equal(0, vm.ConnectionRoutes[0].NodeOptions[0].Id);
-        Assert.Equal("未选择已保存节点", vm.ConnectionRoutes[0].NodeOptions[0].Name);
+        // Localized placeholder (未选择已保存节点 in Chinese); English fallback without a running app.
+        Assert.Equal("No saved node selected", vm.ConnectionRoutes[0].NodeOptions[0].Name);
         Assert.Null(vm.SelectedConnectionForward?.SelectedNode);
     }
 
@@ -868,6 +869,7 @@ public sealed class MainWindowViewModelTests
         Assert.Equal("Starting routes", vm.BusyMessage);
         controller.RaiseLog("preparing_routes:2/5");
         Assert.Equal("Starting routes 2/5", vm.BusyMessage);
+        Assert.DoesNotContain(vm.Logs, message => message.EndsWith("preparing_routes:2/5", StringComparison.Ordinal));
         controller.RaiseSnapshot(new DesktopClientSnapshot { IsSignedIn = false, IsBusy = true });
         Assert.Equal("Signing in", vm.BusyMessage);
     }
@@ -999,6 +1001,182 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
+    public void RequiredPolicyShowsUndismissableOverlayAndChecksForTheUpdate()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot { IsSignedIn = true, IsConnected = true, ConnectionStatus = "connected" });
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("1.0.59", vm.RequiredUpdateMinimumVersion);
+        Assert.Equal(1, checks);
+        Assert.False(vm.IsUpdateBannerVisible);
+        // No update known yet (manifest not fetched or failed): Retry re-checks.
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsRequiredUpdateInstallVisible);
+        Assert.True(vm.IsConnected);
+        Assert.Equal(0, controller.DisconnectCalls);
+    }
+
+    [Theory]
+    [InlineData("1.0.58")]
+    [InlineData("1.0.57")]
+    [InlineData("1.0.58.0")]
+    [InlineData("")]
+    [InlineData("not-a-version")]
+    public void MetOrUnparseableMinimumDoesNotGate(string minimum)
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy(minimum);
+
+        Assert.False(vm.IsUpdateRequired);
+        Assert.Equal(0, checks);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateOffersInstallAndCannotBeDismissed()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installs = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) => Task.CompletedTask,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installs++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        controller.RaiseUpdate("1.0.59");
+
+        Assert.True(vm.IsRequiredUpdateInstallVisible);
+        Assert.False(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+
+        vm.DismissUpdateCommand.Execute(null);
+        Assert.True(vm.IsUpdateVisible);
+        Assert.True(vm.IsUpdateRequired);
+
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(1, installs);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateInstallFailureKeepsOverlayWithRetryOnly()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var installs = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) => Task.CompletedTask,
+            installUpdateWithProgress: (_, _) =>
+            {
+                installs++;
+                if (installs == 1)
+                    throw new InvalidOperationException("update_hash_mismatch");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+        controller.RaiseUpdate("1.0.59");
+
+        await vm.InstallUpdateCommand.ExecuteAsync(null);
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.True(vm.ShowUpdateError);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsRequiredUpdateInstallVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+        vm.DismissUpdateCommand.Execute(null);
+        Assert.True(vm.ShowUpdateError);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(2, installs);
+    }
+
+    [Fact]
+    public async Task RequiredUpdateCheckFailureKeepsOverlayAndRetryRechecks()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                if (checks == 1)
+                    throw new InvalidOperationException("manifest unreachable");
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.ShowUpdateError);
+        Assert.True(vm.IsRequiredUpdateRetryVisible);
+        Assert.False(vm.IsUpdateBannerVisible);
+
+        await vm.RetryUpdateCommand.ExecuteAsync(null);
+        Assert.Equal(2, checks);
+        Assert.True(vm.IsUpdateRequired);
+        Assert.True(vm.IsRequiredUpdateUnavailable);
+    }
+
+    [Fact]
+    public void AbsentPolicyInLaterPullDoesNotClearTheGate()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var checks = 0;
+        var vm = new MainWindowViewModel(
+            controller,
+            checkForUpdatesWithProgress: (_, _) =>
+            {
+                checks++;
+                return Task.CompletedTask;
+            },
+            dispatch: action => action(),
+            currentAppVersion: "1.0.58");
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        controller.RaiseClientUpdatePolicy(null);
+        controller.RaiseClientUpdatePolicy("1.0.59");
+
+        Assert.True(vm.IsUpdateRequired);
+        Assert.Equal("1.0.59", vm.RequiredUpdateMinimumVersion);
+        Assert.Equal(1, checks);
+
+        controller.RaiseClientUpdatePolicy("1.0.50");
+        Assert.False(vm.IsUpdateRequired);
+    }
+
+    [Fact]
     public void UpdateProgressReportsPhasePercentAndMessage()
     {
         var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
@@ -1035,6 +1213,128 @@ public sealed class MainWindowViewModelTests
         Assert.Equal(PanelEndpoints.AliyunCdnUrl, vm.PanelUrl);
     }
 
+    private static IReadOnlyList<EgressInterfaceOption> EgressOptions(string? automaticLabel, params string[] adapters)
+        => EgressInterfaceCatalog.Build(
+            adapters.Select((name, index) => new LeikwanBridge.Core.Services.PanelEgress.NetworkAdapterInfo(
+                name, name, 10 + index, 10 + index, true,
+                LeikwanBridge.Core.Services.PanelEgress.NetworkAdapterKind.Physical, 25, 25,
+                [], [System.Net.IPAddress.Parse($"192.168.{index + 1}.20")])).ToList(),
+            automaticLabel);
+
+    [Fact]
+    public void SavedAdapterThatDisappearedFallsBackToAutomaticAndSaysSo()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            preferredEgressInterface: "USB Ethernet",
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0"));
+
+        Assert.Equal(EgressInterfaceCatalog.AutomaticId, vm.PreferredEgressInterface);
+        Assert.Equal(["", "en0"], vm.EgressInterfaceOptions.Select(option => option.Id));
+        Assert.Equal("Automatic (recommended)", vm.EgressInterfaceOptions[0].CompactLabel);
+        Assert.Equal("en0 · 192.168.1.20", vm.EgressInterfaceOptions[1].CompactLabel);
+        Assert.True(vm.IsEgressInterfaceNoticeVisible);
+        Assert.Contains("USB Ethernet", vm.EgressInterfaceNotice, StringComparison.Ordinal);
+        // Drawing the page never rewrites the stored preference by itself.
+        Assert.Empty(saved);
+    }
+
+    [Fact]
+    public void LoginPageAdapterChoiceIsAppliedImmediately()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        Assert.True(vm.IsLoginVisible);
+
+        vm.PreferredEgressInterface = "en7";
+
+        Assert.Equal(["en7"], saved);
+        Assert.False(vm.IsEgressInterfaceNoticeVisible);
+    }
+
+    [Fact]
+    public void SettingsPageAdapterChoiceWaitsForSavePreferences()
+    {
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot { IsSignedIn = true, ActiveClientName = "Client 27" }),
+            dispatch: action => action(),
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        Assert.False(vm.IsLoginVisible);
+
+        vm.PreferredEgressInterface = "en7";
+
+        Assert.Empty(saved);
+    }
+
+    [Fact]
+    public async Task SignInAppliesTheAdapterBeforeTheLoginRequest()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var saved = new List<(string Value, int LoginsSoFar)>();
+        var vm = new MainWindowViewModel(
+            controller,
+            dispatch: action => action(),
+            preferredEgressInterface: "en7",
+            saveEgressInterface: (value, _) => { saved.Add((value, controller.AgentTokenLoginCalls)); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, "en0", "en7"));
+        vm.PanelUrl = "https://panel.example.test";
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal([("en7", 0)], saved);
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+    }
+
+    [Fact]
+    public async Task SignInFallsBackWhenTheAdapterVanishedAfterThePageWasDrawn()
+    {
+        var controller = new FakeController(new DesktopClientSnapshot());
+        var adapters = new[] { "en0", "en7" };
+        var saved = new List<string>();
+        var vm = new MainWindowViewModel(
+            controller,
+            dispatch: action => action(),
+            preferredEgressInterface: "en7",
+            saveEgressInterface: (value, _) => { saved.Add(value); return Task.CompletedTask; },
+            egressInterfaceCatalog: label => EgressOptions(label, adapters));
+        vm.PanelUrl = "https://panel.example.test";
+        vm.ClientIdText = "27";
+        vm.AgentToken = "agent-token-27";
+        adapters = ["en0"];
+
+        await vm.LoginCommand.ExecuteAsync(null);
+
+        Assert.Equal([EgressInterfaceCatalog.AutomaticId], saved);
+        Assert.Contains("en7", vm.EgressInterfaceNotice, StringComparison.Ordinal);
+        Assert.Equal(1, controller.AgentTokenLoginCalls);
+    }
+
+    [Fact]
+    public void RefreshReloadsTheAdapterList()
+    {
+        var adapters = new[] { "en0" };
+        var vm = new MainWindowViewModel(
+            new FakeController(new DesktopClientSnapshot()),
+            dispatch: action => action(),
+            egressInterfaceCatalog: label => EgressOptions(label, adapters));
+        adapters = ["en0", "en5"];
+
+        vm.RefreshEgressInterfacesCommand.Execute(null);
+
+        Assert.Equal(["", "en0", "en5"], vm.EgressInterfaceOptions.Select(option => option.Id));
+    }
+
     private sealed class FakeController(DesktopClientSnapshot initial) : IDesktopClientController
     {
         public event Action<DesktopClientSnapshot>? SnapshotChanged;
@@ -1043,6 +1343,7 @@ public sealed class MainWindowViewModelTests
         public event Action<string>? NoticeRaised;
         public event Action<string>? LogRaised;
         public event Action<string>? UpdateAvailable;
+        public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
 
         public DesktopClientSnapshot Snapshot { get; private set; } = initial;
         public NativeOutboundCapability? NativeOutbound => Snapshot.NativeOutbound;
@@ -1050,6 +1351,7 @@ public sealed class MainWindowViewModelTests
         public int AgentTokenLoginCalls { get; private set; }
         public int ConnectCalls { get; private set; }
         public int RefreshCalls { get; private set; }
+        public int DisconnectCalls { get; private set; }
         public (int ClientId, string Token) LastAgentTokenLogin { get; private set; }
         public bool SignInOnAgentToken { get; init; }
         public bool ThrowOnConnect { get; init; }
@@ -1125,7 +1427,11 @@ public sealed class MainWindowViewModelTests
             RefreshCalls++;
             return Task.CompletedTask;
         }
-        public Task DisconnectAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public Task DisconnectAsync(CancellationToken ct = default)
+        {
+            DisconnectCalls++;
+            return Task.CompletedTask;
+        }
         public Task StartForwardAsync(int forwardId, CancellationToken ct = default)
         {
             StartedForwards.Add(forwardId);
@@ -1178,6 +1484,9 @@ public sealed class MainWindowViewModelTests
         }
         public void RaiseNotice(string notice) => NoticeRaised?.Invoke(notice);
         public void RaiseUpdate(string version) => UpdateAvailable?.Invoke(version);
+        public void RaiseClientUpdatePolicy(string? minimumVersion)
+            => ClientUpdatePolicyReceived?.Invoke(
+                minimumVersion is null ? null : new ClientUpdatePolicy { MinimumVersion = minimumVersion });
         public void RaiseLog(string message) => LogRaised?.Invoke(message);
     }
 

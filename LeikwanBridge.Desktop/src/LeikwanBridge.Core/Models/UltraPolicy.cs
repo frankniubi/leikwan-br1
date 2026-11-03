@@ -20,6 +20,7 @@ public sealed class UltraPolicy
     [JsonPropertyName("rate_limit_mbps")] public long RateLimitMbps { get; init; }
     [JsonPropertyName("quota_remaining_bytes")] public long QuotaRemainingBytes { get; init; }
     [JsonPropertyName("target_digest")] public string TargetDigest { get; init; } = "";
+    [JsonPropertyName("tcp_first_flight")] public UltraTCPFirstFlight? TCPFirstFlight { get; init; }
 
     public bool IsUsable(ForwardConfig forward, DateTimeOffset now)
         => GetValidationFailure(forward, now) is null;
@@ -42,10 +43,11 @@ public sealed class UltraPolicy
             return "target_digest_mismatch";
         if (ExpiresAt <= now)
             return "expired";
-        // The panel caps policy TTL at five minutes. Allow a small amount of
-        // clock skew and request transit time so a valid grant is not rejected
-        // merely because the panel clock is a few seconds ahead.
-        if (ExpiresAt > now.AddMinutes(5).AddSeconds(30))
+        // A client that sends the offline-validity header may be granted up to
+        // an hour (30 min requested); renewal is still driven by renew_after.
+        // Allow a small amount of clock skew and request transit time so a valid
+        // grant is not rejected merely because the panel clock is a few seconds ahead.
+        if (!UltraGrantValidity.IsWithinAcceptedWindow(ExpiresAt, now))
             return "expiry_window";
         if (QuotaRemainingBytes <= 0)
             return "quota";
@@ -61,4 +63,57 @@ public sealed class UltraPolicy
 
     private static bool IsHex64(string value)
         => value.Length == 64 && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+}
+
+public sealed class UltraTCPFirstFlight
+{
+    // The panel derives the list from all of a forward's lines when a rule
+    // names none, so a direction can carry more than the 4 leases one
+    // grant holds.
+    public const int MaxCandidateHashes = 16;
+
+    [JsonPropertyName("target")] public string Target { get; init; } = "";
+    [JsonPropertyName("policy_generation")] public string PolicyGeneration { get; init; } = "";
+    [JsonPropertyName("candidate_hashes")] public List<string> CandidateHashes { get; init; } = [];
+    [JsonPropertyName("expires_at")] public DateTimeOffset ExpiresAt { get; init; }
+    [JsonPropertyName("prefix_bytes")] public int PrefixBytes { get; init; }
+    [JsonPropertyName("delay_ms")] public int DelayMillis { get; init; }
+
+    public object? ToBootstrapPayload(ForwardConfig forward, IReadOnlyList<UltraLease> leases)
+    {
+        if (leases.Count is < 1 or > 4)
+            return null;
+        var lease = leases[0];
+        // Emit the whole panel-scoped list: the runtime matches each stream's
+        // authenticated candidate, and a later lease rotation onto another
+        // listed line must keep the compatibility without a restart.
+        var candidateHashes = CandidateHashes
+            .Where(value => value.Length == 64 && value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            .Distinct(StringComparer.Ordinal)
+            .Take(MaxCandidateHashes)
+            .ToArray();
+        // The leases the runtime starts with do not have to be on the list.
+        // The payload is bootstrap-only and lives for the runtime's lifetime,
+        // so gating it on the first leases (or bounding its expiry by them)
+        // lost the pilot for good whenever the runtime happened to start on
+        // another line and later rotated onto a listed one. The runtime only
+        // applies it to streams whose authenticated candidate is listed.
+        // Expiry is checked here, at issue time, like on Android.
+        if (!string.Equals(Target, forward.Target, StringComparison.Ordinal)
+            || !string.Equals(PolicyGeneration, lease.PolicyGeneration, StringComparison.Ordinal)
+            || ExpiresAt <= DateTimeOffset.UtcNow
+            || PrefixBytes is < 1 or > 16
+            || DelayMillis is < 1 or > 1000
+            || candidateHashes.Length is < 1 or > MaxCandidateHashes)
+            return null;
+        return new
+        {
+            target = Target,
+            policy_generation = PolicyGeneration,
+            candidate_hashes = candidateHashes,
+            expires_at = ExpiresAt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            prefix_bytes = PrefixBytes,
+            delay_ms = DelayMillis,
+        };
+    }
 }

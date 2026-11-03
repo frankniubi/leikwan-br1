@@ -9,13 +9,31 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     event Action<int, string>? ForwardRejected;
     event Action<string>? LogRaised;
 
+    /// <summary>
+    /// Raised with the refusal when the panel starts refusing this device
+    /// because the online device limit is full, and with null once a config
+    /// pull succeeds again.
+    /// </summary>
+    event Action<DeviceLimitReachedException?>? DeviceLimitChanged { add { } remove { } }
+
+    /// <summary>
+    /// Raised once per successful full config pull with its
+    /// <c>client_update</c> policy (null when the pull carried none).
+    /// </summary>
+    event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived { add { } remove { } }
+
     IReadOnlyList<ForwardConfig> Forwards { get; }
     NativeOutboundCapability? NativeOutbound { get; }
+
+    /// <summary>The current device-limit refusal, or null while the panel accepts this device.</summary>
+    DeviceLimitReachedException? DeviceLimit => null;
     bool IsForwardRunning(int forwardId);
     Task StartAsync(CancellationToken ct);
     Task RefreshAsync(CancellationToken ct);
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
+    Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => RefreshAsync(ct);
     Task StopForwardAsync(int forwardId, CancellationToken ct);
     Task<ProxyForwardLease> AcquireProxyForwardAsync(int forwardId, CancellationToken ct = default)
         => ProxyForwardLease.AcquireAsync(
@@ -61,6 +79,12 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     private readonly int _healthIntervalSeconds;
     private readonly TimeSpan _heartbeatInterval;
     private readonly SemaphoreSlim _heartbeatGate = new(1, 1);
+    private readonly object _heartbeatScheduleGate = new();
+    private readonly object _heartbeatNoticeGate = new();
+    private DateTimeOffset _lastHeartbeatScheduledAtUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+    private int _consecutiveHeartbeatFailures;
+    private static readonly TimeSpan HeartbeatFailureNoticeInterval = TimeSpan.FromMinutes(5);
     private readonly object _taskLock = new();
     private CancellationTokenSource? _cts;
     private Task? _heartbeatLoop;
@@ -68,6 +92,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     private Task? _lastDiagnostics;
     private bool _healthStarted;
     private bool _stopped;
+    private DeviceLimitReachedException? _deviceLimit;
 
     public DesktopRuntimeSession(
         MasterApiClient api,
@@ -88,7 +113,9 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _diagnostics = diagnostics;
         _pollIntervalSeconds = Math.Max(1, pollIntervalSeconds);
         _healthIntervalSeconds = Math.Max(1, healthIntervalSeconds);
-        _heartbeatInterval = heartbeatInterval ?? TimeSpan.FromSeconds(30);
+        _heartbeatInterval = heartbeatInterval is { } interval && interval > TimeSpan.Zero
+            ? interval
+            : TimeSpan.FromSeconds(30);
         _polling.ForwardsUpdated += OnForwardsUpdated;
         _polling.NativeOutboundUpdated += capability => NativeOutboundChanged?.Invoke(capability);
         _polling.ForwardRejected += (forwardId, notice) => ForwardRejected?.Invoke(forwardId, notice);
@@ -96,14 +123,26 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         _polling.PullStateChanged += state =>
         {
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                ClearDeviceLimit();
                 QueueHeartbeat();
+            }
         };
         _polling.SyncError += exception =>
         {
+            // The polling service already holds the loop on its steady
+            // device-limit cadence; a recovery request would only queue a
+            // forced pull that the panel refuses the same way.
+            if (DeviceLimitReachedException.TryFind(exception, out var limit))
+            {
+                SetDeviceLimit(limit);
+                return;
+            }
             LogRaised?.Invoke($"config_sync_failed:{exception.GetType().Name}");
             _polling.RequestControlPlaneRecovery();
         };
         _polling.ClientUpdated += client => QueueDiagnostics(client);
+        _polling.ClientUpdatePolicyReceived += policy => ClientUpdatePolicyReceived?.Invoke(policy);
         _health.HealthIssue += (forwardId, issue) => LogRaised?.Invoke($"health_issue:{forwardId}:{BoundCode(issue)}");
         _heartbeat.UltraActionsReceived += ApplyUltraPolicyActions;
     }
@@ -112,8 +151,12 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
     public event Action<int, string>? ForwardRejected;
     public event Action<string>? LogRaised;
+    public event Action<DeviceLimitReachedException?>? DeviceLimitChanged;
+    public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
 
     public IReadOnlyList<ForwardConfig> Forwards => _polling.LatestForwards;
+
+    public DeviceLimitReachedException? DeviceLimit => Volatile.Read(ref _deviceLimit);
 
     public NativeOutboundCapability? NativeOutbound => _polling.LatestNativeOutbound;
 
@@ -171,6 +214,14 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             {
                 throw;
             }
+            catch (Exception exception) when (DeviceLimitReachedException.TryFind(exception, out var limit))
+            {
+                // The profile is valid; only the online device limit is full.
+                // Start the polling loop anyway: it retries on the steady
+                // device-limit cadence and applies routes once a slot frees.
+                SetDeviceLimit(limit);
+                break;
+            }
             catch (Exception exception) when (attempt < StartupSyncRetryDelays.Length)
             {
                 lastSyncError = exception;
@@ -199,7 +250,15 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         // without cancelling the session's background polling token.
         using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
         refreshCts.CancelAfter(TimeSpan.FromSeconds(15));
-        await _polling.SyncOnceAsync(refreshCts.Token);
+        try
+        {
+            await _polling.SyncOnceAsync(refreshCts.Token);
+        }
+        catch (Exception exception) when (DeviceLimitReachedException.TryFind(exception, out var limit))
+        {
+            SetDeviceLimit(limit);
+            throw;
+        }
     }
 
     public async Task StopAsync()
@@ -230,13 +289,19 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     }
 
     public Task StartForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "manual_apply", ct);
+
+    public Task EnsureForwardAsync(int forwardId, CancellationToken ct)
+        => StartForwardCoreAsync(forwardId, "automatic_ensure", ct);
+
+    private Task StartForwardCoreAsync(int forwardId, string reason, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var forward = Forwards.FirstOrDefault(item => item.ForwardId == forwardId)
             ?? throw new KeyNotFoundException("forward_not_found");
         return Task.Run(() =>
         {
-            _runtime.RestartForward(forward, force: true, reason: "manual_apply");
+            _runtime.RestartForward(forward, force: true, reason: reason);
             PublishCurrentForwards();
         }, ct);
     }
@@ -328,7 +393,7 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
-                await SendHeartbeatSafeAsync(ct);
+                QueueHeartbeat();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -337,6 +402,17 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
 
     private void QueueHeartbeat()
     {
+        // The panel refuses heartbeats from a device it has not admitted.
+        if (Volatile.Read(ref _deviceLimit) is not null)
+            return;
+        lock (_heartbeatScheduleGate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastHeartbeatScheduledAtUtc < _heartbeatInterval)
+                return;
+            _lastHeartbeatScheduledAtUtc = now;
+        }
+
         var ct = _cts?.Token ?? CancellationToken.None;
         var task = SendHeartbeatSafeAsync(ct);
         lock (_taskLock)
@@ -356,14 +432,52 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             {
                 _heartbeatGate.Release();
             }
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures = 0;
+                _lastHeartbeatNoticeAtUtc = DateTimeOffset.MinValue;
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
+            var shouldNotify = false;
+            lock (_heartbeatNoticeGate)
+            {
+                _consecutiveHeartbeatFailures++;
+                var now = DateTimeOffset.UtcNow;
+                if (_consecutiveHeartbeatFailures == 1
+                    || now - _lastHeartbeatNoticeAtUtc >= HeartbeatFailureNoticeInterval)
+                {
+                    _lastHeartbeatNoticeAtUtc = now;
+                    shouldNotify = true;
+                }
+            }
+            if (shouldNotify)
+                LogRaised?.Invoke($"heartbeat_failed:{exception.GetType().Name}");
         }
+    }
+
+    private void SetDeviceLimit(DeviceLimitReachedException limit)
+    {
+        var previous = Interlocked.Exchange(ref _deviceLimit, limit);
+        if (previous is null
+            || previous.OnlineDeviceLimit != limit.OnlineDeviceLimit
+            || previous.ActiveOnlineDevices != limit.ActiveOnlineDevices)
+        {
+            LogRaised?.Invoke($"device_limit_reached:{limit.ActiveOnlineDevices}/{limit.OnlineDeviceLimit}");
+            DeviceLimitChanged?.Invoke(limit);
+        }
+    }
+
+    private void ClearDeviceLimit()
+    {
+        if (Interlocked.Exchange(ref _deviceLimit, null) is null)
+            return;
+        LogRaised?.Invoke("device_limit_cleared");
+        DeviceLimitChanged?.Invoke(null);
     }
 
     private void QueueDiagnostics(ClientMeta client)

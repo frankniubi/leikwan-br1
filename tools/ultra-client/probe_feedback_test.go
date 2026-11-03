@@ -60,7 +60,7 @@ func TestRejectedCandidatesAreReportedThroughTheFailureSink(t *testing.T) {
 
 func TestProbeFailureBecomesUdpEvidenceWithTheRelayIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	writer := newStatusWriter(path, 170, time.Millisecond)
+	writer := newTestStatusWriter(t, path, 170, time.Millisecond)
 	lease := ProviderLease{
 		IP: "106.75.227.147", Port: 5438,
 		CandidateKeyHash: strings.Repeat("c", 64),
@@ -99,7 +99,7 @@ func TestProbeFailureBecomesUdpEvidenceWithTheRelayIdentity(t *testing.T) {
 // the UDP half would hide an endpoint that carries neither protocol.
 func TestProbeFailureReportsBothHalvesWhenBothFail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	writer := newStatusWriter(path, 170, time.Millisecond)
+	writer := newTestStatusWriter(t, path, 170, time.Millisecond)
 	writer.RecordProbeFailure(ProviderLease{
 		CandidateKeyHash: strings.Repeat("d", 64),
 		LeaseHash:        strings.Repeat("5", 64),
@@ -127,7 +127,7 @@ func TestProbeFailureReportsBothHalvesWhenBothFail(t *testing.T) {
 // batch would accuse three healthy relays.
 func TestHealthyCandidatesAreNotReported(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	writer := newStatusWriter(path, 170, time.Millisecond)
+	writer := newTestStatusWriter(t, path, 170, time.Millisecond)
 	writer.RecordProbeFailure(ProviderLease{
 		CandidateKeyHash: strings.Repeat("e", 64),
 		LeaseHash:        strings.Repeat("6", 64),

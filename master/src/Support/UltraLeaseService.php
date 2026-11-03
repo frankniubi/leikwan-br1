@@ -60,6 +60,30 @@ final class UltraLeaseService
      * published artifact, and the Windows runtime is embedded in the installer.
      */
     public const ATTESTATION_ENFORCE_PLATFORMS_KEY = 'ULTRA_ATTESTATION_ENFORCE_PLATFORMS';
+    /**
+     * What "enforce" does with a device on an enforced platform that cannot be
+     * judged: no device session, no attestation, or a fingerprint the panel
+     * never published. "allow" (the default) lets it through as before; "deny"
+     * refuses it with ERROR_RUNTIME_UNATTESTED. Only switch to "deny" once the
+     * admin attestation view shows every live client reporting a released
+     * fingerprint, otherwise older builds lose their leases.
+     */
+    public const ATTESTATION_UNATTESTED_KEY = 'ULTRA_ATTESTATION_UNATTESTED';
+    /**
+     * Extra released binaries, as JSON {"<fingerprint>": ["<sha256>", ...]}.
+     * versions.json only names the current artifact per platform, so a runtime
+     * release would otherwise refuse every client still running the previous
+     * build until it updates. List the previous release's hashes here for the
+     * rollout window, then remove them.
+     */
+    public const ATTESTATION_EXTRA_HASHES_KEY = 'ULTRA_ATTESTATION_EXTRA_HASHES_JSON';
+    /**
+     * Operator-approved non-official runtimes (self-built or containerised
+     * agents), as comma-separated "<client_id>:<device_id>" pairs. A listed
+     * device skips the attestation check entirely. The pair is scoped to its
+     * client so another account cannot borrow an exempt device id.
+     */
+    public const ATTESTATION_EXEMPT_DEVICES_KEY = 'ULTRA_ATTESTATION_EXEMPT_DEVICES';
     public const ERROR_RUNTIME_UNATTESTED = 'lease_runtime_unattested';
 
     /** @var callable(array<string,mixed>,int,string):array<string,mixed> */
@@ -85,6 +109,8 @@ final class UltraLeaseService
 
     /** @var array<string, list<string>>|null fingerprint => released binary hashes */
     private ?array $releasedRuntimeHashes = null;
+
+    private ?UltraLeaseTimeLedger $leaseTime = null;
 
     public function __construct(
         private Config $config,
@@ -256,9 +282,10 @@ final class UltraLeaseService
         }
 
         $leaseId = 'ul2_' . $this->base64UrlEncode(random_bytes(24));
-        $leaseExpiresAt = min($expiresAt, $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS);
+        $leaseExpiresAt = min($expiresAt, $this->now() + $this->leaseTtlSeconds($policy));
         $this->markConsumed($clientId, $deviceHash, $forwardId, $nonceHash, hash('sha256', $leaseId), $leaseExpiresAt, $candidateKeyHash);
         $this->rememberIssuedLease($clientId, $deviceHash, $leaseExpiresAt);
+        $this->recordLeaseTime($clientId, $policy, $deviceHash, $forwardId, $leaseExpiresAt);
         $lease = $this->scrubLease([
             'protocol' => $isNative ? UltraMode::NATIVE_SOCKS5_PROTOCOL : UltraMode::POLICY_PROTOCOL,
             'purpose' => $normalized['purpose'],
@@ -267,6 +294,8 @@ final class UltraLeaseService
             'lease_id' => $leaseId,
             'policy_generation' => $policyGeneration,
             'expires_at' => $this->formatTimestamp($leaseExpiresAt),
+            'policy_expires_at' => $this->formatTimestamp($expiresAt),
+            'policy_renew_after' => (string) ($policy['renew_after'] ?? ''),
             'transport' => $policyTransport,
             'rate_limit_mbps' => max(0, min(100000, (int) ($policy['rate_limit_mbps'] ?? 0))),
             'quota_remaining_bytes' => $quotaBytes,
@@ -289,6 +318,52 @@ final class UltraLeaseService
             'direct_ip_cidrs' => $this->directIpCidrsForCandidate($candidate),
         ]);
         return ['ok' => true, 'lease' => $lease];
+    }
+
+    /**
+     * Lease lifetime ceiling. The short path (no offline validity on the
+     * policy) keeps MAX_POLICY_TTL_SECONDS exactly as before. A policy built for
+     * a client that announced UltraMode::OFFLINE_VALIDITY_HEADER carries the
+     * effective ceiling in 'offline_validity_seconds' (set server-side by the
+     * lease controller, never taken from the request body); the lease is then
+     * min(policy expiry, now + that ceiling).
+     *
+     * @param array<string,mixed> $policy
+     */
+    private function leaseTtlSeconds(array $policy): int
+    {
+        $validity = (int) ($policy['offline_validity_seconds'] ?? 0);
+        if ($validity >= UltraMode::MIN_OFFLINE_VALIDITY_SECONDS && $validity <= UltraMode::MAX_OFFLINE_VALIDITY_SECONDS) {
+            return $validity;
+        }
+        return UltraMode::MAX_POLICY_TTL_SECONDS;
+    }
+
+    /**
+     * Panel-observed connected time (UltraLeaseTimeLedger). Runs only after the
+     * lease is committed and can never change the outcome: a ledger failure is
+     * logged and the lease is still returned.
+     *
+     * @param array<string,mixed> $policy
+     */
+    private function recordLeaseTime(int $clientId, array $policy, string $deviceHash, int $forwardId, int $leaseExpiresAt): void
+    {
+        if ($this->db === null) {
+            return;
+        }
+        try {
+            $serviceId = (int) ($policy['service_id'] ?? 0);
+            ($this->leaseTime ??= new UltraLeaseTimeLedger($this->db))->recordLease(
+                $clientId,
+                $serviceId > 0 ? $serviceId : null,
+                $deviceHash,
+                $forwardId,
+                $this->now(),
+                $leaseExpiresAt
+            );
+        } catch (Throwable $exception) {
+            error_log('ultra_lease_time_record_failed ' . $exception::class);
+        }
     }
 
     /** @return array<string,mixed> */
@@ -316,6 +391,36 @@ final class UltraLeaseService
         return ['ok' => true, 'revoked' => $count];
     }
 
+    /**
+     * Retire every lease for one forward.
+     *
+     * Used when a forward's lease scope changes (target, transport or listen
+     * port): the policy_generation covers all three, so every lease already
+     * issued for the forward describes a scope the panel no longer honours.
+     * Revoking them is a fail-closed bookkeeping step - issueLease() already
+     * refuses the old generation, and this makes sure a stale lease can never be
+     * replayed back into a valid one.
+     *
+     * @return int number of leases newly revoked
+     */
+    public function revokeForwardLeases(int $forwardId): int
+    {
+        if ($forwardId <= 0 || $this->db === null) {
+            return 0;
+        }
+        $now = gmdate('Y-m-d H:i:s', $this->now());
+        return $this->db->execute(
+            'UPDATE ultra_client_leases
+             SET revoked_at = :revoked_at, updated_at = :updated_at
+             WHERE forward_id = :forward_id AND revoked_at IS NULL',
+            [
+                'forward_id' => $forwardId,
+                'revoked_at' => $now,
+                'updated_at' => $now,
+            ]
+        );
+    }
+
     public function revokeDevice(int $clientId, string $deviceId): int
     {
         $deviceId = trim($deviceId);
@@ -341,9 +446,9 @@ final class UltraLeaseService
      * device's last session claims a fingerprint the panel published AND its
      * reported binary hash matches none of that release's published hashes.
      *
-     * Everything else - no session row, no attestation, an unknown fingerprint,
-     * a platform outside the enforced list, an unreadable manifest - fails open
-     * and is left to the report-only admin view.
+     * A platform outside the enforced list and an unreadable manifest always
+     * fail open. No session row, no attestation or an unknown fingerprint fail
+     * open unless ULTRA_ATTESTATION_UNATTESTED=deny.
      */
     private function attestationRefusal(int $clientId, string $deviceHash): ?string
     {
@@ -351,6 +456,9 @@ final class UltraLeaseService
             return null;
         }
         if (strtolower(trim((string) $this->config->get(self::ATTESTATION_ENFORCEMENT_KEY, 'report'))) !== 'enforce') {
+            return null;
+        }
+        if ($this->deviceIsAttestationExempt($clientId, $deviceHash)) {
             return null;
         }
         $expected = $this->releasedRuntimeHashes();
@@ -369,16 +477,30 @@ final class UltraLeaseService
             error_log('ultra_attestation_lookup_failed ' . $throwable->getMessage());
             return null;
         }
+        $denyUnattested = strtolower(trim((string) $this->config->get(self::ATTESTATION_UNATTESTED_KEY, 'allow'))) === 'deny';
         if (!is_array($session)) {
+            return $denyUnattested ? $this->unattestedRefusal($clientId, $deviceHash, 'no-session') : null;
+        }
+        $platform = trim((string) ($session['platform'] ?? ''));
+        if ($platform === '' && $denyUnattested) {
+            // A caller that does not even say what it is cannot opt out of
+            // the check by leaving the platform header off.
+            return $this->unattestedRefusal($clientId, $deviceHash, 'no-platform');
+        }
+        if (!$this->platformIsEnforced($platform)) {
             return null;
         }
         $fingerprint = strtolower(trim((string) ($session['ultra_runtime_fingerprint'] ?? '')));
         $reported = strtolower(trim((string) ($session['ultra_runtime_self_sha256'] ?? '')));
         if ($fingerprint === '' || $reported === '' || !isset($expected[$fingerprint])) {
-            return null;
-        }
-        if (!$this->platformIsEnforced((string) ($session['platform'] ?? ''))) {
-            return null;
+            if (!$denyUnattested) {
+                return null;
+            }
+            return $this->unattestedRefusal(
+                $clientId,
+                $deviceHash,
+                $fingerprint === '' || $reported === '' ? 'no-attestation' : 'unknown-fingerprint'
+            );
         }
         foreach ($expected[$fingerprint] as $allowed) {
             if (hash_equals($allowed, $reported)) {
@@ -393,6 +515,41 @@ final class UltraLeaseService
             substr($reported, 0, 16)
         ));
         return self::ERROR_RUNTIME_UNATTESTED;
+    }
+
+    private function unattestedRefusal(int $clientId, string $deviceHash, string $reason): string
+    {
+        error_log(sprintf(
+            'ultra_attestation_unattested client=%d device=%s reason=%s',
+            $clientId,
+            substr($deviceHash, 0, 16),
+            $reason
+        ));
+        return self::ERROR_RUNTIME_UNATTESTED;
+    }
+
+    /** Whether ULTRA_ATTESTATION_EXEMPT_DEVICES lists this client's device. */
+    private function deviceIsAttestationExempt(int $clientId, string $deviceHash): bool
+    {
+        return self::deviceListed($this->config->get(self::ATTESTATION_EXEMPT_DEVICES_KEY, ''), $clientId, $deviceHash);
+    }
+
+    /**
+     * Whether a comma-separated "<client_id>:<device_id>" list names this
+     * client's device. $deviceHash is sha256 of the trimmed device id.
+     */
+    public static function deviceListed(?string $configured, int $clientId, string $deviceHash): bool
+    {
+        foreach (explode(',', (string) $configured) as $entry) {
+            [$entryClient, $entryDevice] = array_pad(explode(':', trim($entry), 2), 2, '');
+            $entryClient = trim($entryClient);
+            $entryDevice = trim($entryDevice);
+            if ($entryDevice !== '' && ctype_digit($entryClient) && (int) $entryClient === $clientId
+                && hash_equals(hash('sha256', $entryDevice), $deviceHash)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Platform prefixes the attestation check applies to ("linux" by default). */
@@ -425,19 +582,22 @@ final class UltraLeaseService
      */
     private function releasedRuntimeHashes(): array
     {
-        if ($this->releasedRuntimeHashes !== null) {
-            return $this->releasedRuntimeHashes;
-        }
-        $this->releasedRuntimeHashes = [];
-        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
-        if (!is_file($path)) {
-            return $this->releasedRuntimeHashes;
-        }
-        $decoded = json_decode((string) @file_get_contents($path), true);
-        if (!is_array($decoded)) {
-            return $this->releasedRuntimeHashes;
-        }
-        foreach ($decoded as $entry) {
+        return $this->releasedRuntimeHashes ??= self::releasedRuntimeHashMap($this->config);
+    }
+
+    /**
+     * The released fingerprint => hashes map behind enforcement, shared with
+     * the admin attestation view so both judge sessions against the same
+     * releases. $manifestPath defaults to the live artifacts/versions.json.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function releasedRuntimeHashMap(Config $config, ?string $manifestPath = null): array
+    {
+        $released = [];
+        $path = $manifestPath ?? dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'artifacts' . DIRECTORY_SEPARATOR . 'versions.json';
+        $decoded = is_file($path) ? json_decode((string) @file_get_contents($path), true) : null;
+        foreach (is_array($decoded) ? $decoded : [] as $entry) {
             if (!is_array($entry)) {
                 continue;
             }
@@ -450,16 +610,27 @@ final class UltraLeaseService
             if ($fingerprint === '' || preg_match('/^[a-f0-9]{64}$/', $hash) !== 1) {
                 continue;
             }
-            if (!isset($this->releasedRuntimeHashes[$fingerprint])) {
-                $this->releasedRuntimeHashes[$fingerprint] = [];
+            if (!in_array($hash, $released[$fingerprint] ?? [], true)) {
+                $released[$fingerprint][] = $hash;
             }
-            if (!in_array($hash, $this->releasedRuntimeHashes[$fingerprint], true)) {
-                $this->releasedRuntimeHashes[$fingerprint][] = $hash;
+        }
+        $extra = json_decode((string) $config->get(self::ATTESTATION_EXTRA_HASHES_KEY, ''), true);
+        foreach (is_array($extra) ? $extra : [] as $fingerprint => $hashes) {
+            $fingerprint = strtolower(trim((string) $fingerprint));
+            if ($fingerprint === '' || !is_array($hashes)) {
+                continue;
+            }
+            foreach ($hashes as $hash) {
+                $hash = strtolower(trim((string) $hash));
+                if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1
+                    && !in_array($hash, $released[$fingerprint] ?? [], true)) {
+                    $released[$fingerprint][] = $hash;
+                }
             }
         }
         // One fingerprint can ship several platform binaries; a client only ever
         // reports one of them, so every published hash for the fingerprint counts.
-        return $this->releasedRuntimeHashes;
+        return $released;
     }
 
     /**
@@ -835,6 +1006,38 @@ final class UltraLeaseService
                 'created_at' => $now,
                 'updated_at' => $now,
             ]);
+            // Retire the leases this one replaces, by EXPIRING them rather than
+            // revoking them. Every renewal used to insert a fresh row and leave
+            // the previous one live until its own expiry, so a device's live
+            // count grew with every renewal instead of staying at one per
+            // forward; a device that renewed often reached
+            // ULTRA_MAX_LIVE_LEASES_PER_DEVICE and was then refused every further
+            // lease with lease_device_live_limit -- a lockout the device
+            // inflicted on itself, and the cause of forwards sitting enabled
+            // with no lease.
+            //
+            // It must not be revoked_at: isGenerationRevoked() treats "any row
+            // of this forward+generation carries revoked_at" as the whole
+            // generation being retired, which is how a target change kills the
+            // old scope. Revoking a superseded renewal would therefore make the
+            // CURRENT generation look dead and the panel would refuse it. An
+            // expired lease is simply no longer live, which is exactly what a
+            // superseded renewal is.
+            $this->db->execute(
+                'UPDATE ultra_client_leases
+                 SET expires_at = :expires_at, updated_at = :updated_at
+                 WHERE client_id = :client_id AND device_hash = :device_hash
+                   AND forward_id = :forward_id AND revoked_at IS NULL
+                   AND nonce_hash <> :nonce_hash AND expires_at > :expires_at',
+                [
+                    'expires_at' => $now,
+                    'updated_at' => $now,
+                    'client_id' => $clientId,
+                    'device_hash' => $deviceHash,
+                    'forward_id' => $forwardId,
+                    'nonce_hash' => $nonceHash,
+                ]
+            );
             return true;
         } catch (Throwable $exception) {
             $message = strtolower($exception->getMessage());
@@ -997,6 +1200,14 @@ final class UltraLeaseService
             )),
         ];
         if (($lease['purpose'] ?? '') !== UltraMode::NATIVE_OUTBOUND_PURPOSE) {
+            // The lease endpoint can renew a policy under the same generation.
+            // Preserve its authenticated bounds through the final wire scrub;
+            // otherwise clients compare the new lease to the old pull expiry.
+            foreach (['policy_expires_at', 'policy_renew_after'] as $key) {
+                if (trim((string) ($lease[$key] ?? '')) !== '') {
+                    $common[$key] = (string) $lease[$key];
+                }
+            }
             return $common;
         }
         return [
@@ -1029,7 +1240,7 @@ final class UltraLeaseService
             return [];
         }
         $row = $this->db->fetchOne(
-            'SELECT f.id AS forward_id, f.target_host, f.target_port, f.transport_mode,
+            'SELECT f.id AS forward_id, f.service_id, f.target_host, f.target_port, f.transport_mode,
                     f.backend_mode, f.enabled, f.native_outbound_enabled,
                     s.status AS service_status, s.expire_at,
                     fc.is_active AS combination_active, fc.ultra_destination_zone,
@@ -1053,6 +1264,7 @@ final class UltraLeaseService
             && (int) ($row['combination_active'] ?? 1) === 1) ? 'active' : 'suspended';
         return [
             'forward_id' => $forwardId,
+            'service_id' => (int) ($row['service_id'] ?? 0),
             'service_state' => $state,
             'target' => $target,
             'transport' => in_array($transport, ['tcp', 'udp', 'tcp+udp'], true) ? $transport : 'tcp+udp',
@@ -1062,9 +1274,26 @@ final class UltraLeaseService
             'native_unrestricted_allowed' => $this->planFlagsAllowUnrestricted($row),
             'rate_limit_mbps' => 0,
             'quota_remaining_bytes' => UltraMode::MAX_QUOTA_LEASE_BYTES,
-            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', strtotime((string) ($row['expire_at'] ?? '')) ?: $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $this->serviceExpiryTimestamp((string) ($row['expire_at'] ?? '')) ?? $this->now() + UltraMode::MAX_POLICY_TTL_SECONDS),
             'policy_generation' => hash('sha256', implode("\n", [$forwardId, $state, hash('sha256', $target), $transport, '0', (string) UltraMode::MAX_QUOTA_LEASE_BYTES])),
         ];
+    }
+
+    /**
+     * services.expire_at is written in UTC; strtotime() would read it in
+     * date.timezone (PRC for the panel's CLI workers).
+     */
+    private function serviceExpiryTimestamp(string $value): ?int
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function parseTimestamp(string $value): ?int

@@ -7,7 +7,10 @@ use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
 use Leikwan\Master\Support\AccessPolicyService;
+use Leikwan\Master\Support\AccessPolicyStore;
 use Leikwan\Master\Support\DebugCollectionStore;
+use Leikwan\Master\Support\ExternalUoTDefaults;
+use Leikwan\Master\Support\ForwardTargetAllowlist;
 use Leikwan\Master\Support\BondLegReputationService;
 use Leikwan\Master\Support\LeigodActivationGateContext;
 use Leikwan\Master\Support\LeigodNormalizationActivationContext;
@@ -16,6 +19,7 @@ use Leikwan\Master\Support\LeigodOnlyPlatformFamilyGate;
 use Leikwan\Master\Support\LeigodRetirementActivationContext;
 use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\PrecisionGridUi;
+use Leikwan\Master\Support\ServiceStatus;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\KnowledgebaseHtmlSanitizer;
 use Leikwan\Master\Support\KnowledgebasePreviewDocument;
@@ -54,6 +58,22 @@ final class AdminController extends BaseController
         $this->accessPolicy = $accessPolicy ?? new AccessPolicyService($db);
     }
 
+    /**
+     * Geographic lock and province/city/country rules need clients that answer
+     * the location-check protocol. No shipped client does yet, so enabling
+     * either would refuse every client with location_check_required. Keep the
+     * switches closed until ACCESS_POLICY_LOCATION_CLIENTS_READY is set.
+     */
+    private function locationPolicyAvailable(): bool
+    {
+        return $this->config->getBool('ACCESS_POLICY_LOCATION_CLIENTS_READY', false);
+    }
+
+    private function isGeographicRuleType(string $entityType): bool
+    {
+        return in_array(strtolower(trim($entityType)), AccessPolicyStore::GEOGRAPHIC_ENTITY_TYPES, true);
+    }
+
     public function dashboard(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -62,63 +82,84 @@ final class AdminController extends BaseController
         }
         $csrf = $this->escape(SessionAuth::csrfToken());
 
-        $cards = [
-            ['label' => 'Tenants', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])['total'] ?? 0)],
-            ['label' => 'Services', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM services')['total'] ?? 0)],
-            ['label' => 'Plans', 'value' => count($this->provisioning?->listPlans() ?? [])],
-            ['label' => 'Slave Groups', 'value' => count($this->provisioning?->listNodeGroups() ?? [])],
-            ['label' => 'Nodes', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM nodes')['total'] ?? 0)],
-            ['label' => 'Queued Tasks', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM provision_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])['total'] ?? 0)],
-            ['label' => 'SSL Tasks', 'value' => (int) ($this->db->fetchOne('SELECT COUNT(*) AS total FROM ssl_certificate_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])['total'] ?? 0)],
-        ];
-
-        $cardHtml = '';
-        foreach ($cards as $card) {
-            $cardHtml .= '<section class="card"><div class="muted">' . $this->escape($card['label']) . '</div><div class="stats">' . $card['value'] . '</div></section>';
-        }
-        $reputationService = new BondLegReputationService($this->db);
+        $count = fn(string $sql, array $bind = []): int => (int) ($this->db->fetchOne($sql, $bind)['total'] ?? 0);
         $queueHealth = $this->taskQueueHealth();
         $recentFailedTasks = $this->recentFailedProvisionTasks();
+        $nodesTotal = $count('SELECT COUNT(*) AS total FROM nodes');
+        $nodesActive = $count('SELECT COUNT(*) AS total FROM nodes WHERE status = :status', ['status' => 'active']);
+        $activeServices = $count('SELECT COUNT(*) AS total FROM services WHERE status = :status', ['status' => 'active']);
+        $queued = (int) $queueHealth['pending_count'] + (int) $queueHealth['running_count'];
+
+        // Health first: each tile links to the page where the operator acts on it.
+        $tile = fn(string $href, string $label, string $value, string $state): string => '<a class="card console-stat" href="' . $href . '">'
+            . '<span class="console-service-head"><span class="muted">' . $label . '</span>'
+            . ($state !== '' ? '<span class="badge ' . $state . '">' . ($state === 'success' ? 'OK' : 'Check') . '</span>' : '')
+            . '</span><span class="stats">' . $value . '</span></a>';
+        $healthTiles = $tile('#recent-failed-tasks', 'Failed tasks', (string) count($recentFailedTasks), $recentFailedTasks === [] ? 'success' : 'danger')
+            . $tile('#queue-maintenance', 'Queued tasks', (string) $queued, (int) $queueHealth['pending_count'] > 50 ? 'warning' : 'success')
+            . $tile('/admin/nodes', 'Nodes online', $nodesActive . ' / ' . $nodesTotal, $nodesTotal > 0 && $nodesActive < $nodesTotal ? 'warning' : 'success')
+            . $tile('/admin/services', 'Active services', (string) $activeServices, '');
+
+        $totals = [
+            ['/admin/tenants', 'Tenants', $count('SELECT COUNT(*) AS total FROM users WHERE role = :role', ['role' => 'tenant'])],
+            ['/admin/services', 'Services', $count('SELECT COUNT(*) AS total FROM services')],
+            ['/admin/plans', 'Plans', count($this->provisioning?->listPlans() ?? [])],
+            ['/admin/node-groups', 'Slave Groups', count($this->provisioning?->listNodeGroups() ?? [])],
+            ['/admin/credentials', 'SSL Tasks', $count('SELECT COUNT(*) AS total FROM ssl_certificate_tasks WHERE status = :pending OR status = :running', ['pending' => 'pending', 'running' => 'running'])],
+        ];
+        $totalsHtml = '';
+        foreach ($totals as [$href, $label, $value]) {
+            $totalsHtml .= '<a class="console-total" href="' . $href . '"><span>' . $label . '</span><strong>' . (int) $value . '</strong></a>';
+        }
+
+        $shortcuts = [
+            ['/admin/tenants?view=create', 'Create Tenant'],
+            ['/admin/services?view=create', 'Activate Service'],
+            ['/admin/plans', 'Create Plan'],
+            ['/admin/forward-combinations?backend_mode=ultra', 'New Ultra Combination'],
+            ['/admin/nodes?view=install', 'Install a node'],
+            ['/admin/knowledgebase', 'Edit user guides'],
+        ];
+        $shortcutHtml = '';
+        foreach ($shortcuts as [$href, $label]) {
+            $shortcutHtml .= '<li><a href="' . $href . '">' . $label . '</a></li>';
+        }
+
+        $reputationService = new BondLegReputationService($this->db);
         $worstLegs = $reputationService->latestGlobalRows(10);
 
         $body = '
-            <div class="hero">
+            <div class="console-welcome">
               <div>
-                <h2>Admin Overview</h2>
-                <p class="muted">Use the left navigation to manage tenants, plans, credentials, clients, slave groups and slave nodes.</p>
-                <div class="actions" style="margin-top:16px;">
-                  <form class="inline" method="post" action="/admin/republish/all">
-                    <input type="hidden" name="csrf_token" value="' . $csrf . '">
-                    <button type="submit" class="button danger" onclick="return confirm(\'Republish all forwards?\');">Republish All Forwards</button>
-                  </form>
-                  <a class="button secondary" href="/admin/diagnostics">Diagnostics</a>
-                </div>
+                <h2>Today at a glance</h2>
+                <p>Check health first; daily management lives in the left navigation.</p>
+              </div>
+              <div class="actions">
+                <a class="button" href="/admin/diagnostics">Diagnostics</a>
               </div>
             </div>
-            <div class="grid three">' . $cardHtml . '</div>
-            ' . $this->renderTaskQueueHealthSection($queueHealth, $csrf) . '
-            ' . $this->renderRecentFailedTasksSection($recentFailedTasks) . '
+            <div class="grid four">' . $healthTiles . '</div>
+            <div class="console-totals">' . $totalsHtml . '</div>
+            <div class="grid two" style="margin-top:16px;">
+              <section class="card">
+                <h3>Shortcuts</h3>
+                <ul class="console-links">' . $shortcutHtml . '</ul>
+              </section>
+              <div id="recent-failed-tasks">' . $this->renderRecentFailedTasksSection($recentFailedTasks) . '</div>
+            </div>
             ' . $this->renderWorstLegsSection($worstLegs) . '
-            <div class="grid two" style="margin-top:20px;">
-              <section class="card">
-                <h3>First Forward Quick Start</h3>
-                <ol class="list">
-                  <li>Create one slave group in <code>Slave Groups</code>, for example <code>hk-edge</code>.</li>
-                  <li>Install one online slave into that group from <code>Slave Nodes</code>.</li>
-                  <li>Create one client in <code>Clients</code> and set its default route mode to <code>slave_group</code> plus the same default slave group.</li>
-                  <li>Bind the plan to the same slave group and client group, then activate one tenant service on that plan.</li>
-                  <li>Ask the tenant to open <code>Guided Setup</code> and keep these defaults for the first rule: <code>slave_group</code>, <code>single</code>, <code>tcp</code>. The panel now assigns the endpoint set automatically.</li>
-                </ol>
+            <details class="card console-danger-zone" id="queue-maintenance">
+              <summary>Queue maintenance and bulk actions <span class="muted">(use with care)</span></summary>
+              ' . $this->renderTaskQueueHealthSection($queueHealth, $csrf) . '
+              <section class="card" style="margin-top:16px;">
+                <h3>Republish All Forwards</h3>
+                <p class="muted">Re-sends the desired state of every forward to its nodes. Use only after a platform-wide change.</p>
+                <form class="inline" method="post" action="/admin/republish/all">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <button type="submit" class="button danger" onclick="return confirm(\'Republish all forwards?\');">Republish All Forwards</button>
+                </form>
               </section>
-              <section class="card">
-                <h3>When To Use Advanced Options</h3>
-                <ul class="list">
-                  <li>Use <code>forward_chain</code> only when you already want a deliberate multi-hop route.</li>
-                  <li>Use <code>race / failover</code> when you want multiple slave endpoints for redundancy and per-connection distribution.</li>
-                  <li>Do not expect <code>race / failover</code> to provide true single-stream <code>本地汇聚</code> yet.</li>
-                </ul>
-              </section>
-            </div>';
+            </details>';
 
         return $this->adminPage('Admin Overview', $body, $viewer, 'overview');
     }
@@ -291,7 +332,7 @@ final class AdminController extends BaseController
               ' . $this->renderBondLegReputationDiagnosticsSection($reputationRows, $reputationEvents) . '
             </div>';
 
-        return $this->adminPage('Diagnostics', $body, $viewer, 'overview');
+        return $this->adminPage('Diagnostics', $body, $viewer, 'diagnostics');
     }
 
 
@@ -1309,11 +1350,11 @@ final class AdminController extends BaseController
         $editing = $editId > 0 ? $this->db->fetchOne('SELECT * FROM users WHERE id = :id AND role = :role LIMIT 1', ['id' => $editId, 'role' => 'tenant']) : null;
         $editingFlags = $editing !== null ? $this->provisioning?->decodeFeatureFlags((string) ($editing['feature_flags_json'] ?? '')) ?? $defaults : $defaults;
         $tenants = $this->db->fetchAll(
-            'SELECT u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, COUNT(s.id) AS service_count
+            'SELECT u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, u.apple_id, COUNT(s.id) AS service_count
              FROM users u
              LEFT JOIN services s ON s.user_id = u.id
              WHERE u.role = :role
-             GROUP BY u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at
+             GROUP BY u.id, u.name, u.email, u.status, u.feature_flags_json, u.email_verified_at, u.apple_id
              ORDER BY u.updated_at DESC, u.id DESC',
             ['role' => 'tenant']
         );
@@ -1326,6 +1367,10 @@ final class AdminController extends BaseController
             $tenantEmail = (string) $tenant['email'];
             $tenantStatus = (string) $tenant['status'];
             $verified = !empty($tenant['email_verified_at']);
+            $appleId = trim((string) ($tenant['apple_id'] ?? ''));
+            $appleIdCell = $appleId !== ''
+                ? '<code>' . $this->escape($appleId) . '</code>'
+                : '<span class="muted">—</span>';
             $commands = '<a href="/admin/tenants?view=edit&amp;edit=' . $tenantId . '">Edit</a>
                 <form class="inline" method="post" action="/admin/tenants/' . $tenantId . '/delete">
                     <input type="hidden" name="csrf_token" value="' . $this->escape(SessionAuth::csrfToken()) . '">
@@ -1335,13 +1380,14 @@ final class AdminController extends BaseController
                 <td>' . PrecisionGridUi::resourceCell($tenantName, $tenantEmail) . '</td>
                 <td>' . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error') . '</td>
                 <td>' . PrecisionGridUi::status($verified ? 'Verified' : 'Not verified', $verified ? 'ok' : 'warning') . '</td>
+                <td>' . $appleIdCell . '</td>
                 <td>' . (int) $tenant['service_count'] . '</td>
                 <td>' . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>'
                 . PrecisionGridUi::resourceCell($tenantName, $tenantEmail)
                 . PrecisionGridUi::status(ucfirst($tenantStatus), $tenantStatus === 'active' ? 'ok' : 'error')
-                . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div></dl><footer>'
+                . '</header><dl><div><dt>Verification</dt><dd>' . ($verified ? 'Verified' : 'Not verified') . '</dd></div><div><dt>Services</dt><dd>' . (int) $tenant['service_count'] . '</dd></div><div><dt>Apple ID</dt><dd>' . $appleIdCell . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($tenantName . ' actions', $commands) . '</footer></article>';
         }
 
@@ -1400,7 +1446,7 @@ final class AdminController extends BaseController
                 <div class="pg-sheet-toolbar"><strong>Tenant Directory</strong><span class="muted">' . count($tenants) . ' accounts</span></div>
                 <div class="pg-sheet-scroll">
                   <table class="pg-sheet-table">
-                    <thead><tr><th>Tenant / Email</th><th>Status</th><th>Verification</th><th>Services</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
+                    <thead><tr><th>Tenant / Email</th><th>Status</th><th>Verification</th><th>Apple ID</th><th>Services</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -1631,8 +1677,9 @@ final class AdminController extends BaseController
                       <select name="is_tenant_visible"><option value="1"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 1 ? ' selected' : '') . '>Visible to tenants</option><option value="0"' . ((int) ($editing['is_tenant_visible'] ?? 1) === 0 ? ' selected' : '') . '>Internal test package</option></select>
                       <p class="muted">Hidden plans stay active for internal/admin workflows, but do not appear on the tenant purchase page.</p>
                     </div>
-                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . '> Enable geographic lock</label>
-                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>
+                    <div class="field"><label><input type="checkbox" name="geo_lock_enabled" value="1"' . ((int) ($editing['geo_lock_enabled'] ?? 0) === 1 ? ' checked' : '') . ($this->locationPolicyAvailable() ? '' : ' disabled') . '> Enable geographic lock</label>
+                      <p class="muted">Login and periodic checks validate device location against the main province, adjacent provinces, and special circles.</p>' . ($this->locationPolicyAvailable() ? '' : '
+                      <p class="muted">Unavailable: no released client answers the location check yet, so enabling it would refuse every client. Set ACCESS_POLICY_LOCATION_CLIENTS_READY once clients ship support.</p>') . '
                     </div>
                     <div class="field"><label>Billing Mode</label><select name="billing_mode"><option value="monthly_bundle"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'monthly_bundle' ? ' selected' : '') . '>monthly_bundle</option><option value="metered"' . (((string) ($editing['billing_mode'] ?? 'monthly_bundle')) === 'metered' ? ' selected' : '') . '>metered</option></select></div>
                     <div class="field"><label>Billing Currency</label><input type="text" name="billing_currency" value="' . $this->escape((string) ($editing['billing_currency'] ?? 'CNY')) . '" placeholder="CNY"></div>
@@ -2202,7 +2249,7 @@ final class AdminController extends BaseController
 
         $view = PrecisionGridUi::normalizeView(
             (string) $request->input('view', 'list'),
-            ['list', 'create', 'detail', 'updates'],
+            ['list', 'create', 'detail', 'updates', 'runtime'],
             'list'
         );
 
@@ -2284,6 +2331,11 @@ final class AdminController extends BaseController
             $status = (string) $client['status'];
             $agentVersion = (string) ($client['agent_version'] ?? 'Not reported');
             $lastSync = (string) ($client['last_sync_at'] ?? 'Never');
+            $agentRuntime = $this->decodeJsonList($client['agent_config_json'] ?? null);
+            $runtimeMode = strtolower(trim((string) ($agentRuntime['runtime_binary_mode'] ?? '')));
+            $runtimeArchitecture = strtolower(trim((string) ($agentRuntime['agent_architecture'] ?? '')));
+            $runtimeLabel = ($runtimeMode !== '' ? $runtimeMode : 'legacy')
+                . ' / ' . ($runtimeArchitecture !== '' ? $runtimeArchitecture : 'unknown');
             $assignedForwards = $clientForwardInstallMap[(int) ($client['id'] ?? 0)] ?? [];
             $assignedForwardSummary = $this->renderAssignedForwardSummary($assignedForwards);
             $installDetails = $this->renderClientAgentInstallDetails(
@@ -2306,11 +2358,12 @@ final class AdminController extends BaseController
                 <td>' . PrecisionGridUi::resourceCell($owner, $groupName) . '</td>
                 <td>' . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error') . '</td>
                 <td>' . PrecisionGridUi::resourceCell($agentVersion, $lastSync) . '</td>
+                <td>' . $this->escape($runtimeLabel) . '</td>
                 <td>' . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($clientName, $displayHost)
                 . PrecisionGridUi::status(ucfirst($status), $status === 'active' ? 'ok' : 'error')
-                . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
+                . '</header><dl><div><dt>Owner</dt><dd>' . $this->escape($owner) . '</dd></div><div><dt>Group</dt><dd>' . $this->escape($groupName) . '</dd></div><div><dt>Agent</dt><dd>' . $this->escape($agentVersion) . '</dd></div><div><dt>Runtime</dt><dd>' . $this->escape($runtimeLabel) . '</dd></div><div><dt>Last Sync</dt><dd>' . $this->escape($lastSync) . '</dd></div></dl><footer>'
                 . PrecisionGridUi::rowMenu($clientName . ' actions', $commands) . '</footer></article>';
         }
 
@@ -2318,6 +2371,7 @@ final class AdminController extends BaseController
             ['key' => 'list', 'label' => 'Clients', 'href' => '/admin/clients?view=list'],
             ['key' => 'create', 'label' => 'Create Client', 'href' => '/admin/clients?view=create'],
             ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin/clients?view=updates'],
+            ['key' => 'runtime', 'label' => 'Runtime', 'href' => '/admin/clients?view=runtime'],
         ], $view);
         $formView = $this->renderClientAppDownloadOverview($overviewClient) . '
               <section class="card">
@@ -2373,7 +2427,7 @@ final class AdminController extends BaseController
                 <div class="pg-sheet-toolbar"><strong>Client Directory</strong><span class="muted">' . count($clients) . ' clients</span></div>
                 <div class="pg-sheet-scroll">
                   <table class="pg-sheet-table">
-                    <thead><tr><th>Client / Host</th><th>Owner / Group</th><th>Status</th><th>Agent / Last Sync</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
+                    <thead><tr><th>Client / Host</th><th>Owner / Group</th><th>Status</th><th>Agent / Last Sync</th><th>Runtime / Arch</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead>
                     <tbody>' . $rows . '</tbody>
                   </table>
                 </div>
@@ -2382,6 +2436,7 @@ final class AdminController extends BaseController
         $viewBody = match ($view) {
             'create', 'detail' => $formView,
             'updates' => '<div class="flash success">Use each client menu to request updates, republish, or run diagnostics.</div>' . $listView,
+            'runtime' => $listView,
             default => $listView,
         };
         $body = $tabs . $viewBody;
@@ -2744,6 +2799,22 @@ final class AdminController extends BaseController
             . $ultraMembershipRows . '</tbody></table></div></fieldset>'
             . '<script>(function(){var s=document.querySelector(\'select[name=ultra_destination_zone]\');if(!s)return;function f(){document.querySelectorAll(\'[data-ultra-destination]\').forEach(function(r){r.style.display=r.getAttribute(\'data-ultra-destination\')===s.value?\'\':\'none\';});}s.addEventListener(\'change\',f);f();})();</script>';
 
+        $externalUotEnabled = (int) ($editing['external_uot_enabled'] ?? ($editing === null ? 1 : 0)) === 1;
+        $externalUotTarget = trim((string) ($editing['external_uot_sidecar_target'] ?? ''));
+        if ($externalUotTarget === '') {
+            $externalUotTarget = ExternalUoTDefaults::targetForZone($this->config, $selectedUltraDestination);
+        }
+        $externalUotField = '<fieldset class="field" data-mode-field="ultra"><legend>External UoT sidecar</legend>'
+            . '<div class="form-grid">'
+            . '<div class="field"><label>Enable External UoT</label><input type="hidden" name="external_uot_enabled" value="0"><label class="check-row"><input type="checkbox" name="external_uot_enabled" value="1"' . ($externalUotEnabled ? ' checked' : '') . '> Use the operator-owned UDP-over-TCP sidecar</label></div>'
+            . '<div class="field"><label>Sidecar target</label><input type="text" name="external_uot_sidecar_target" maxlength="255" value="' . $this->escape($externalUotTarget) . '" placeholder="185.220.238.153:7443"><p class="muted">Defaults follow the destination zone; the client does not open a direct UDP socket to the sidecar.</p></div>'
+            . '<div class="field"><label>Sidecar token</label><input type="password" name="external_uot_token" maxlength="8192" value="" autocomplete="new-password" placeholder="leave blank to keep the existing token"><p class="muted">The token is stored server-side and is only delivered inside a short-lived Ultra grant.</p></div>'
+            . '<div class="field"><label>Queue packets</label><input type="number" name="external_uot_queue_packets" min="1" max="4096" value="' . $this->escape((string) ($editing['external_uot_queue_packets'] ?? 256)) . '"></div>'
+            . '<div class="field"><label>Keepalive seconds</label><input type="number" name="external_uot_keepalive_seconds" min="5" max="30" value="' . $this->escape((string) ($editing['external_uot_keepalive_seconds'] ?? 10)) . '"></div>'
+            . '<div class="field"><label>Reconnect grace seconds</label><input type="number" name="external_uot_reconnect_grace_seconds" min="5" max="300" value="' . $this->escape((string) ($editing['external_uot_reconnect_grace_seconds'] ?? 30)) . '"></div>'
+            . '<div class="field"><label>Frame payload max</label><input type="number" name="external_uot_frame_payload_max" min="256" max="65507" value="' . $this->escape((string) ($editing['external_uot_frame_payload_max'] ?? 65507)) . '"></div>'
+            . '</div></fieldset>';
+
         // LeiGod is a first-class Forward Mode; the ordered catalog memberships replace the legacy scalar.
         $leigodLineId = (int) ($editing['leigod_line_id'] ?? 0);
         $leigodUot = strtolower((string) ($editing['leigod_uot_impl'] ?? 'lguot'));
@@ -2961,6 +3032,7 @@ final class AdminController extends BaseController
                     <div class="field" data-non-ultra-field><label>Self-leg CF transport</label><select name="self_leg_cf_transport"><option value="cf_direct"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_direct' ? ' selected' : '') . '>cf_direct (default)</option><option value="cf_wg"' . (((string) ($editing['self_leg_cf_transport'] ?? 'cf_direct')) === 'cf_wg' ? ' selected' : '') . '>cf_wg (WG over CF IP)</option></select><p class="muted">Only effective when backend_mode = cf_mode. cf_wg routes the WireGuard underlay through wstunnel UDP-over-WSS to the CF IP.</p></div>
                     ' . $leigodField . '
                     ' . $ultraField . '
+                    ' . $externalUotField . '
                     <div class="field" data-non-ultra-field><label>Bond Ingress Mode</label><select name="bond_ingress_mode"><option value="plain_tcp_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'plain_tcp_mux' ? ' selected' : '') . '>plain_tcp_mux</option><option value="wss_path_mux"' . (((string) ($editing['bond_ingress_mode'] ?? 'plain_tcp_mux')) === 'wss_path_mux' ? ' selected' : '') . '>wss_path_mux</option></select></div>
                     <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="' . $this->escape((string) ($editing['sort_order'] ?? 100)) . '"></div>
                     <div class="field"><label>Status</label><select name="is_active"><option value="1"' . (((int) ($editing['is_active'] ?? 1)) === 1 ? ' selected' : '') . '>active</option><option value="0"' . (((int) ($editing['is_active'] ?? 1)) !== 1 ? ' selected' : '') . '>inactive</option></select></div>
@@ -2968,6 +3040,7 @@ final class AdminController extends BaseController
                   <div class="field" style="margin-top:14px;" data-non-ultra-field><label>Helper Node Group Keys</label><textarea name="helper_node_group_keys_text" placeholder="shanghai-a&#10;shanghai-b&#10;guangzhou-a">' . $this->escape($helperNodeGroupKeysText) . '</textarea><p class="muted">One node group key per line, ordered by priority.</p></div>
                   ' . $donationSection . '
                   ' . $slavePickerSection . '
+                  <div class="field" style="margin-top:14px;"><label>Target allowlist (CIDR)</label><textarea name="allowed_target_cidrs" rows="6" placeholder="103.183.26.0/23&#10;163.53.52.0/22">' . $this->escape((string) ($editing['allowed_target_cidrs'] ?? '')) . '</textarea><p class="muted">One CIDR per line. When set, forwards on this combination must target an IP inside these networks (hostnames are refused). Leave empty for no restriction. Currently ' . ForwardTargetAllowlist::count($editing['allowed_target_cidrs'] ?? '') . ' entries.</p></div>
                   <div class="field" style="margin-top:14px;"><label>Notes</label><textarea name="notes">' . $this->escape((string) ($editing['notes'] ?? '')) . '</textarea></div>
                   <div class="card" style="margin-top:16px;">
                     <h3 style="margin-bottom:8px;">Tenant sees:</h3>
@@ -3192,7 +3265,18 @@ final class AdminController extends BaseController
                 $fingerprint = trim((string) ($session['runtime_fingerprint'] ?? ''));
                 $runtimeCell = '<span class="badge ' . $attestationBadge . '">' . $this->escape($attestation) . '</span>'
                     . ($fingerprint !== '' ? '<br><span class="muted">' . $this->escape(substr($fingerprint, 0, 16)) . '</span>' : '');
+                // Regression sentinel: awaiting_policy_is_a_health_failure
+                // "Online" above is only heartbeat recency. An enabled Ultra
+                // forward whose runtime reports awaiting_policy (or any other
+                // error) has no lease and no listener, so it must not render as
+                // a healthy row. The ingested error_code used to be dropped here.
+                $unhealthy = (bool) ($session['unhealthy'] ?? false);
+                $healthReason = trim((string) ($session['health_reason'] ?? ''));
+                $healthCell = $unhealthy
+                    ? '<span class="badge danger">' . $this->escape($healthReason !== '' ? $healthReason : 'unhealthy') . '</span>'
+                    : '<span class="badge success">serving</span>';
                 $rows .= '<tr><td><span class="badge ' . $badge . '">' . $this->escape($state) . '</span></td>'
+                    . '<td>' . $healthCell . '</td>'
                     . '<td>' . $this->escape($user) . '</td>'
                     . '<td>' . $this->escape($client) . '<br><span class="muted">' . $this->escape($device) . '</span></td>'
                     . '<td>' . $this->escape((string) ($session['client_ip'] ?? '')) . '</td>'
@@ -3205,9 +3289,10 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape((string) ($session['last_seen_at'] ?? '')) . '</td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="11" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="12" class="muted">No Ultra sessions in the last 24 hours.</td></tr>';
             }
-            $content = '<section class="card"><div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+            $content = '<section class="card"><div class="muted" style="margin-bottom:10px">Health is derived from the ingested Ultra runtime status and the live lease, not from the forward being enabled: an enabled forward with no live lease, or a runtime reporting <code>degraded</code>/<code>awaiting_policy</code>, is a failure even while the session is still heartbeating.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>Health</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Forward</th><th>Endpoint</th><th>Ingress</th><th>Latest TCP</th><th>Active UDP</th><th>Runtime</th><th>Last seen</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'attestation') {
             $mismatches = $statusService->runtimeAttestationMismatches($limit);
             $allowlistSize = count($statusService->runtimeFingerprintAllowlist());
@@ -3228,15 +3313,21 @@ final class AdminController extends BaseController
                     . '<td>' . $this->escape($debugger === null ? 'unknown' : ($debugger ? 'yes' : 'no')) . '</td>'
                     . '<td>' . $this->escape($instrumented === null ? 'unknown' : ($instrumented ? 'yes' : 'no')) . '</td>'
                     . '<td>' . $this->escape((string) ($session['runtime_attested_at'] ?? '')) . '</td>'
-                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td></tr>';
+                    . '<td>' . $this->escape((string) ($session['reason'] ?? '')) . '</td>'
+                    . '<td><form method="post" action="/admin/ultra/attestation/refresh" onsubmit="return confirm(\'Clear this cached runtime identity and let the client re-attest on its next retry?\')">'
+                    . '<input type="hidden" name="csrf_token" value="' . $csrf . '">'
+                    . '<input type="hidden" name="client_id" value="' . (int) ($session['client_id'] ?? 0) . '">'
+                    . '<input type="hidden" name="device_id" value="' . $this->escape((string) ($session['device_id'] ?? '')) . '">'
+                    . '<button class="button secondary" type="submit">Refresh runtime</button></form></td></tr>';
             }
             if ($rows === '') {
-                $rows = '<tr><td colspan="10" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
+                $rows = '<tr><td colspan="11" class="muted">No runtime fingerprints outside the allow-list in the last 24 hours.</td></tr>';
             }
             $content = '<section class="card">'
-                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is report-only. These sessions report a runtime build fingerprint that is not in '
-                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (allow-list entries: ' . $allowlistSize . '); no lease is denied from this view.</div>'
-                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th></tr></thead><tbody>'
+                . '<div class="muted" style="margin-bottom:10px">Runtime attestation is normally report-only. Refresh runtime clears one cached identity so the client can start once and publish a fresh attestation on its next heartbeat. These sessions report a runtime build fingerprint that is neither a released build (artifacts/versions.json, '
+                . UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY . ') nor listed in '
+                . UltraClientStatusService::RUNTIME_FINGERPRINTS_KEY . ' (known fingerprints: ' . $allowlistSize . '); no lease is denied from this view.</div>'
+                . '<div class="table-wrap"><table><thead><tr><th>State</th><th>User</th><th>Client / device</th><th>Client IP</th><th>Fingerprint</th><th>Executable SHA-256</th><th>Debugger</th><th>Instrumented</th><th>Attested at</th><th>Reason</th><th>Action</th></tr></thead><tbody>'
                 . $rows . '</tbody></table></div></section>';
         } elseif ($view === 'refusals') {
             $refusals = (new UltraLeaseService($this->config, $this->db))->recentRefusals($limit);
@@ -3330,7 +3421,11 @@ final class AdminController extends BaseController
                 $carrierCell = $this->escape($carrierLabel)
                     . ($providerLabel !== '' ? '<br><span class="muted">' . $this->escape($providerLabel) . '</span>' : '')
                     . ($inLineType !== null ? '<br><span class="muted">in_type: ' . (int) $inLineType . '</span>' : '')
-                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '');
+                    . ((string) ($line['dispatch_class'] ?? 'normal') === 'low' ? '<br><span class="badge danger">Low priority</span>' : '')
+                    . (trim((string) ($line['admin_dispatch_class'] ?? '')) !== ''
+                        ? '<br><span class="muted" title="' . $this->escape((string) ($line['admin_dispatch_note'] ?? '')) . '">operator: '
+                            . $this->escape((string) $line['admin_dispatch_class']) . '</span>'
+                        : '');
                 $rows .= '<tr><td>' . (int) ($line['line_id'] ?? 0) . '</td>'
                     . '<td>' . $this->escape((string) ($line['source_title'] ?? '')) . '</td>'
                     . '<td>' . $carrierCell . '</td>'
@@ -3372,6 +3467,37 @@ final class AdminController extends BaseController
                 $ispOptions .= '<option value="' . $ispValue . '"' . ($ispRawFilter !== '' && $ispFilterValue === $ispValue ? ' selected' : '') . '>' . $ispLabel . '</option>';
             }
             $includeUnavailable = !in_array(strtolower(trim((string) $request->input('include_absent', ''))), ['', '0', 'false', 'no', 'off'], true);
+            // The line table is paged, but the view rendered no pager and no
+            // page-size control: with a default limit of 50 (max 200) an
+            // operator only ever saw the first 50 rows ordered by sort_order and
+            // concluded the panel was missing lines that were in fact present.
+            $lineQuery = array_filter([
+                'view' => 'lines',
+                'catalog_ingress' => (string) $request->input('catalog_ingress', ''),
+                'catalog_destination' => (string) $request->input('catalog_destination', ''),
+                'access_class' => (string) $request->input('access_class', ''),
+                'native_udp_state' => (string) $request->input('native_udp_state', ''),
+                'native_socks5_state' => (string) $request->input('native_socks5_state', ''),
+                'direction_class' => (string) $request->input('direction_class', ''),
+                'pricing_class' => (string) $request->input('pricing_class', ''),
+                'isp' => (string) $request->input('isp', ''),
+                'dispatch_class' => (string) $request->input('dispatch_class', ''),
+                'include_absent' => $includeUnavailable ? '1' : '',
+            ], static fn (string $value): bool => $value !== '');
+            $linePageLink = function (int $page, int $size) use ($lineQuery): string {
+                return '/admin/ultra?' . http_build_query($lineQuery + ['limit' => $size, 'page' => $page]);
+            };
+            $lineShown = count($lines);
+            $lineLast = $offset + $lineShown;
+            $pager = '<section class="card"><div class="actions">'
+                . ($pageNumber > 1 ? '<a class="button ghost" href="' . $this->escape($linePageLink($pageNumber - 1, $limit)) . '">&larr; Previous</a>' : '')
+                . '<span class="muted">Showing ' . ($lineShown === 0 ? 0 : $offset + 1) . '-' . $lineLast . ' &middot; page ' . $pageNumber . ' &middot; ' . $limit . ' per page</span>'
+                . ($lineShown === $limit ? '<a class="button ghost" href="' . $this->escape($linePageLink($pageNumber + 1, $limit)) . '">Next &rarr;</a>' : '')
+                . '</div><div class="actions"><span class="muted">Lines per page:</span>';
+            foreach ([50, 100, 200] as $pageSize) {
+                $pager .= '<a class="button ghost" href="' . $this->escape($linePageLink(1, $pageSize)) . '">' . $pageSize . '</a>';
+            }
+            $pager .= '</div></section>';
             $content = '<form method="get" action="/admin/ultra" class="actions" style="margin-bottom:12px"><input type="hidden" name="view" value="lines">'
                 . '<label>Catalog ingress <input name="catalog_ingress" value="' . $catalogIngressFilter . '" maxlength="191"></label>'
                 . '<label>Catalog destination <input name="catalog_destination" value="' . $catalogDestinationFilter . '" maxlength="191"></label>'
@@ -3384,7 +3510,8 @@ final class AdminController extends BaseController
                 . '<label>Dispatch <select name="dispatch_class">' . $dispatchOptions . '</select></label>'
                 . '<label><input type="checkbox" name="include_absent" value="1"' . ($includeUnavailable ? ' checked' : '') . '> Include unavailable lines</label>'
                 . '<button class="button" type="submit">Filter lines</button><a class="button ghost" href="/admin/ultra?view=lines">Clear</a></form>'
-                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+                . '<section class="card"><div class="table-wrap"><table><thead><tr><th>Line ID</th><th>Source title</th><th>Carrier</th><th>Class / UDP / SOCKS5 / Direction</th><th>Pricing</th><th>Catalog ingress</th><th>Effective ingress</th><th>Catalog destination</th><th>Effective destination</th><th>Discovery IP</th><th>Observed relay IPs</th><th>Material state</th><th>Discovered</th><th>Policy</th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>'
+                . $pager;
         } elseif ($view === 'combinations') {
             $combinations = $this->provisioning?->listUltraCombinationsForAdmin() ?? [];
             $rows = '';
@@ -3505,6 +3632,30 @@ final class AdminController extends BaseController
         return $this->adminPage('Ultra Operations', $body, $viewer, 'ultra');
     }
 
+    public function refreshUltraRuntimeAttestation(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+        try {
+            SessionAuth::validateCsrf($request);
+            $clientId = (int) $request->input('client_id', 0);
+            $deviceId = trim((string) $request->input('device_id', ''));
+            if ($clientId <= 0 || $deviceId === '' || strlen($deviceId) > 191) {
+                throw new \InvalidArgumentException('Invalid client device.');
+            }
+            $statusService = $this->ultraClientStatus ?? new UltraClientStatusService($this->config, $this->db);
+            if (!$statusService->clearRuntimeAttestation($clientId, $deviceId)) {
+                throw new \RuntimeException('Client device session not found.');
+            }
+            SessionAuth::flash('success', 'Runtime attestation cleared. The client can retry and publish a fresh identity.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to refresh runtime attestation: ' . $this->displayThrowableMessage($throwable));
+        }
+        return Response::redirect('/admin/ultra?view=attestation');
+    }
+
     public function saveUltraLinePolicy(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -3549,7 +3700,7 @@ final class AdminController extends BaseController
             return Response::redirect('/login');
         }
 
-        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit', 'updates'], 'list');
+        $view = PrecisionGridUi::normalizeView((string) $request->input('view', 'list'), ['list', 'create', 'edit', 'updates', 'health'], 'list');
 
         $points = $this->provisioning?->listSidecarPoints() ?? [];
         $tenants = $this->db->fetchAll('SELECT id, name, email FROM users WHERE role = :role ORDER BY name ASC, email ASC', ['role' => 'tenant']);
@@ -3578,10 +3729,14 @@ final class AdminController extends BaseController
         ));
         $rows = '';
         $mobileRows = '';
+        $healthRows = '';
+        $healthMobileRows = '';
+        $registeredExternalHosts = [];
         foreach ($points as $point) {
             $pointId = (int) $point['id'];
             $pointName = (string) $point['name'];
             $host = (string) $point['sidecar_host'];
+            $registeredExternalHosts[strtolower(trim($host, " []"))] = true;
             $owner = (string) ($point['owner_email'] ?? 'Shared');
             $status = $this->sidecarPointStatusInfo($point);
             $installCommand = $this->bondSidecarInstallCommand($point);
@@ -3600,6 +3755,74 @@ final class AdminController extends BaseController
                 <td>' . (int) ($point['forward_count'] ?? 0) . '</td><td>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</td>
             </tr>';
             $mobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $owner) . PrecisionGridUi::status($status['label'], $status['class'] === 'success' ? 'ok' : 'warning') . '</header><dl><div><dt>Address</dt><dd>' . $this->escape($host) . '</dd></div><div><dt>Ports</dt><dd>' . $this->escape($this->sidecarPortSummary($point)) . '</dd></div><div><dt>Heartbeat</dt><dd>' . $this->escape((string) ($point['last_heartbeat_at'] ?? 'Never')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) ($point['forward_count'] ?? 0) . '</dd></div></dl><footer>' . PrecisionGridUi::rowMenu($pointName . ' actions', $commands) . '</footer></article>';
+
+            $uot = $this->externalUotHealthInfo($point);
+            $uotLabel = !$uot['required']
+                ? ($uot['config_present'] ? 'not required' : 'not installed')
+                : ($uot['healthy'] ? 'online' : ($uot['state'] !== '' ? $uot['state'] : 'degraded'));
+            $uotClass = ($uot['healthy'] || !$uot['required']) ? 'ok' : 'warning';
+            $pointRuntime = $this->decodeJsonList($point['agent_config_json'] ?? null);
+            $pointRuntimeMode = strtolower(trim((string) ($pointRuntime['runtime_binary_mode'] ?? '')));
+            $pointArchitecture = strtolower(trim((string) ($pointRuntime['agent_architecture'] ?? '')));
+            $pointRuntimeLabel = ($pointRuntimeMode !== '' ? $pointRuntimeMode : 'legacy')
+                . ' / ' . ($pointArchitecture !== '' ? $pointArchitecture : 'unknown');
+            $healthRows .= '<tr>
+                <td>' . PrecisionGridUi::resourceCell($pointName, $host) . '</td>
+                <td>' . PrecisionGridUi::status($uotLabel, $uotClass) . '</td>
+                <td>' . $this->escape($pointRuntimeLabel) . '</td>
+                <td>' . $this->escape($uot['binary_version'] !== '' ? $uot['binary_version'] : 'unknown') . '</td>
+                <td>' . $this->escape($uot['hash_match'] ? 'manifest match' : ($uot['binary_sha256'] !== '' ? 'drift / legacy' : 'not reported')) . '</td>
+                <td>' . (int) $uot['forward_count'] . '</td>
+                <td>' . $this->escape(($uot['service_active'] ? 'active' : 'inactive') . ' / ' . ($uot['listening'] ? 'listening' : 'not listening')) . '</td>
+                <td>' . $this->escape($uot['config_sha256'] !== '' ? substr($uot['config_sha256'], 0, 12) : 'not reported') . '</td>
+                <td>' . $this->escape($uot['error'] !== '' ? $uot['error'] : ($uot['checked_at'] > 0 ? gmdate('Y-m-d H:i:s', $uot['checked_at']) . ' UTC' : 'Never')) . '</td>
+            </tr>';
+            $healthMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell($pointName, $host) . PrecisionGridUi::status($uotLabel, $uotClass) . '</header><dl><div><dt>Agent Runtime</dt><dd>' . $this->escape($pointRuntimeLabel) . '</dd></div><div><dt>Version</dt><dd>' . $this->escape($uot['binary_version'] !== '' ? $uot['binary_version'] : 'unknown') . '</dd></div><div><dt>Artifact</dt><dd>' . $this->escape($uot['hash_match'] ? 'manifest match' : ($uot['binary_sha256'] !== '' ? 'drift / legacy' : 'not reported')) . '</dd></div><div><dt>Forwards</dt><dd>' . (int) $uot['forward_count'] . '</dd></div><div><dt>Service</dt><dd>' . $this->escape(($uot['service_active'] ? 'active' : 'inactive') . ' / ' . ($uot['listening'] ? 'listening' : 'not listening')) . '</dd></div><div><dt>Checked</dt><dd>' . $this->escape($uot['error'] !== '' ? $uot['error'] : ($uot['checked_at'] > 0 ? gmdate('Y-m-d H:i:s', $uot['checked_at']) . ' UTC' : 'Never')) . '</dd></div></dl></article>';
+        }
+
+        // External UoT targets may be newly provisioned before an agent has
+        // registered a sidecar_points heartbeat. Keep those hosts visible in
+        // the same admin query surface so operators do not need a raw SQL
+        // lookup to discover a missing registration.
+        $externalTargets = $this->db->fetchAll(
+            'SELECT fc.external_uot_sidecar_target AS target, COUNT(f.id) AS forward_count
+             FROM forward_combinations fc
+             LEFT JOIN forwards f ON f.forward_combination_id = fc.id
+             WHERE fc.external_uot_enabled = 1
+               AND fc.external_uot_sidecar_target IS NOT NULL
+               AND fc.external_uot_sidecar_target <> :empty_target
+             GROUP BY fc.external_uot_sidecar_target
+             ORDER BY fc.external_uot_sidecar_target ASC',
+            ['empty_target' => '']
+        );
+        $expectedUotVersion = trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['version'] ?? ''));
+        $expectedUotHash = strtolower(trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['sha256'] ?? '')));
+        foreach ($externalTargets as $externalTarget) {
+            $target = trim((string) ($externalTarget['target'] ?? ''));
+            $separator = strrpos($target, ':');
+            if ($separator === false) {
+                continue;
+            }
+            $targetHost = trim(substr($target, 0, $separator), " []");
+            $targetPort = (int) substr($target, $separator + 1);
+            $normalizedTargetHost = strtolower($targetHost);
+            if ($targetHost === '' || $targetPort < 1 || $targetPort > 65535 || isset($registeredExternalHosts[$normalizedTargetHost])) {
+                continue;
+            }
+            $displayTarget = $targetHost . ':' . $targetPort;
+            $forwardCount = max(0, (int) ($externalTarget['forward_count'] ?? 0));
+            $healthRows .= '<tr>
+                <td>' . PrecisionGridUi::resourceCell('Configured external target', $displayTarget) . '</td>
+                <td>' . PrecisionGridUi::status('unregistered / no heartbeat', 'warning') . '</td>
+                <td>not reported</td>
+                <td>' . $this->escape($expectedUotVersion !== '' ? $expectedUotVersion : 'unknown') . '</td>
+                <td>' . ($expectedUotHash !== '' ? 'manifest' : 'not published') . '</td>
+                <td>' . $forwardCount . '</td>
+                <td>not reported</td>
+                <td>not reported</td>
+                <td>Panel configuration only</td>
+            </tr>';
+            $healthMobileRows .= '<article class="pg-mobile-resource-row"><header>' . PrecisionGridUi::resourceCell('Configured external target', $displayTarget) . PrecisionGridUi::status('unregistered / no heartbeat', 'warning') . '</header><dl><div><dt>Agent Runtime</dt><dd>not reported</dd></div><div><dt>Expected Version</dt><dd>' . $this->escape($expectedUotVersion !== '' ? $expectedUotVersion : 'unknown') . '</dd></div><div><dt>Artifact</dt><dd>' . ($expectedUotHash !== '' ? 'manifest' : 'not published') . '</dd></div><div><dt>Forwards</dt><dd>' . $forwardCount . '</dd></div><div><dt>Service</dt><dd>not reported</dd></div><div><dt>Checked</dt><dd>Panel configuration only</dd></div></dl></article>';
         }
 
         $csrf = $this->escape(SessionAuth::csrfToken());
@@ -3607,9 +3830,11 @@ final class AdminController extends BaseController
             ['key' => 'list', 'label' => 'Endpoints', 'href' => '/admin-transport-endpoints?view=list'],
             ['key' => 'create', 'label' => 'Create', 'href' => '/admin-transport-endpoints?view=create'],
             ['key' => 'updates', 'label' => 'Updates', 'href' => '/admin-transport-endpoints?view=updates'],
+            ['key' => 'health', 'label' => 'UoT Health', 'href' => '/admin-transport-endpoints?view=health'],
         ], $view);
         $listView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>Transport Endpoints</strong><span class="muted">' . count($points) . ' endpoints</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Owner</th><th>Address / Ports</th><th>Status</th><th>Heartbeat / Version</th><th>Forwards</th><th><span class="pg-visually-hidden">Actions</span></th></tr></thead><tbody>' . $rows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $mobileRows . '</div></section>';
-        $body = $tabs . ($view === 'list' || $view === 'updates' ? $listView : '') . ($view === 'create' || $view === 'edit' ? '
+        $healthView = '<section class="pg-sheet" data-mobile-resources="true"><div class="pg-sheet-toolbar"><strong>External UoT Health</strong><span class="muted">Heartbeat-backed checks plus configured targets awaiting sidecar registration; tokens stay redacted</span></div><div class="pg-sheet-scroll"><table class="pg-sheet-table"><thead><tr><th>Endpoint / Host</th><th>UoT Status</th><th>Agent Runtime / Arch</th><th>Binary Version</th><th>Artifact</th><th>Configured Forwards</th><th>Service / Listener</th><th>Config Hash</th><th>Checked / Error</th></tr></thead><tbody>' . $healthRows . '</tbody></table></div><div class="pg-mobile-resource-list">' . $healthMobileRows . '</div></section>';
+        $body = $tabs . ($view === 'list' || $view === 'updates' ? $listView : '') . ($view === 'health' ? $healthView : '') . ($view === 'create' || $view === 'edit' ? '
             <div class="hero">
               <div>
                 <h2>Target Transport Endpoints</h2>
@@ -4206,7 +4431,7 @@ final class AdminController extends BaseController
         foreach ($services as $service) {
             $serviceName = (string) $service['name'];
             $owner = (string) $service['user_email'];
-            $status = (string) $service['status'];
+            $status = ServiceStatus::effective($service);
             $planName = (string) ($service['plan_name'] ?? 'No plan');
             $billing = $this->provisioning?->serviceBillingOverview((int) $service['id']) ?? null;
             $billingHtml = $billing !== null
@@ -4498,7 +4723,7 @@ final class AdminController extends BaseController
                 'default_client_online_device_limit' => $request->input('default_client_online_device_limit', '1'),
                 'is_active' => $request->input('is_active', '1'),
                 'is_tenant_visible' => $request->input('is_tenant_visible', '1'),
-                'geo_lock_enabled' => $request->input('geo_lock_enabled', '0'),
+                'geo_lock_enabled' => $this->locationPolicyAvailable() ? $request->input('geo_lock_enabled', '0') : '0',
                 'allowed_forward_route_ids' => $request->body()['allowed_forward_route_ids'] ?? [],
                 'allowed_node_group_ids' => $request->body()['allowed_node_group_ids'] ?? [],
                 'allowed_client_group_ids' => $request->body()['allowed_client_group_ids'] ?? [],
@@ -5300,7 +5525,7 @@ final class AdminController extends BaseController
 
         $body = '<div class="hero"><div><h2>Access Control</h2><p class="muted">Manage global deny rules, geographic profiles, policy events, device blocks, and account bans.</p></div></div>'
             . '<section class="card"><h3>Blacklist Rules</h3><form method="post" action="/admin/access-control/rules"><input type="hidden" name="csrf_token" value="' . $csrf . '"><div class="form-grid">'
-            . '<div class="field"><label>Entity</label><select name="entity_type"><option value="device_uuid">Device UUID</option><option value="ip">Exact IP</option><option value="cidr">IP subnet</option><option value="province">Mainland province</option><option value="city">Prefecture city</option><option value="country">Country / region</option></select></div>'
+            . '<div class="field"><label>Entity</label><select name="entity_type"><option value="device_uuid">Device UUID</option><option value="ip">Exact IP</option><option value="cidr">IP subnet</option>' . ($this->locationPolicyAvailable() ? '<option value="province">Mainland province</option><option value="city">Prefecture city</option><option value="country">Country / region</option>' : '') . '</select>' . ($this->locationPolicyAvailable() ? '' : '<p class="muted">Province, city and country rules are unavailable until clients support the location check.</p>') . '</div>'
             . '<div class="field"><label>Value</label><input name="value" required maxlength="255" placeholder="UUID, IP, CIDR, province, city, or country"></div>'
             . '<div class="field"><label>Province (city rules)</label><input name="province" maxlength="64"></div>'
             . '<div class="field"><label>Reason code</label><input name="reason_code" value="admin_blacklist" maxlength="64"></div>'
@@ -5321,6 +5546,10 @@ final class AdminController extends BaseController
         }
         try {
             SessionAuth::validateCsrf($request);
+            if (!$this->locationPolicyAvailable() && $this->isGeographicRuleType((string) $request->input('entity_type', ''))) {
+                SessionAuth::flash('error', 'Province, city and country rules are unavailable until clients support the location check.');
+                return Response::redirect('/admin/access-control');
+            }
             $this->accessPolicy->registerBlacklistRule($request->body(), (int) $viewer['id']);
             SessionAuth::flash('success', 'Access rule saved.');
         } catch (\Throwable) {
@@ -5340,6 +5569,14 @@ final class AdminController extends BaseController
             $ruleId = $this->idParam($params);
             $activeValue = strtolower(trim((string) $request->input('active', '0')));
             $active = in_array($activeValue, ['1', 'true', 'yes', 'on'], true);
+            if ($active && !$this->locationPolicyAvailable()) {
+                foreach ($this->accessPolicy->listBlacklistRules([]) as $rule) {
+                    if ((int) ($rule['id'] ?? 0) === $ruleId && $this->isGeographicRuleType((string) ($rule['entity_type'] ?? ''))) {
+                        SessionAuth::flash('error', 'Province, city and country rules are unavailable until clients support the location check.');
+                        return Response::redirect('/admin/access-control');
+                    }
+                }
+            }
             $this->accessPolicy->setBlacklistRuleActive($ruleId, $active, (int) $viewer['id']);
             SessionAuth::flash('success', 'Access rule status updated.');
         } catch (\Throwable) {
@@ -5544,7 +5781,7 @@ final class AdminController extends BaseController
               </div>
             </section>';
 
-        return $this->adminPage('Knowledgebase Topics', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Knowledgebase Topics', $body, $viewer, 'knowledgebase-admin');
     }
 
     public function knowledgebaseTopicEditorPage(Request $request, array $params): Response
@@ -5614,7 +5851,7 @@ final class AdminController extends BaseController
             </script>
         HTML;
 
-        return $this->adminPage($pageTitle, $body, $viewer, 'knowledgebase');
+        return $this->adminPage($pageTitle, $body, $viewer, 'knowledgebase-admin');
     }
 
     public function saveKnowledgebaseTopic(Request $request, array $params): Response
@@ -5789,7 +6026,7 @@ final class AdminController extends BaseController
             <script src="/assets/knowledgebase-admin.js?v=20260729"></script>
         HTML;
 
-        return $this->adminPage('Edit Language Version', $body, $viewer, 'knowledgebase');
+        return $this->adminPage('Edit Language Version', $body, $viewer, 'knowledgebase-admin');
     }
 
     public function saveKnowledgebaseArticle(Request $request, array $params): Response

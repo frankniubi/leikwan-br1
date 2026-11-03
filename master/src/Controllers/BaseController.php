@@ -9,6 +9,8 @@ use Leikwan\Master\Config;
 use Leikwan\Master\Database\Database;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\LocaleResolver;
+use Leikwan\Master\Support\LocaleSwitcher;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\PrecisionGridUi;
 
@@ -174,6 +176,63 @@ abstract class BaseController
         return ['class' => 'danger', 'label' => $status];
     }
 
+    /**
+     * Normalize the redacted external-UoT heartbeat state for admin/tenant
+     * views. Tokens and full runtime payloads intentionally never reach HTML.
+     *
+     * @param array<string, mixed> $point
+     * @return array<string, mixed>
+     */
+    protected function externalUotHealthInfo(array $point): array
+    {
+        $runtime = $this->decodeJsonAssoc($point['agent_config_json'] ?? null);
+        $reported = is_array($runtime['external_uot'] ?? null) ? $runtime['external_uot'] : [];
+        $expectedHashes = [];
+        foreach (['uot_sidecar_linux_amd64', 'uot_sidecar_linux_arm64'] as $key) {
+            $hash = strtolower(trim((string) ($this->artifactMetadata($key)['sha256'] ?? '')));
+            if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1) {
+                $expectedHashes[] = $hash;
+            }
+        }
+        $actualHash = strtolower(trim((string) ($reported['binary_sha256'] ?? '')));
+        $hashMatch = $actualHash !== '' && in_array($actualHash, $expectedHashes, true);
+        $required = (bool) ($reported['required'] ?? false);
+        $healthy = (bool) ($reported['healthy'] ?? false);
+        $state = trim((string) ($reported['state'] ?? ''));
+        if ($state === '') {
+            $state = 'awaiting heartbeat';
+        }
+        if ($healthy && $required && !$hashMatch) {
+            $healthy = false;
+            $state = 'artifact drift';
+        }
+
+        return [
+            'required' => $required,
+            'healthy' => $healthy,
+            'state' => $state,
+            'binary_present' => (bool) ($reported['binary_present'] ?? false),
+            'config_present' => (bool) ($reported['config_present'] ?? false),
+            'config_valid' => (bool) ($reported['config_valid'] ?? false),
+            'service_active' => (bool) ($reported['service_active'] ?? false),
+            'service_enabled' => (bool) ($reported['service_enabled'] ?? false),
+            'listening' => (bool) ($reported['listening'] ?? false),
+            'expected_active' => (bool) ($reported['expected_active'] ?? $required),
+            'forward_count' => max(0, (int) ($reported['forward_count'] ?? 0)),
+            'listen_port' => max(0, (int) ($reported['listen_port'] ?? 0)),
+            'binary_version' => trim((string) ($reported['binary_version'] ?? '')),
+            'binary_sha256' => $actualHash,
+            'config_sha256' => strtolower(trim((string) ($reported['config_sha256'] ?? ''))),
+            'hash_match' => $hashMatch,
+            'expected_versions' => array_values(array_filter([
+                trim((string) ($this->artifactMetadata('uot_sidecar_linux_amd64')['version'] ?? '')),
+                trim((string) ($this->artifactMetadata('uot_sidecar_linux_arm64')['version'] ?? '')),
+            ], static fn(string $value): bool => $value !== '')),
+            'checked_at' => max(0, (int) ($reported['checked_at'] ?? 0)),
+            'error' => trim((string) ($reported['error'] ?? '')),
+        ];
+    }
+
     protected function sidecarServiceName(int $pointId): string
     {
         return 'leikwan-bond-sidecar-' . max(1, $pointId);
@@ -251,6 +310,15 @@ abstract class BaseController
             $command .= ' --total-speed-limit-mbps ' . $totalSpeedLimitMbps;
         }
 
+        $sidecarHost = trim((string) ($point['sidecar_host'] ?? ''));
+        if ($sidecarHost !== '') {
+            // Fresh installs fetch this host's external UoT forwards straight
+            // from the panel (the installer's default URL, authenticated with
+            // the point's own --agent-token); --require-external-uot keeps a
+            // silent miss (the old "UDP candidate failed" install) from shipping.
+            $command .= ' --require-external-uot';
+        }
+
         return $command;
     }
 
@@ -273,15 +341,72 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = (string) ($client['agent_token'] ?? '');
 
-        $command = 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-client-agent.sh')
-            . ' | bash -s -- --master ' . $this->shellQuote($masterUrl);
+        $arguments = ' --master ' . $this->shellQuote($masterUrl);
         if ($artifactBase !== $masterUrl) {
-            $command .= ' --artifact-base ' . $this->shellQuote($artifactBase);
+            $arguments .= ' --artifact-base ' . $this->shellQuote($artifactBase);
+        }
+        $arguments .= ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+
+        return $this->linuxScriptCommand($artifactBase . '/artifacts/install-client-agent.sh', $arguments);
+    }
+
+    /**
+     * The same artifacts are published through Cloudflare and the Aliyun CDN.
+     * Some Linux hosts can reach only mainland networks, so the displayed
+     * commands retry through the Aliyun CDN when the Cloudflare base does not
+     * answer; the installer then picks whichever source works for the rest.
+     */
+    protected function artifactMirrorBaseUrl(): string
+    {
+        $configured = trim((string) ($this->config->get('ARTIFACT_MIRROR_BASE_URL', '') ?? ''));
+        if ($configured !== '') {
+            return rtrim($configured, '/');
         }
 
-        return $command
-            . ' --client-id ' . $clientId
-            . ' --agent-token ' . $this->shellQuote($agentToken);
+        return $this->artifactBaseUrl() === 'https://v3.leikwanhost.com' ? 'https://api-leikwanbridge.nbwly.com' : '';
+    }
+
+    protected function artifactMirrorUrl(string $url): string
+    {
+        $base = $this->artifactBaseUrl();
+        $mirror = $this->artifactMirrorBaseUrl();
+        if ($mirror === '' || $mirror === $base || !str_starts_with($url, $base . '/')) {
+            return '';
+        }
+
+        return $mirror . substr($url, strlen($base));
+    }
+
+    /**
+     * curl command that writes $url to $target, falling back to the mirror.
+     */
+    protected function linuxFetchCommand(string $url, string $target): string
+    {
+        $mirror = $this->artifactMirrorUrl($url);
+        if ($mirror === '') {
+            return 'curl -fsSL ' . $this->shellQuote($url) . ' -o ' . $target;
+        }
+
+        // A reachable Cloudflare edge connects in about 0.3 s even from mainland
+        // hosts, so 3 s is plenty; the mirror is the last resort and waits longer.
+        return '{ curl -fsSL --connect-timeout 3 ' . $this->shellQuote($url) . ' -o ' . $target
+            . ' || curl -fsSL --connect-timeout 10 ' . $this->shellQuote($mirror) . ' -o ' . $target . '; }';
+    }
+
+    /**
+     * Download a shell script and run it with $arguments. Without a mirror this
+     * stays the familiar "curl | bash"; with one the script is saved first so a
+     * failed first attempt never feeds a partial script to bash.
+     */
+    protected function linuxScriptCommand(string $url, string $arguments): string
+    {
+        if ($this->artifactMirrorUrl($url) === '') {
+            return 'curl -fsSL ' . $this->shellQuote($url) . ' | bash -s --' . $arguments;
+        }
+
+        return 'f="$(mktemp)" && ' . $this->linuxFetchCommand($url, '"$f"')
+            . ' && bash "$f"' . $arguments . '; rm -f "$f"';
     }
 
     protected function androidClientApkUrl(): string
@@ -307,7 +432,10 @@ abstract class BaseController
             'macos' => '<path d="M12 7.6c-3 0-5.2 2.4-5.2 5.6 0 3.2 2.3 5.9 5.2 5.9s5.2-2.7 5.2-5.9c0-3.2-2.2-5.6-5.2-5.6z"/><ellipse cx="14.6" cy="4.7" rx="2.6" ry="1.2" transform="rotate(-32 14.6 4.7)"/><rect x="11.6" y="5.4" width="1" height="2.6" rx="0.5"/>',
             'linux' => '<circle cx="12" cy="7.2" r="4.3"/><ellipse cx="12" cy="16" rx="5.6" ry="6.4"/><path d="M10 9.2h4L12 11.9z"/><ellipse cx="6.4" cy="20.4" rx="2.6" ry="1.1"/><ellipse cx="17.6" cy="20.4" rx="2.6" ry="1.1"/>',
             'android' => '<path d="M5.6 10.4h12.8v6.8a2 2 0 0 1-2 2H7.6a2 2 0 0 1-2-2z"/><path d="M5.6 9.6a6.4 6.4 0 0 1 12.8 0z"/><path d="M8.2 3.4 6.9 1.8M15.8 3.4l1.3-1.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><rect x="3.1" y="10.6" width="1.7" height="5.6" rx="0.85"/><rect x="19.2" y="10.6" width="1.7" height="5.6" rx="0.85"/>',
+            'ios' => '<path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.9-3-.9-1.5 0-2.9.9-3.7 2.3-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.7 2.3 2.9 2.2 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.1.9-1.2 1.2-2.4 1.3-2.5-.1 0-2.5-1-2.5-3.6z"/><path d="M14.2 5.5c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z"/>',
+            'openwrt' => '<path d="M12 2.6a9.4 9.4 0 0 1 9.4 9.4c0 1.9-.6 3.7-1.6 5.2l-2.2-1.6a6.9 6.9 0 1 0-11.2 0l-2.2 1.6a9.4 9.4 0 0 1 7.8-14.6z"/><circle cx="12" cy="12" r="2.6"/><path d="M12 14.6v6.8" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/>',
             'helper' => '<path d="M12 4.6a7.4 7.4 0 1 0 7.1 9.4l-2.1-.6A5.2 5.2 0 1 1 12 6.8z"/><path d="M12 2.2l4 3-4 3z"/>',
+            'docker' => '<path d="M3 11h3.4v3.4H3zM7.1 11h3.4v3.4H7.1zM11.2 9.2h3.4v5.2h-3.4zM15.3 10.2h3.4v4.2h-3.4z"/><path d="M3.2 15.8h17.6l-1.1 2.2H4.3z"/><path d="M6.1 7.2h1.1V5.4h1.2v1.8h1.1V6h1.2v1.2h1l1 1v1.1h-6.6z"/>',
         ];
         if (!isset($icons[$kind])) {
             return '';
@@ -371,10 +499,18 @@ abstract class BaseController
         return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' . $payload . '"';
     }
 
-    /** Single quoted PowerShell literal: quotes are escaped by doubling them. */
+    /**
+     * Single quoted PowerShell literal: quotes are escaped by doubling them.
+     * PowerShell treats U+2018..U+201B as single quotes too, so those are
+     * doubled as well; otherwise a curly quote would close the literal.
+     */
     protected function powershellSingleQuote(string $value): string
     {
-        return "'" . str_replace("'", "''", $value) . "'";
+        return "'" . str_replace(
+            ["'", "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}"],
+            ["''", "\u{2018}\u{2018}", "\u{2019}\u{2019}", "\u{201A}\u{201A}", "\u{201B}\u{201B}"],
+            $value
+        ) . "'";
     }
 
     protected function linuxArm64ClientInstallerUrl(): string
@@ -385,14 +521,31 @@ abstract class BaseController
         );
     }
 
+    /**
+     * Single-file arm64 installer. It embeds the client-agent runtime, so the
+     * command downloads one binary, verifies it against the panel manifest, and
+     * runs it locally instead of piping a remote shell script.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    protected function linuxArm64ClientInstallCommand(?array $client = null): string
+    {
+        $command = $this->linuxFetchCommand($this->linuxArm64ClientInstallerUrl(), 'install-client-agent-linux-arm64')
+            . ' && chmod 0755 install-client-agent-linux-arm64 && sudo ./install-client-agent-linux-arm64'
+            . ' --master ' . $this->shellQuote($this->agentBaseUrl());
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = trim((string) ($client['agent_token'] ?? ''));
+        if ($clientId > 0 && $agentToken !== '') {
+            $command .= ' --client-id ' . $clientId
+                . ' --agent-token ' . $this->shellQuote($agentToken);
+        }
+
+        return $command;
+    }
+
     protected function macosClientArm64AppUrl(): string
     {
         return $this->clientAppArtifactUrl('macos_client_app_arm64', '/artifacts/macos/leikwan-bridge-arm64.dmg');
-    }
-
-    protected function macosClientX64AppUrl(): string
-    {
-        return $this->clientAppArtifactUrl('macos_client_app_x64', '/artifacts/macos/leikwan-bridge-x64.dmg');
     }
 
     // No-GUI surface. The Windows payload is its own artifact; macOS reuses the
@@ -415,6 +568,16 @@ abstract class BaseController
     protected function windowsHeadlessInstallerUrl(): string
     {
         return $this->installerScriptUrl('windows_headless_installer', '/artifacts/install-windows-headless.ps1');
+    }
+
+    protected function dockerClientInstallerUrl(): string
+    {
+        return $this->installerScriptUrl('docker_client_installer', '/artifacts/install-docker-client.sh');
+    }
+
+    protected function dockerClientComposeUrl(): string
+    {
+        return $this->artifactBaseUrl() . '/artifacts/docker-client/docker-compose.yml';
     }
 
     protected function installerScriptUrl(string $artifactKey, string $fallbackPath): string
@@ -466,6 +629,49 @@ abstract class BaseController
             . '.\install-windows-headless.ps1 -Panel ' . $masterUrl
             . ' -ClientId ' . $clientId
             . ' -AgentToken \'' . $agentToken . '\'';
+    }
+
+    /**
+     * One-line Docker installer. Reuses the same client-id / agent-token
+     * surface as the Linux/macOS/Windows headless installers, and always
+     * pulls from the published artifact manifest so the container image build
+     * can verify every binary by sha256. Private-registry users can pass
+     * --image to skip the local build.
+     *
+     * @param array<string, mixed> $client
+     */
+    protected function dockerClientInstallCommand(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        $agentToken = (string) ($client['agent_token'] ?? '');
+
+        return 'curl -fsSL ' . $this->shellQuote($artifactBase . '/artifacts/install-docker-client.sh')
+            . ' | bash -s -- --panel ' . $this->shellQuote($masterUrl)
+            . ' --client-id ' . $clientId
+            . ' --agent-token ' . $this->shellQuote($agentToken);
+    }
+
+    protected function dockerClientComposeInline(array $client): string
+    {
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $masterUrl = $this->agentBaseUrl();
+        $clientId = (int) ($client['id'] ?? 0);
+        // Keep the compose file minimal and honest: image is built from the
+        // signed manifest at build time, secrets are mounted, not inlined.
+        return 'services:'
+            . "\n  leikwan-bridge:"
+            . "\n    image: \${LEIKWAN_IMAGE:-leikwan/bridge:local}"
+            . "\n    restart: unless-stopped"
+            . "\n    network_mode: host"
+            . "\n    environment:"
+            . "\n      LEIKWAN_PANEL_URL: " . $masterUrl
+            . "\n      LEIKWAN_CLIENT_ID: " . $clientId
+            . "\n      LEIKWAN_AGENT_TOKEN_FILE: /run/secrets/leikwan-agent-token"
+            . "\n    secrets: [leikwan-agent-token]"
+            . "\n    volumes: [\"leikwan-state:/var/lib/leikwan-client-agent\"]"
+            . "\n# Full template: " . $artifactBase . "/artifacts/docker-client/docker-compose.yml";
     }
 
     protected function headlessClientReleaseVersion(): string
@@ -529,11 +735,9 @@ abstract class BaseController
 
     protected function macosClientArtifactsAvailable(): bool
     {
-        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
-            $metadata = $this->artifactMetadata($key);
-            if ($metadata === [] || trim((string) ($metadata['artifact_url'] ?? '')) === '') {
-                return false;
-            }
+        $metadata = $this->artifactMetadata('macos_client_app_arm64');
+        if ($metadata === [] || trim((string) ($metadata['artifact_url'] ?? '')) === '') {
+            return false;
         }
 
         return true;
@@ -541,14 +745,7 @@ abstract class BaseController
 
     protected function macosClientReleaseVersion(): string
     {
-        foreach (['macos_client_app_arm64', 'macos_client_app_x64'] as $key) {
-            $version = trim((string) ($this->artifactMetadata($key)['version'] ?? ''));
-            if ($version !== '') {
-                return $version;
-            }
-        }
-
-        return '';
+        return trim((string) ($this->artifactMetadata('macos_client_app_arm64')['version'] ?? ''));
     }
 
     protected function macosClientReleaseNotice(): string
@@ -556,8 +753,8 @@ abstract class BaseController
         $version = $this->macosClientReleaseVersion();
 
         return $version !== ''
-            ? 'Release announcement / 发布声明：macOS client ' . $version . ' is now available. macOS 客户端 ' . $version . ' 已发布，支持 Apple Silicon 与 Intel。'
-            : 'Release announcement / 发布声明：macOS client is now available. macOS 客户端已发布，支持 Apple Silicon 与 Intel。';
+            ? 'Release announcement / 发布声明：macOS client ' . $version . ' is now available for Apple Silicon. macOS 客户端 ' . $version . ' 已发布，适用于 Apple Silicon。'
+            : 'Release announcement / 发布声明：macOS client is now available for Apple Silicon. macOS 客户端已发布，适用于 Apple Silicon。';
     }
 
     protected function clientWindowsInstallerUrl(): string
@@ -609,9 +806,10 @@ abstract class BaseController
 
     protected function clientAgentUninstallCommand(string $configDir = '/etc/leikwan-client-agent', bool $purge = true): string
     {
-        return 'curl -fsSL ' . $this->artifactBaseUrl() . '/artifacts/uninstall-client-agent.sh | bash -s -- --config-dir '
-            . $configDir
-            . ($purge ? ' --purge' : '');
+        return $this->linuxScriptCommand(
+            $this->artifactBaseUrl() . '/artifacts/uninstall-client-agent.sh',
+            ' --config-dir ' . $configDir . ($purge ? ' --purge' : '')
+        );
     }
 
     protected function clientAgentInstallerUrl(): string
@@ -756,6 +954,9 @@ abstract class BaseController
         $linuxDescription = $hasClient
             ? 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Example shown for the current client; each client card below repeats its own exact command.'
             : 'Debian 11/12/13 only. One command for both architectures: the installer detects x86_64/amd64 or aarch64/arm64 and verifies every artifact against the panel manifest. Create a client first to get its exact install command.';
+        $linuxArm64Install = $this->linuxArm64ClientInstallCommand($hasClient ? $client : null);
+        $linuxArm64Description = 'Debian 11/12/13 only, Linux arm64/aarch64 only. Single-file installer for arm64 hosts (Raspberry Pi, Ampere, arm64 VMs) that cannot reach the shell installer: it embeds the client-agent runtime, keeps the configured artifact base for later hash-verified updates, and is refused on x86_64/amd64 machines. Verify it first with ./install-client-agent-linux-arm64 --self-test.'
+            . ($hasClient ? '' : ' Create a client first to get its exact install command.');
 
         return '<section class="card" style="margin-bottom:20px;">'
             . '<h3>App Download</h3>'
@@ -788,6 +989,16 @@ abstract class BaseController
                 $linuxInstall,
                 $linuxActions,
                 $linuxDescription,
+                'linux'
+            )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $linuxArm64Install,
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $this->linuxArm64ClientInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $linuxArm64Install),
+                ],
+                $linuxArm64Description,
                 'linux'
             )
             . $this->renderHeadlessClientDownloadPanel($client)
@@ -900,6 +1111,15 @@ abstract class BaseController
                 ],
                 'Debian 11/12/13 only. Manual/local install for this client on the Linux host that will run the client-agent. The installer detects x86_64/amd64 or aarch64/arm64 (apt/dpkg/systemd) and verifies every artifact against the panel manifest.'
             )
+            . $this->renderCommandPanel(
+                $this->clientAppReleaseLabel('Linux ARM64 Installer', 'client_agent_installer_linux_arm64'),
+                $this->linuxArm64ClientInstallCommand($client),
+                [
+                    $this->renderCommandLink('Download ARM64 Installer', $this->linuxArm64ClientInstallerUrl()),
+                    $this->renderCopyButton('Copy Install Command', $this->linuxArm64ClientInstallCommand($client)),
+                ],
+                'Debian 11/12/13 only, Linux arm64/aarch64 only. Single-file installer that embeds the client-agent runtime, so an arm64 host needs no shell installer and no extra downloads. It verifies every artifact against the panel manifest and is refused on x86_64/amd64 machines.'
+            )
             . '<details style="margin-top:14px;">'
             . '<summary>More install tools</summary>'
             . '<div class="muted" style="margin:10px 0 12px;">These secondary tools stay available for local management and compatibility flows, but the primary install story is now app download or Linux install.</div>'
@@ -925,7 +1145,6 @@ abstract class BaseController
 
         $releaseNotice = $this->macosClientReleaseNotice();
         $arm64Url = $this->macosClientArm64AppUrl();
-        $x64Url = $this->macosClientX64AppUrl();
 
         return $this->renderCommandPanel(
             $this->clientAppReleaseLabel('macOS App - Apple Silicon', 'macos_client_app_arm64'),
@@ -936,16 +1155,6 @@ abstract class BaseController
             ],
             $releaseNotice . ' Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。',
             'macos'
-        )
-        . $this->renderCommandPanel(
-            $this->clientAppReleaseLabel('macOS App - Intel', 'macos_client_app_x64'),
-            $x64Url,
-            [
-                $this->renderCommandLink('Download Intel', $x64Url),
-                $this->renderCopyButton('Copy Download Link', $x64Url),
-            ],
-            'For Intel Macs (x86_64). 适用于 Intel Mac。',
-            'macos'
         );
     }
 
@@ -955,20 +1164,30 @@ abstract class BaseController
             return '';
         }
 
-        $releaseNotice = $this->macosClientReleaseNotice();
-
         $version = $this->macosClientReleaseVersion();
 
         return '<section class="tenant-client-install__platform"><strong>'
             . $this->platformIcon('macos')
             . 'macOS' . ($version !== '' ? ' ' . $this->escape($version) : '') . '</strong>'
-            . '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($releaseNotice) . '</div>'
+            . $this->renderMacClientInstallBody()
+            . '</section>';
+    }
+
+    /**
+     * The macOS GUI download without its card header, so a page can nest it
+     * (e.g. collapsed under the no-GUI client).
+     */
+    protected function renderMacClientInstallBody(): string
+    {
+        if (!$this->macosClientArtifactsAvailable()) {
+            return '';
+        }
+
+        return '<div class="flash success" style="margin:10px 0 0;">' . $this->escape($this->macosClientReleaseNotice()) . '</div>'
             . '<div class="muted">Unsigned build; macOS may show a security prompt on first open. 未签名版本，首次打开时 macOS 可能显示安全提示。</div>'
             . '<div class="actions">'
             . $this->renderCommandLink('Apple Silicon', $this->macosClientArm64AppUrl(), 'secondary')
-            . $this->renderCommandLink('Intel', $this->macosClientX64AppUrl(), 'secondary')
-            . '</div>'
-            . '</section>';
+            . '</div>';
     }
 
     /**
@@ -1474,44 +1693,60 @@ abstract class BaseController
     }
 
     /**
+     * Tenant sidebar, shared by the tenant pages and the knowledgebase.
+     * The first item has no group so "Overview" is not printed twice.
+     *
+     * @return array<int, array{group:string,href:string,label:string,active:bool}>
+     */
+    protected function tenantNavigationItems(string $active = ''): array
+    {
+        return [
+            ['group' => '', 'href' => '/tenant', 'label' => 'Overview', 'active' => $active === 'intro'],
+            ['group' => 'Services', 'href' => '/tenant/forwards', 'label' => 'My Services', 'active' => in_array($active, ['forwards', 'service', 'wizard'], true)],
+            ['group' => 'Services', 'href' => '/tenant/plans', 'label' => 'Buy Packages', 'active' => $active === 'plans'],
+            ['group' => 'Services', 'href' => '/tenant/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
+            ['group' => 'Services', 'href' => '/tenant/hosted-nodes', 'label' => 'My Nodes', 'active' => $active === 'hosted-nodes'],
+            ['group' => 'Account', 'href' => '/tenant/account', 'label' => 'Balance & Billing', 'active' => $active === 'account'],
+            ['group' => 'Account', 'href' => '/tenant/security', 'label' => 'Account Security', 'active' => $active === 'security'],
+            ['group' => 'More', 'href' => '/knowledgebase', 'label' => 'Help Center', 'active' => $active === 'knowledgebase'],
+            ['group' => 'More', 'href' => '/tenant/slave-groups', 'label' => 'Node Groups', 'active' => $active === 'slave-groups'],
+        ];
+    }
+
+    /**
      * @return array<int, array{href:string,label:string,active?:bool}>
      */
     protected function adminNavigationItems(string $active = ''): array
     {
+        // Grouped by task: customers, what they buy, what carries it, then
+        // day-to-day operations. Rarely used pages sit under More.
         return [
-            ['group' => 'Operations', 'href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
-            ['group' => 'Operations', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
-            ['group' => 'Operations', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
-            ['group' => 'Operations', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
-            ['group' => 'Security', 'href' => '/admin/access-control', 'label' => 'Access Control', 'active' => $active === 'access-control'],
+            ['group' => '', 'href' => '/admin', 'label' => 'Overview', 'active' => $active === 'overview'],
             ['group' => 'Customers', 'href' => '/admin/tenants', 'label' => 'Tenants', 'active' => $active === 'tenants'],
+            ['group' => 'Customers', 'href' => '/admin/services', 'label' => 'Services', 'active' => $active === 'services'],
+            ['group' => 'Customers', 'href' => '/admin/clients', 'label' => 'Clients', 'active' => $active === 'clients'],
             ['group' => 'Customers', 'href' => '/admin/registration', 'label' => 'Registration Codes', 'active' => $active === 'registration'],
-            ['group' => 'Customers', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
-            ['group' => 'Products', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
-            ['group' => 'Infrastructure', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
-            ['group' => 'Infrastructure', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
-            ['group' => 'Infrastructure', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
-            ['group' => 'Infrastructure', 'href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
-            ['group' => 'Infrastructure', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
-            ['group' => 'Infrastructure', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
-            ['group' => 'Infrastructure', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
-            ['group' => 'Support', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
-            ['group' => 'Context', 'href' => '/tenant', 'label' => 'Tenant Area'],
+            ['group' => 'Products & Lines', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
+            ['group' => 'Products & Lines', 'href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
+            ['group' => 'Products & Lines', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
+            ['group' => 'Products & Lines', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
+            ['group' => 'Nodes', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
+            ['group' => 'Nodes', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],
+            ['group' => 'Nodes', 'href' => '/admin-transport-endpoints', 'label' => 'Transport Endpoints', 'active' => $active === 'transport-endpoints'],
+            ['group' => 'Operations', 'href' => '/admin/diagnostics', 'label' => 'Diagnostics', 'active' => $active === 'diagnostics'],
+            ['group' => 'Operations', 'href' => '/admin/access-control', 'label' => 'Access Control', 'active' => $active === 'access-control'],
+            ['group' => 'Operations', 'href' => '/admin/credentials', 'label' => 'Credentials', 'active' => $active === 'credentials'],
+            ['group' => 'Operations', 'href' => '/admin/knowledgebase', 'label' => 'Knowledgebase Editor', 'active' => $active === 'knowledgebase-admin'],
+            ['group' => 'More', 'href' => '/admin/client-groups', 'label' => 'Client Groups', 'active' => $active === 'client-groups'],
+            ['group' => 'More', 'href' => '/admin/user-groups', 'label' => 'User Groups', 'active' => $active === 'user-groups'],
+            ['group' => 'More', 'href' => '/knowledgebase', 'label' => 'Knowledgebase', 'active' => $active === 'knowledgebase'],
+            ['group' => 'More', 'href' => '/tenant', 'label' => 'Tenant Area'],
         ];
     }
 
     protected function localeSwitcherHtml(): string
     {
-        return <<<HTML
-            <div class="locale-switch">
-                <label for="locale-switcher" class="locale-label">Language</label>
-                <select id="locale-switcher" class="locale-select">
-                    <option value="en">English</option>
-                    <option value="zh-Hans">Simplified Chinese</option>
-                    <option value="zh-TW">Traditional Chinese</option>
-                </select>
-            </div>
-        HTML;
+        return LocaleSwitcher::html(LocaleResolver::fromGlobals());
     }
 
     protected function flashHtml(): string
@@ -1556,61 +1791,132 @@ HTML;
     protected function publicPage(string $title, string $body, ?array $viewer = null, string $variant = 'default'): Response
     {
         $isBridgeHome = $variant === 'bridge-home';
-        $escapedTitle = $this->escape($title);
+        $pageTitle = $isBridgeHome ? '會聚 · LeiKwan Bridge | 利群主機 | LeiKwan Host' : $title;
+        $escapedTitle = $this->escape($pageTitle);
         $appName = $this->appName();
         $escapedAppName = $this->escape($appName);
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $flashHtml = $this->flashHtml();
-        $languageSwitcher = $this->localeSwitcherHtml();
+        $currentLocale = LocaleResolver::fromGlobals();
+        // The homepage is deliberately bilingual and has no language toggle. The
+        // rest of the public shell keeps the existing locale-aware experience.
+        $languageSwitcher = $isBridgeHome ? '' : $this->localeSwitcherHtml();
+        $htmlLang = $this->escape($isBridgeHome ? 'zh-Hant' : $currentLocale);
         $csrfToken = $this->escape(SessionAuth::csrfToken());
         $bodyLayoutClass = $isBridgeHome ? 'bridge-home-body' : 'pg-auth-layout';
         $pageClass = $isBridgeHome ? ' bridge-home-page' : '';
         $topbarClass = $isBridgeHome ? ' bridge-home-topbar' : '';
         $mainClass = $isBridgeHome ? ' bridge-home-main' : '';
-        $styleLinks = '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
+        // The two faces that paint the first screen are fetched in parallel with
+        // the stylesheet instead of being discovered after CSS parse. Only the
+        // homepage uses these families.
+        $fontPreload = $isBridgeHome
+            ? '<link rel="preload" href="/assets/fonts/inter-var.ttf" as="font" type="font/ttf" crossorigin>'
+            : '';
+        $styleLinks = $fontPreload . '<link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">'
             . ($isBridgeHome
-                ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260829a">'
+                // The stylesheet is served with a 12h edge TTL, so every
+                // homepage restyle has to ship under a fresh cache key.
+                 ? '<link rel="stylesheet" href="/assets/bridge-home.css?v=20260917b">'
                 : '<link rel="stylesheet" href="/assets/signal-chamber.css?v=20260725"><link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">');
         $script = $isBridgeHome ? '' : '<script src="/assets/signal-chamber.js?v=20260725" defer></script>';
+        $i18nHtml = $isBridgeHome ? '' : $this->i18nBootstrapHtml();
+        $seoHead = '';
+        if ($isBridgeHome) {
+            $seoDescription = '會聚 LeiKwan Bridge：連接東亞多地的雙向轉發平台。利群主機提供雲主機、網路基礎設施與全球連接服務。 / A bilingual network bridge across East Asia, from LeiKwan Host, with cloud servers, network infrastructure, and global connectivity.';
+            $escapedDescription = $this->escape($seoDescription);
+            $appUrl = rtrim((string) ($this->config->get('APP_URL', '') ?? ''), '/');
+            $canonicalUrl = $appUrl !== '' ? $appUrl . '/' : 'https://www.leikwanhost.com/';
+            $escapedCanonical = $this->escape($canonicalUrl);
+            $schema = json_encode([
+                '@context' => 'https://schema.org',
+                '@type' => 'WebSite',
+                'name' => '會聚 · LeiKwan Bridge',
+                'alternateName' => 'LeiKwan Bridge',
+                'url' => $canonicalUrl,
+                'description' => $seoDescription,
+                'inLanguage' => ['zh-Hant', 'en'],
+                'publisher' => [
+                    '@type' => 'Organization',
+                    'name' => '利群主機 | LeiKwan Host',
+                    'url' => 'https://www.leikwanhost.com',
+                ],
+                'isPartOf' => [
+                    '@type' => 'WebSite',
+                    'name' => '利群主機 | LeiKwan Host',
+                    'url' => 'https://www.leikwanhost.com',
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+            $seoHead = '<meta name="description" content="' . $escapedDescription . '">'
+                . '<meta name="robots" content="index,follow">'
+                . '<link rel="canonical" href="' . $escapedCanonical . '">'
+                . '<meta property="og:type" content="website">'
+                . '<meta property="og:site_name" content="利群主機 | LeiKwan Host">'
+                . '<meta property="og:title" content="' . $escapedTitle . '">'
+                . '<meta property="og:description" content="' . $escapedDescription . '">'
+                . '<meta property="og:url" content="' . $escapedCanonical . '">'
+                . '<meta name="twitter:card" content="summary">'
+                . '<meta name="twitter:title" content="' . $escapedTitle . '">'
+                . '<meta name="twitter:description" content="' . $escapedDescription . '">'
+                . '<script type="application/ld+json">' . ($schema ?: '{}') . '</script>';
+        }
         $body = '<div class="pg-public-body ' . $bodyLayoutClass . '">' . $body . '</div>';
+        $brandLockup = $isBridgeHome
+            ? '<span class="site-mark" aria-hidden="true"><img src="/assets/brand-mark.png" alt="" data-bridge-variant="/assets/brand-mark-bridge.webp"></span>'
+                . '<span class="site-copy">'
+                . '<strong lang="zh-Hant">利群會聚</strong>'
+                . '<span lang="en">LeiKwan Bridge</span>'
+                . '<span class="site-provenance" lang="zh-Hant">利群主機<span aria-hidden="true"> · </span><span lang="en">LeiKwan Host</span></span>'
+                . '</span>'
+            : '<span class="site-mark"><img src="' . $brandLogoUrl . '" alt="' . $escapedBrandName . ' logo"></span>'
+                . '<span class="site-copy">'
+                . '<strong>' . $escapedBrandName . '</strong>'
+                . '<span>' . $escapedAppName . ' control plane</span>'
+                . '</span>';
 
-        $actionsHtml = '<a class="button" href="/login">Sign In</a>';
+        $actionsHtml = $isBridgeHome
+            ? '<a class="button" href="/login">登入 · Sign In</a>'
+            : '<a class="button" href="/login">Sign In</a>';
         if ($viewer !== null) {
             $consoleHref = $this->escape($this->dashboardPathForUser($viewer));
-            $consoleLabel = $this->escape($this->dashboardLabelForUser($viewer));
+            $consoleLabel = $this->dashboardLabelForUser($viewer);
+            if ($isBridgeHome) {
+                $consoleLabel = (string) ($viewer['role'] ?? '') === 'admin'
+                    ? '管理控制台 / Admin Console'
+                    : '租户面板 / Tenant Panel';
+            }
+            $consoleLabel = $this->escape($consoleLabel);
             $viewerName = $this->escape((string) ($viewer['name'] ?? 'Workspace User'));
             $viewerRole = strtoupper($this->escape((string) ($viewer['role'] ?? 'user')));
             $actionsHtml = '
                 <div class="public-session">
                     <strong>' . $viewerName . '</strong>
-                    <span>' . $viewerRole . ' SESSION</span>
+                    <span>' . ($isBridgeHome ? '会话 / ' : '') . $viewerRole . ' SESSION</span>
                 </div>
                 <a class="button" href="' . $consoleHref . '">' . $consoleLabel . '</a>
                 <form class="inline" method="post" action="/logout">
                     <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
-                    <button type="submit" class="button secondary">Sign Out</button>
+                    <button type="submit" class="button secondary">' . ($isBridgeHome ? '退出 / Sign Out' : 'Sign Out') . '</button>
                 </form>';
         }
 
+        $brandA11yLabel = $isBridgeHome ? ' aria-label="利群會聚 LeiKwan Bridge — by 利群主機 LeiKwan Host"' : '';
         $html = <<<HTML
 <!doctype html>
-<html lang="en">
+<html lang="{$htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{$escapedTitle}</title>
+  {$seoHead}
   {$styleLinks}
 </head>
 <body class="pg-public{$pageClass}">
   <div class="public-shell">
     <header class="site-topbar{$topbarClass}">
-      <a class="site-brand" href="/">
-        <span class="site-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></span>
-        <span class="site-copy">
-          <strong>{$escapedBrandName}</strong>
-          <span>{$escapedAppName} control plane</span>
-        </span>
+      <a class="site-brand" href="/"{$brandA11yLabel}>
+        {$brandLockup}
       </a>
       <div class="site-actions">
         {$languageSwitcher}
@@ -1621,13 +1927,8 @@ HTML;
       {$flashHtml}
       {$body}
     </main>
-    <footer class="page-footer">
-      <div class="footer-tools">
-        <span class="muted">Language can also be changed from the top bar.</span>
-      </div>
-    </footer>
   </div>
-{$this->i18nBootstrapHtml()}
+{$i18nHtml}
   {$script}
 </body>
 </html>
@@ -1644,12 +1945,12 @@ HTML;
     protected function page(string $title, string $body, ?array $viewer = null, array $nav = []): Response
     {
         $escapedTitle = $this->escape($title);
-        $appName = $this->appName();
-        $escapedAppName = $this->escape($appName);
         $escapedBrandName = $this->escape($this->displayBrandName());
         $brandLogoUrl = $this->escape($this->brandLogoUrl());
         $csrfToken = $this->escape(SessionAuth::csrfToken());
+        $currentLocale = LocaleResolver::fromGlobals();
         $languageSwitcher = $this->localeSwitcherHtml();
+        $htmlLang = $this->escape($currentLocale);
 
         $activeGroup = 'Workspace';
         foreach ($nav as $item) {
@@ -1677,31 +1978,39 @@ HTML;
         if ($viewer !== null && (int) ($viewer['wallet_warning_sent'] ?? 0) === 1) {
             $balance = number_format((float) ($viewer['wallet_balance'] ?? 0), 2);
             $curr = strtoupper(trim((string) ($viewer['wallet_currency'] ?? 'CNY')));
-            $lowBalanceHtml = '<div class="flash danger" style="margin-bottom:18px;">Your balance is low (' . $this->escape($curr) . ' ' . $this->escape($balance) . '). <a href="/tenant/account" style="text-decoration:underline;">Top up</a> to avoid service interruption.</div>';
+            $lowBalanceHtml = '<div class="flash danger"><span>Your balance is low:</span> ' . $this->escape($curr) . ' ' . $this->escape($balance) . ' · <a href="/tenant/account">Top up now</a> <span>to avoid service interruption.</span></div>';
         }
 
         $navHtml = PrecisionGridUi::groupNavigation($nav);
 
         $viewerHtml = '';
         if ($viewer !== null) {
-            $viewerRole = strtoupper($this->escape((string) ($viewer['role'] ?? 'user')));
+            $viewerRole = match ((string) ($viewer['role'] ?? '')) {
+                'admin' => 'Administrator',
+                'tenant' => 'Member',
+                default => ucfirst((string) ($viewer['role'] ?? 'user')),
+            };
+            $viewerName = trim((string) ($viewer['name'] ?? ''));
+            // The panel host has no mbstring; PCRE's /u takes the first character.
+            $viewerSource = $viewerName !== '' ? $viewerName : (string) ($viewer['email'] ?? '?');
+            $viewerInitial = preg_match('/^./u', $viewerSource, $firstChar) === 1 ? strtoupper($firstChar[0]) : '?';
             $viewerHtml = '
                 <div class="viewer">
+                    <span class="viewer-avatar" aria-hidden="true">' . $this->escape($viewerInitial) . '</span>
                     <div class="viewer-meta">
-                        <strong>' . $this->escape((string) $viewer['name']) . '</strong>
+                        <strong>' . $this->escape($viewerName) . ' <span class="viewer-role">' . $this->escape($viewerRole) . '</span></strong>
                         <span>' . $this->escape((string) $viewer['email']) . '</span>
-                        <span class="viewer-role">' . $viewerRole . '</span>
                     </div>
                     <form method="post" action="/logout">
                         <input type="hidden" name="csrf_token" value="' . $csrfToken . '">
-                        <button type="submit" class="button danger">Logout</button>
+                        <button type="submit" class="button ghost logout-button">Logout</button>
                     </form>
                 </div>';
         }
 
         $html = <<<HTML
 <!doctype html>
-<html lang="en">
+<html lang="{$htmlLang}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1709,6 +2018,7 @@ HTML;
   <link rel="stylesheet" href="/assets/leikwan-ui.css?v=20260725">
   <link rel="stylesheet" href="/assets/operator-console.css?v=20260825">
   <link rel="stylesheet" href="/assets/bridge-modern.css?v=20260914a">
+  <link rel="stylesheet" href="/assets/console.css?v=20261022b">
 </head>
 <body class="pg-app">
   <div class="shell">
@@ -1717,7 +2027,7 @@ HTML;
         <div class="brand-mark"><img src="{$brandLogoUrl}" alt="{$escapedBrandName} logo"></div>
         <div class="brand-copy">
           <h1>{$escapedBrandName}</h1>
-          <p>{$escapedAppName} control plane for IXP ingress, compliant routing and tenant delivery</p>
+          <p>Console</p>
         </div>
       </div>
       <div class="toolbar">
@@ -1728,10 +2038,6 @@ HTML;
     </div>
     <div class="layout">
       <aside class="sidebar" id="workspace-navigation" data-open="false">
-        <div class="sidebar-panel">
-          <strong>Workspace Shell</strong>
-          <p>Use the public homepage as the front door, then jump back into the console you need.</p>
-        </div>
         {$navHtml}
       </aside>
       <main class="content-card">
@@ -1740,11 +2046,6 @@ HTML;
         {$body}
       </main>
     </div>
-    <footer class="page-footer">
-      <div class="footer-tools">
-        <span class="muted">Language can also be changed from the top bar.</span>
-      </div>
-    </footer>
   </div>
 {$this->i18nBootstrapHtml()}
 <script>

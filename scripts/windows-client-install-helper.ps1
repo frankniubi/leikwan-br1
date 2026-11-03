@@ -509,6 +509,8 @@ function Get-FallbackInstalledFiles {
         "bin\netfilter2.sys",
         "bin\nfapi.dll",
         "bin\CN.conf",
+        "bin\geoip-cn.srs",
+        "bin\geosite-cn.srs",
         $InstalledHelperRelativePath,
         "install-manifest.json",
         "install-state.json"

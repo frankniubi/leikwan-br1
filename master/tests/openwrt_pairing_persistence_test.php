@@ -172,7 +172,8 @@ $pdo->exec(
         name TEXT NOT NULL,
         agent_token TEXT NULL,
         status TEXT NOT NULL DEFAULT "active",
-        owner_user_id INTEGER NULL
+        owner_user_id INTEGER NULL,
+        online_device_limit INTEGER NOT NULL DEFAULT 1
     )'
 );
 $pdo->exec(
@@ -194,7 +195,9 @@ $pdo->exec(
         updated_at TEXT NOT NULL
     )'
 );
-$pdo->exec('INSERT INTO clients (id, name, agent_token, status, owner_user_id) VALUES (12, "Home Router", "tok-12", "active", 7)');
+// Two routers may be online for client 12; the online-limit check below
+// exercises the refusal of a third one over real SQL.
+$pdo->exec('INSERT INTO clients (id, name, agent_token, status, owner_user_id, online_device_limit) VALUES (12, "Home Router", "tok-12", "active", 7, 2)');
 $pdo->exec('INSERT INTO clients (id, name, agent_token, status, owner_user_id) VALUES (13, "Someone Else", "tok-13", "active", 7)');
 
 // 1. The migration file follows the repository DDL and numbering conventions.
@@ -358,6 +361,8 @@ $scoped = (string) (new OpenWrtPairingCodeService($db, $controllerConfig))->issu
 expectApi('client_id_mismatch', 403, static fn() => $controller->pairOpenWrtDevice(pairingRequest($scoped, 'openwrt-real-0003', ['client_id' => 13]), []));
 $scopedBody = payload($controller->pairOpenWrtDevice(pairingRequest($scoped, 'openwrt-real-0004'), []));
 assertSame(12, $scopedBody['client_id'] ?? null, 'the pairing code client stays authoritative');
+$overLimit = (string) (new OpenWrtPairingCodeService($db, $controllerConfig))->issue(12, 1)['code'];
+expectApi('client_online_limit_reached', 429, static fn() => $controller->pairOpenWrtDevice(pairingRequest($overLimit, 'openwrt-real-0007'), []));
 expectApi('openwrt_pairing_device_invalid', 422, static fn() => $controller->pairOpenWrtDevice(pairingRequest('ABCD-2345', 'bad device id'), []));
 
 $disabledController = new ClientAgentController(

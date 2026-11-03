@@ -205,9 +205,16 @@ namespace {
         ];
     }
 
-    function ultraAttestationStatusService(Config $config): UltraClientStatusService
+    // Defaults to a manifest that does not exist, so a case sees only the
+    // fingerprints its own config names and not the repository's releases.
+    function ultraAttestationStatusService(Config $config, ?string $manifestPath = null): UltraClientStatusService
     {
-        return new UltraClientStatusService($config, new Database(), static fn(): int => ULTRA_ATTESTATION_NOW);
+        return new UltraClientStatusService(
+            $config,
+            new Database(),
+            static fn(): int => ULTRA_ATTESTATION_NOW,
+            releaseManifestPath: $manifestPath ?? __DIR__ . '/no-such-release-manifest.json',
+        );
     }
 
     /** @param array<string, mixed> $overrides */
@@ -409,6 +416,60 @@ namespace {
         ($unconfiguredRows[0]['reason'] ?? '') === 'no_allowlist_configured',
         'an empty allow-list must be reported as unconfigured, not as a mismatch'
     );
+
+    // Released builds are known without configuration: the hand-kept list went
+    // stale after every runtime release and flagged every current client.
+    $releasedManifestPath = tempnam(sys_get_temp_dir(), 'lw-ultra-attest-manifest-');
+    file_put_contents($releasedManifestPath, json_encode([
+        'ultra-runtime-linux-amd64' => ['attestation' => [
+            'fingerprint' => '2026.10.10.2.096CA638',
+            'self_sha256' => str_repeat('e', 64),
+        ]],
+        'ultra-runtime-windows-amd64' => ['attestation' => [
+            'fingerprint' => '2026.10.10.2.096ca638',
+            'self_sha256' => 'not-a-hash',
+        ]],
+        'client-agent' => ['version' => '2026.10.10.2'],
+    ]));
+    $releasedConfig = new Config(ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY => json_encode(['2026.10.02.1.d1bac327' => [str_repeat('f', 64)]]),
+        'ULTRA_RUNTIME_FINGERPRINTS' => str_repeat('d', 8),
+    ]));
+    $released = ultraAttestationStatusService($releasedConfig, $releasedManifestPath);
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.10.10.2.096ca638') === 'known',
+        'a fingerprint published in versions.json must be known without configuration'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.10.02.1.d1bac327') === 'known',
+        'a fingerprint kept in the rollover extra hashes must stay known'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState(str_repeat('d', 8)) === 'known',
+        'the configured list must still add builds the panel never published'
+    );
+    assertUltraRuntimeAttestation(
+        $released->attestationState('2026.09.19.1.f18d01fb') === 'mismatch',
+        'a fingerprint that is neither released nor configured must be a mismatch'
+    );
+    assertUltraRuntimeAttestation(
+        count($released->runtimeFingerprintAllowlist()) === 3,
+        'released, rollover and configured fingerprints must be merged without duplicates'
+    );
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = '2026.09.19.1.f18d01fb';
+    $releasedRows = $released->runtimeAttestationMismatches(50);
+    assertUltraRuntimeAttestation(
+        count($releasedRows) === 1 && ($releasedRows[0]['reason'] ?? '') === 'fingerprint_not_allowlisted',
+        'an unreleased fingerprint must be listed as a mismatch'
+    );
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = '2026.10.10.2.096ca638';
+    assertUltraRuntimeAttestation(
+        $released->runtimeAttestationMismatches(50) === [],
+        'a released fingerprint must not be listed as a mismatch'
+    );
+    @unlink($releasedManifestPath);
+    Database::$runtimeSessions[0]['ultra_runtime_fingerprint'] = $unknownFingerprint;
 
     // ---------------------------------------------------------------------
     // 4. Abuse limits: each cap refuses only when configured, and never at 0.
@@ -893,6 +954,144 @@ namespace {
         'report mode must never deny a lease'
     );
     Database::$attestationSession = null;
+
+    // (g) ULTRA_ATTESTATION_UNATTESTED=deny closes the fail-open cases on an
+    //     enforced platform, and only there.
+    $denyEnv = ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+        UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        UltraLeaseService::ATTESTATION_UNATTESTED_KEY => 'deny',
+    ]);
+    $denyService = new UltraLeaseService(
+        new Config($denyEnv),
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+    foreach ([
+        'no session row' => null,
+        'no attestation' => ['platform' => 'linux-x86_64-agent', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null],
+        'unpublished fingerprint' => ['platform' => 'linux-x86_64-agent', 'ultra_runtime_fingerprint' => '2020.01.01.1.deadbeef', 'ultra_runtime_self_sha256' => str_repeat('cd', 32)],
+        'missing platform' => ['platform' => '', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null],
+    ] as $label => $session) {
+        Database::$attestationSession = $session;
+        $denied = $denyService->issueLease(ultraAttestationRequest(), 7, 'device-a');
+        assertUltraRuntimeAttestation(
+            ($denied['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'deny mode must refuse a device with ' . $label
+        );
+    }
+    Database::$attestationSession = ['platform' => 'android-14', 'ultra_runtime_fingerprint' => null, 'ultra_runtime_self_sha256' => null];
+    assertUltraRuntimeAttestation(
+        ($denyService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'deny mode must leave platforms outside the gate alone'
+    );
+    Database::$attestationSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => $releasedHash,
+    ];
+    assertUltraRuntimeAttestation(
+        ($denyService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+        'deny mode must keep the published binary working'
+    );
+    Database::$attestationSession = null;
+    @unlink($denyEnv);
+
+    // (h) a runtime release replaces the platform entry; the previous build's
+    //     hash stays valid only while ULTRA_ATTESTATION_EXTRA_HASHES_JSON lists it.
+    $previousHash = str_repeat('ef', 32);
+    $previousSession = [
+        'platform' => 'linux-x86_64-agent',
+        'ultra_runtime_fingerprint' => $releasedFingerprint,
+        'ultra_runtime_self_sha256' => $previousHash,
+    ];
+    foreach ([false, true] as $listed) {
+        $values = [
+            'APP_ENV' => 'test',
+            UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+            UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        ];
+        if ($listed) {
+            $values[UltraLeaseService::ATTESTATION_EXTRA_HASHES_KEY] = json_encode([$releasedFingerprint => [$previousHash, 'not-a-hash']]);
+        }
+        $rolloverEnv = ultraAttestationEnv($values);
+        $rolloverService = new UltraLeaseService(
+            new Config($rolloverEnv),
+            new Database(),
+            null,
+            'ultraAttestationCandidate',
+            static fn(): int => 1_900_000_000,
+            'ultraAttestationPolicy'
+        );
+        Database::$attestationSession = $previousSession;
+        $refused = ($rolloverService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED;
+        assertUltraRuntimeAttestation(
+            $refused === !$listed,
+            $listed ? 'a listed previous-release hash must keep working' : 'an unlisted previous-release hash must be refused'
+        );
+        Database::$attestationSession = null;
+        @unlink($rolloverEnv);
+    }
+    // (i) ULTRA_ATTESTATION_EXEMPT_DEVICES lets an operator-approved
+    //     non-official runtime through, scoped to its own client only.
+    $exemptEnv = ultraAttestationEnv([
+        'APP_ENV' => 'test',
+        UltraLeaseService::ATTESTATION_ENFORCEMENT_KEY => 'enforce',
+        UltraLeaseService::ATTESTATION_ENFORCE_PLATFORMS_KEY => 'linux',
+        UltraLeaseService::ATTESTATION_UNATTESTED_KEY => 'deny',
+        UltraLeaseService::ATTESTATION_EXEMPT_DEVICES_KEY => ' 7:device-a , x7:device-b, 8:',
+    ]);
+    $exemptService = new UltraLeaseService(
+        new Config($exemptEnv),
+        new Database(),
+        null,
+        'ultraAttestationCandidate',
+        static fn(): int => 1_900_000_000,
+        'ultraAttestationPolicy'
+    );
+    foreach ([
+        'repackaged' => [
+            'platform' => 'linux-x86_64-agent',
+            'ultra_runtime_fingerprint' => $releasedFingerprint,
+            'ultra_runtime_self_sha256' => str_repeat('ab', 32),
+        ],
+        'unattested' => null,
+    ] as $label => $session) {
+        Database::$attestationSession = $session;
+        assertUltraRuntimeAttestation(
+            ($exemptService->issueLease(ultraAttestationRequest(), 7, 'device-a')['error'] ?? '') !== UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'an exempt device must not be refused when ' . $label
+        );
+        assertUltraRuntimeAttestation(
+            ($exemptService->issueLease(ultraAttestationRequest(), 7, 'device-b')['error'] ?? '') === UltraLeaseService::ERROR_RUNTIME_UNATTESTED,
+            'a malformed exemption entry must not exempt anything (' . $label . ')'
+        );
+    }
+    Database::$attestationSession = null;
+    @unlink($exemptEnv);
+    $deviceIsExempt = new ReflectionMethod(UltraLeaseService::class, 'deviceIsAttestationExempt');
+    $exemptConfigService = new UltraLeaseService(
+        new Config($exemptEnv = ultraAttestationEnv([
+            'APP_ENV' => 'test',
+            UltraLeaseService::ATTESTATION_EXEMPT_DEVICES_KEY => '7:device-a',
+        ])),
+        new Database()
+    );
+    assertUltraRuntimeAttestation(
+        $deviceIsExempt->invoke($exemptConfigService, 7, hash('sha256', 'device-a')) === true
+            && $deviceIsExempt->invoke($exemptConfigService, 8, hash('sha256', 'device-a')) === false,
+        'an exemption must be scoped to its own client'
+    );
+    @unlink($exemptEnv);
+
+    assertUltraRuntimeAttestation(
+        str_contains($leaseSource, "get(self::ATTESTATION_UNATTESTED_KEY, 'allow')"),
+        'the unattested policy must default to allow'
+    );
 
     $schema = (string) file_get_contents(__DIR__ . '/../migrations/schema.sql');
     foreach ([

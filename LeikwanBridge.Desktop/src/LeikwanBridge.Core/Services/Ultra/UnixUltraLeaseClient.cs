@@ -12,10 +12,12 @@ public sealed class UnixUltraLeaseClient
     public const int MaxFrameBytes = 64 * 1024;
     public static readonly TimeSpan BatchTimeout = TimeSpan.FromSeconds(70);
     private readonly TimeSpan _timeout;
+    private readonly TimeSpan _acknowledgementTimeout;
 
     public UnixUltraLeaseClient(TimeSpan? timeout = null)
     {
         _timeout = timeout ?? TimeSpan.FromSeconds(2);
+        _acknowledgementTimeout = timeout ?? BatchTimeout;
     }
 
     public async Task<bool> SendAsync(string socketPath, int forwardId, UltraLease lease, CancellationToken ct = default)
@@ -178,9 +180,12 @@ public sealed class UnixUltraLeaseClient
             body.CopyTo(frame, 4);
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(leases.Count == 1 ? _timeout : BatchTimeout);
+            timeout.CancelAfter(_timeout);
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), timeout.Token).ConfigureAwait(false);
+            // A single external-UoT candidate is verified too; candidate count
+            // must not shorten the runtime's carrier/HELLO acknowledgement.
+            timeout.CancelAfter(leases.Count == 1 ? _acknowledgementTimeout : BatchTimeout);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
             await stream.WriteAsync(frame, timeout.Token).ConfigureAwait(false);
             await stream.FlushAsync(timeout.Token).ConfigureAwait(false);

@@ -207,6 +207,56 @@ public sealed class ForwardContractSignatureTests
     }
 
     [Fact]
+    public void Compute_FoldsInTheExternalUotGrantAndRotatesWithItsToken()
+    {
+        const string target = "198.51.100.10:443";
+        var forward = new ForwardConfig
+        {
+            ForwardId = 158,
+            Mode = "single",
+            BackendMode = "ultra",
+            ListenPort = 30522,
+            Target = target,
+            Transport = "tcp+udp",
+            UltraAccess = new UltraPolicy
+            {
+                PolicyGeneration = new string('a', 64),
+                TargetDigest = UltraPolicy.ComputeTargetDigest(target),
+                Transport = "tcp+udp",
+            },
+        };
+        var grant = CreateGrant();
+        var sameGrant = CreateGrant();
+        var rotatedToken = CreateGrant(token: "token-b");
+        var otherSidecar = CreateGrant(sidecarTarget: "sidecar-b.example.com:7443");
+        var otherKnobs = CreateGrant(queuePackets: 256);
+        var reliableMode = CreateGrant(deliveryMode: "reliable_datagram_v1");
+
+        var withoutGrant = ForwardContractSignature.Compute(forward);
+        var withGrant = ForwardContractSignature.Compute(forward, externalUot: grant);
+
+        Assert.NotEqual(withoutGrant, withGrant);
+        Assert.Equal(withGrant, ForwardContractSignature.Compute(forward, externalUot: sameGrant));
+        Assert.NotEqual(withGrant, ForwardContractSignature.Compute(forward, externalUot: rotatedToken));
+        Assert.NotEqual(withGrant, ForwardContractSignature.Compute(forward, externalUot: otherSidecar));
+        Assert.NotEqual(withGrant, ForwardContractSignature.Compute(forward, externalUot: otherKnobs));
+        Assert.NotEqual(withGrant, ForwardContractSignature.Compute(forward, externalUot: reliableMode));
+        Assert.DoesNotContain("token-a", withGrant, StringComparison.Ordinal);
+    }
+
+    private static ExternalUotGrant CreateGrant(
+        string sidecarTarget = "sidecar-a.example.com:7443",
+        string token = "token-a",
+        int queuePackets = 512,
+        string deliveryMode = "raw")
+    {
+        using var document = JsonDocument.Parse(
+            $$"""{"enabled":true,"sidecar_target":"{{sidecarTarget}}","token":"{{token}}","queue_packets":{{queuePackets}},"delivery_mode":"{{deliveryMode}}"}""");
+        return ExternalUotGrant.TryParse(document.RootElement, out var failure)
+            ?? throw new InvalidOperationException(failure);
+    }
+
+    [Fact]
     public void AppliedForwardState_RoundTripsContractSignature_AndEndpointClonePreservesHealthStatus()
     {
         var endpoint = new EndpointConfig

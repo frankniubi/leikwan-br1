@@ -54,6 +54,90 @@ func TestNativeSocks5ConnectRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// fakeStreamRelay answers every stream handshake with reply, then either holds
+// the connection (hold) or closes it after closeAfter.
+func fakeStreamRelay(t *testing.T, reply []byte, closeAfter time.Duration) (string, int) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				buffer := make([]byte, 512)
+				if _, err := conn.Read(buffer); err != nil {
+					return
+				}
+				_, _ = conn.Write(reply)
+				if closeAfter > 0 {
+					time.Sleep(closeAfter)
+					return
+				}
+				_, _ = io.Copy(io.Discard, conn)
+			}(conn)
+		}
+	}()
+	address := listener.Addr().(*net.TCPAddr)
+	return address.IP.String(), address.Port
+}
+
+// A relay that refuses a rotated credential answers 05 02 05 02 and closes a
+// second later. The dial must treat that as a candidate failure and land on a
+// sibling, instead of handing the dead stream to the SOCKS client (which saw
+// an empty reply on every request).
+func TestNativeStreamDialSkipsARelayThatRefusesTheCredential(t *testing.T) {
+	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
+	policy.Protocol = nativeSocks5Protocol
+	policy.Purpose = nativeSocks5Purpose
+	policy.Native = true
+	policy.Transport = "tcp+udp"
+	policy.TargetDigest = strings.Repeat("b", 64)
+	policy.Direction = "SHA -> TYO"
+	policy.RouteScope = "global"
+	policy.RoutePolicy = string(nativeRoutePolicyUnrestricted)
+	refusing := testLease(policy, strings.Repeat("c", 64))
+	refusing.Transport = policy.Transport
+	refusing.CandidateKeyHash = strings.Repeat("d", 64)
+	refusing.User = []byte("user-0123456789x")
+	refusing.Password = []byte("pass-0123456789x")
+	refusing.IP, refusing.Port = fakeStreamRelay(t, []byte{5, 2, 5, 2}, 200*time.Millisecond)
+	working := testLease(policy, strings.Repeat("e", 64))
+	working.Transport = policy.Transport
+	working.SelectionRef = "native-selection-reference-second"
+	working.CandidateKeyHash = strings.Repeat("f", 64)
+	working.User = []byte("user-0123456789y")
+	working.Password = []byte("pass-0123456789y")
+	working.IP, working.Port = fakeStreamRelay(t, []byte{5, 2, 1, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1}, 0)
+	store := NewPolicyStore(Config{ForwardID: policy.ForwardID, NativeSocks5: true, Target: "1.1.1.1:443", NativeRoutePolicy: nativeRoutePolicyUnrestricted})
+	if err := store.ReplaceBatch(policy, refusing, []ProviderLease{refusing, working}); err != nil {
+		t.Fatalf("replace batch: %v", err)
+	}
+	snapshot, ok := store.Snapshot()
+	if !ok {
+		t.Fatal("missing native snapshot")
+	}
+	connection, selected, err := dialNativeStreamWithCandidates(
+		context.Background(), store, snapshot, "1.1.1.1", 80, 3*time.Second,
+		func(lease ProviderLease, host string, port int, timeout time.Duration) (net.Conn, error) {
+			return dialNativeStreamConfig(Config{}, lease, host, port, timeout)
+		}, nil)
+	if err != nil {
+		t.Fatalf("native candidate dial: %v", err)
+	}
+	defer connection.Close()
+	defer selected.wipe()
+	if selected.CandidateKeyHash != working.CandidateKeyHash {
+		t.Fatalf("selected candidate %q, want the relay that accepted the credential", selected.CandidateKeyHash)
+	}
+}
+
 func TestNativeStreamCandidateDialRetriesSiblingAndReportsFailure(t *testing.T) {
 	policy := testPolicy(time.Now(), strings.Repeat("a", 64))
 	policy.Protocol = nativeSocks5Protocol
@@ -75,7 +159,7 @@ func TestNativeStreamCandidateDialRetriesSiblingAndReportsFailure(t *testing.T) 
 	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
 		t.Fatalf("replace batch: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	snapshot, ok := store.Snapshot()
 	if !ok {
@@ -138,7 +222,7 @@ func TestNativeAssociationCandidatesRetrySiblingAndReportFailure(t *testing.T) {
 	if err := store.ReplaceBatch(policy, first, []ProviderLease{first, second}); err != nil {
 		t.Fatalf("replace batch: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	var attempts []string
 	session, selected, err := armNativeAssociationCandidates(
@@ -198,7 +282,7 @@ func TestNativeAssociationFailureReportsOnceAndMarksCandidate(t *testing.T) {
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatalf("replace lease: %v", err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), policy.ForwardID, time.Millisecond)
 	defer status.Close()
 	association := &nativeSocks5UDPAssociation{
 		candidateKeyHash: lease.CandidateKeyHash,
@@ -282,20 +366,22 @@ func TestNativeLeaseFrameDecodesOnlyInNativeRuntime(t *testing.T) {
 
 func TestServeNativeSocks5ConnectRoundTrip(t *testing.T) {
 	provider := newNativeStreamProvider(t)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 174, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	client, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -431,20 +517,22 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 		}
 	}()
 
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 178, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, providerListener.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	connection, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -512,20 +600,22 @@ func TestServeNativeSocks5ConnectPreservesHalfCloseResponse(t *testing.T) {
 func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 175, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	control, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -592,20 +682,22 @@ func TestServeNativeSocks5UdpRoundTripPreservesDestination(t *testing.T) {
 func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 176, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
 		UDPKeepaliveIntervalSecs: 5, NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	control, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
 	if err != nil {
@@ -686,20 +778,22 @@ func TestServeNativeSocks5UdpKeepsAssociationAlive(t *testing.T) {
 func TestServeNativeSocks5UdpIsolatesConcurrentLocalSockets(t *testing.T) {
 	provider := newTestUDPProvider(t)
 	provider.echoOuterTarget.Store(true)
-	listenPort := freeNativeTCPPort(t)
+	tcpListener, udpListener, listenPort := reserveNativeSocks5Listeners(t)
 	config := Config{
 		ForwardID: 177, NativeSocks5: true, ListenHost: "127.0.0.1", ListenPort: listenPort,
 		Target: "1.1.1.1:443", Transport: "tcp+udp", ConnectTimeoutSecs: 2,
 		NativeRoutePolicy: nativeRoutePolicyUnrestricted,
 	}
 	store := newNativeTestStore(t, config, provider.tcp.Addr().(*net.TCPAddr).Port)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	defer status.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serveNativeSocks5(ctx, config, store, status) }()
-	waitNativeTCPPort(t, listenPort)
+	go func() {
+		serveErr <- serveNativeSocks5WithListeners(ctx, config, store, status, tcpListener, udpListener)
+	}()
+	waitNativeTCPPort(t, listenPort, serveErr)
 
 	openControl := func() net.Conn {
 		testControl, err := net.DialTimeout("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(listenPort)), time.Second)
@@ -911,27 +1005,72 @@ func newNativeTestStore(t *testing.T, config Config, providerPort int) *PolicySt
 	return store
 }
 
-func freeNativeTCPPort(t *testing.T) int {
+func reserveNativeSocks5Listeners(t *testing.T) (net.Listener, *net.UDPConn, int) {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for range 16 {
+		tcpListener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := tcpListener.Addr().(*net.TCPAddr).Port
+		udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		if err == nil {
+			t.Cleanup(func() {
+				_ = tcpListener.Close()
+				_ = udpListener.Close()
+			})
+			return tcpListener, udpListener, port
+		}
+		_ = tcpListener.Close()
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	_ = listener.Close()
-	return port
+	t.Fatal("could not reserve matching native SOCKS TCP and UDP ports")
+	return nil, nil, 0
 }
 
-func waitNativeTCPPort(t *testing.T, port int) {
+// Reserve both protocols before the runtime starts; freeing an ephemeral TCP
+// port before it binds lets another process steal the port and makes this
+// startup test flaky.
+func waitNativeTCPPort(t *testing.T, port int, serveErr <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
+	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
 	for time.Now().Before(deadline) {
-		connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 100*time.Millisecond)
+		select {
+		case err := <-serveErr:
+			if err == nil {
+				t.Fatal("native SOCKS runtime exited before becoming ready")
+			}
+			t.Fatalf("native SOCKS runtime failed before becoming ready: %v", err)
+		default:
+		}
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
 		if err == nil {
+			if err := completeSocksGreeting(connection); err == nil {
+				_ = connection.Close()
+				return
+			}
 			_ = connection.Close()
-			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("native SOCKS TCP port %d did not become ready", port)
+}
+
+// completeSocksGreeting performs the method negotiation a SOCKS5 server must
+// answer with 05 00. Anything else on the port is not the server under test.
+func completeSocksGreeting(connection net.Conn) error {
+	if err := connection.SetDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		return err
+	}
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		return err
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(connection, reply); err != nil {
+		return err
+	}
+	if !bytes.Equal(reply, []byte{5, 0}) {
+		return fmt.Errorf("unexpected SOCKS method reply %x", reply)
+	}
+	return nil
 }

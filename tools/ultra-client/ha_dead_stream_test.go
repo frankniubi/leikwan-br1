@@ -41,9 +41,9 @@ func isPathIsolated(store *PolicyStore, protocol, key string) (time.Duration, bo
 	return time.Until(until), true
 }
 
-// A relay that accepts the connection and returns nothing must be quarantined
-// quickly: two silent streams, not "whenever the next lease lands elsewhere".
-func TestSilentStreamsQuarantineThePath(t *testing.T) {
+// A relay that accepts the connection and returns nothing is not enough to
+// quarantine ordinary user traffic: the destination protocol may be silent.
+func TestSilentStreamsDoNotQuarantineThePath(t *testing.T) {
 	store, first, _ := twoPathCandidateStore(t)
 	ident := relayIdentity{
 		forward: 42, generation: first.PolicyGeneration, selection: first.SelectionRef,
@@ -56,8 +56,8 @@ func TestSilentStreamsQuarantineThePath(t *testing.T) {
 	}
 	noteRelayOutcome(store, nil, ident, started, 64, 0)
 	remaining, isolated := isPathIsolated(store, "tcp", ident.pathKey)
-	if !isolated || remaining < 10*time.Second {
-		t.Fatalf("two silent streams did not isolate the path (isolated=%v remaining=%s)", isolated, remaining)
+	if isolated && remaining > 0 {
+		t.Fatalf("two protocol-silent streams quarantined the path (remaining=%s)", remaining)
 	}
 
 	candidates := store.CandidateSnapshots("tcp")
@@ -65,10 +65,14 @@ func TestSilentStreamsQuarantineThePath(t *testing.T) {
 	if len(candidates) == 0 {
 		t.Fatal("the healthy sibling disappeared with the dead path")
 	}
+	found := false
 	for _, snapshot := range candidates {
 		if haPathKey(snapshot.Lease) == ident.pathKey {
-			t.Fatal("an isolated path was still offered to new streams")
+			found = true
 		}
+	}
+	if !found {
+		t.Fatal("a protocol-silent path was incorrectly removed from new streams")
 	}
 }
 
@@ -81,8 +85,12 @@ func TestHealthyStreamClearsIsolationAndStreak(t *testing.T) {
 		pathKey: haPathKey(first), candidateKey: first.CandidateKeyHash, leaseHash: first.LeaseHash,
 	}
 	started := time.Now()
-	noteRelayOutcome(store, nil, ident, started, 64, 0)
-	noteRelayOutcome(store, nil, ident, started, 64, 0)
+	if store.FailSilentPath("tcp", ident.pathKey, ident.generation) {
+		t.Fatal("first silent-path strike unexpectedly isolated")
+	}
+	if !store.FailSilentPath("tcp", ident.pathKey, ident.generation) {
+		t.Fatal("second silent-path strike did not isolate")
+	}
 	if _, isolated := isPathIsolated(store, "tcp", ident.pathKey); !isolated {
 		t.Fatal("path was not isolated before the healthy stream")
 	}
@@ -173,6 +181,48 @@ func TestGlobalOutageDoesNotEscalateIsolation(t *testing.T) {
 	remaining, isolated := isPathIsolated(store, "tcp", firstKey)
 	if !isolated || remaining > 20*time.Second {
 		t.Fatalf("isolation window after a global outage is %s (isolated=%v)", remaining, isolated)
+	}
+}
+
+// A global outage must also drop the deadlines a path had already escalated to.
+// Clearing the streaks alone left the escalated windows standing, and because
+// only a stream that receives data can clear an isolation - impossible while
+// every path is isolated - the tunnel stayed dead for the whole escalated
+// window with nothing left to try. On 2026-09-14 that was 151 seconds of
+// "no healthy authorized candidate" on one forward.
+func TestGlobalOutageCollapsesEscalatedWindows(t *testing.T) {
+	store, first, second := twoPathCandidateStore(t)
+	firstKey, secondKey := haPathKey(first), haPathKey(second)
+
+	// Escalate one path to the long window while its sibling still works.
+	for attempt := 0; attempt < 5; attempt++ {
+		store.FailSilentPath("tcp", firstKey, first.PolicyGeneration)
+	}
+	escalated, isolated := isPathIsolated(store, "tcp", firstKey)
+	if !isolated || escalated < 90*time.Second {
+		t.Fatalf("first path did not reach an escalated window (isolated=%v remaining=%s)", isolated, escalated)
+	}
+
+	// The sibling fails too: no authorized path is left.
+	if !store.FailPath("tcp", secondKey, second.PolicyGeneration) {
+		t.Fatal("second path was not isolated")
+	}
+	for name, key := range map[string]string{"first": firstKey, "second": secondKey} {
+		remaining, isolated := isPathIsolated(store, "tcp", key)
+		if !isolated {
+			t.Fatalf("%s path is not isolated during the outage", name)
+		}
+		if remaining > pathIsolationWindows[0]+time.Second {
+			t.Fatalf("%s path stays isolated for %s after a global outage; want at most the first window %s",
+				name, remaining, pathIsolationWindows[0])
+		}
+	}
+	// The forward must still be held off for that first window: collapsing the
+	// escalation must not turn into a tight retry loop against a dead pool.
+	candidates := store.CandidateSnapshots("tcp")
+	defer wipeSnapshots(candidates)
+	if len(candidates) != 0 {
+		t.Fatalf("a path was offered while the outage was still inside its window")
 	}
 }
 

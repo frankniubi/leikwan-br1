@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -192,10 +193,20 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		return
 	}
 	defer clearBytes(payload)
+	if reply, handled := handleControlCommand(payload, server.store); handled {
+		_ = writeJSONFrame(file, reply)
+		return
+	}
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
+	if err == nil {
+		leases, err = applyCandidateQuarantine(server.config, leases, time.Now(), server.status)
+	}
 	var selected ProviderLease
 	var probeResult udpProbeResult
 	var selectionEpoch uint64
+	var previousActive RuntimeSnapshot
+	var havePreviousActive bool
+	var verifiedLeases []ProviderLease
 	if err == nil {
 		coordinator := selectionCoordinatorFor(policy.ForwardID)
 		selectionEpoch = coordinator.begin()
@@ -207,7 +218,20 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 		if err != nil {
 			goto selectionDone
 		}
-		if storeHasGeneration(server.store, policy.PolicyGeneration) {
+		if server.config.AutoSelect && len(leases) > 1 {
+			previousActive, havePreviousActive = server.store.ActiveSnapshot()
+			if havePreviousActive {
+				defer previousActive.Lease.wipe()
+			}
+		}
+		if externalUoTEnabled(server.config) && stringsContainsUDP(policy.Transport) &&
+			(server.config.AutoSelect || len(leases) == 1) {
+			probeContext, cancel := context.WithDeadline(context.Background(), deadline.Add(-selectionResponseGrace))
+			selected, probeResult, verifiedLeases, err = selectVerifiedExternalUoTCandidates(
+				probeContext, server.config, policy, leases, previousActive, havePreviousActive,
+				server.status.RecordProbeFailure, nil)
+			cancel()
+		} else if storeHasGeneration(server.store, policy.PolicyGeneration) {
 			var stickyMatch bool
 			selected, stickyMatch = stickyLeaseForPolicy(server.store, policy, leases)
 			if !stickyMatch {
@@ -219,13 +243,20 @@ func (server *ControlServer) handlePipe(handle syscall.Handle) {
 			err = ErrLeaseInvalid
 		} else if server.config.AutoSelect && len(leases) > 1 {
 			logLeaseSelectionStart(policy.ForwardID, len(leases))
-			remaining := time.Until(deadline) - selectionResponseGrace
+			remaining := time.Until(deadline) - selectionResponseGrace - activeCandidateFallbackBudget(server.config)
 			if remaining <= 0 {
 				err = context.DeadlineExceeded
 			} else {
 				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
 				selected, probeResult, err = selectBestLeaseReporting(selectionContext, server.config, policy, leases, server.status.RecordProbeFailure)
 				cancel()
+				if errors.Is(err, errNoHealthyCandidate) && havePreviousActive {
+					log.Printf("active candidate forwarding test started forward_id=%d reason=no_healthy_candidate", policy.ForwardID)
+					fallbackContext, fallbackCancel := context.WithDeadline(context.Background(), deadline)
+					selected, probeResult, err = retryActiveCandidateForward(
+						fallbackContext, server.config, policy, previousActive, leases, nil)
+					fallbackCancel()
+				}
 			}
 		} else {
 			selected = leases[0]
@@ -236,12 +267,20 @@ selectionDone:
 		err = errSelectionSuperseded
 	}
 	if err == nil {
-		err = server.store.ReplaceCandidates(policy, selected, leases)
+		admitted := leases
+		if verifiedLeases != nil {
+			admitted = verifiedLeases
+		}
+		err = server.store.ReplaceCandidates(policy, selected, admitted)
 		if err == nil && server.status != nil {
 			server.status.UpdatePolicy(policy.PolicyGeneration)
 		}
-		if err == nil && server.status != nil && probeResult.Sent > 0 {
-			if stringsContainsUDP(policy.Transport) {
+		if err == nil && server.status != nil && (probeResult.Sent > 0 || probeResult.TCPReceived > 0) {
+			if stringsContainsUDP(policy.Transport) && externalUoTEnabled(server.config) {
+				server.status.UpdateUDPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
+				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
+				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+			} else if stringsContainsUDP(policy.Transport) {
 				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
 				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
@@ -276,6 +315,8 @@ func writeJSONFrame(writer io.Writer, value any) error {
 
 func controlErrorName(err error) string {
 	switch {
+	case errors.Is(err, errOperatorQuarantine):
+		return "operator_quarantined"
 	case errors.Is(err, errProbeTCPFailed):
 		return "probe_tcp_failed"
 	case errors.Is(err, errProbeUDPFailed):

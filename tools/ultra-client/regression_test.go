@@ -145,8 +145,22 @@ func TestStickyLeaseForPolicyKeepsSelectedPath(t *testing.T) {
 
 func TestControlDeadlineIncludesProbeWindowAndGrace(t *testing.T) {
 	config := Config{AutoSelect: true, ProbeDurationSecs: 30}
-	if got, want := controlDeadlineDuration(config), 48*time.Second; got != want {
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
+	if got := controlDeadlineDuration(config); got != want {
 		t.Fatalf("control deadline=%s, want %s", got, want)
+	}
+}
+
+func TestSingleExternalUoTControlDeadlineAllowsVerification(t *testing.T) {
+	config := Config{Transport: "tcp+udp", ConnectTimeoutSecs: 5}
+	config.ExternalUoT.Enabled = true
+	want := probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
+	if got := controlDeadlineDuration(config); got != want {
+		t.Fatalf("single external-UoT control deadline=%s, want %s; HELLO must have a live context after response grace", got, want)
+	}
+	config.ExternalUoT.Enabled = false
+	if got := controlDeadlineDuration(config); got != 2*time.Second {
+		t.Fatalf("unprobed single lease deadline=%s, want 2s", got)
 	}
 }
 

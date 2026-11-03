@@ -154,12 +154,17 @@ Example smoke test (no daemon, no service):
   the service manager would otherwise restart in a hot loop.
 * Shutdown: SIGTERM (launchd), the SCM stop control, or Ctrl+C stops every
   forward and releases the lease before the process exits.
+* Updates: publishing a release never updates a running service on its own.
+  The Windows service and the macOS daemon install the published build only
+  after "request client update" is clicked in the panel console (checked about
+  every 6 h; one install per click, with backoff on failure), or when you run
+  `leikwan update`. `"disable_auto_updates": true` in config.json refuses
+  console requests too.
 
 ## Not covered yet
 
 * The windowless client does **not** install the Windows system proxy or the
   sing-box TUN: it keeps the panel forwards (including Ultra/native-outbound
   routes) up. Proxy/game mode remains a GUI feature.
-* Update *application* is manual on both platforms: re-run the installer (macOS)
-  or replace the payload and restart the service (Windows). The client logs and
-  reports its own version, and the panel shows it like any other client.
+* Updates are never pushed: see *Updates* above. The client logs and reports
+  its own version, and the panel shows it like any other client.

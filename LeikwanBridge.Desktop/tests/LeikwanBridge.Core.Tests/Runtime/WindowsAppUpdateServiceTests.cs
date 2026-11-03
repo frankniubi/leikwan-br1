@@ -520,7 +520,7 @@ public sealed class WindowsAppUpdateServiceTests
 
         await service.FetchWindowsClientArtifactAsync(
             "https://v3-mirror.leikwanhost.com",
-            new Progress<UpdateProgress>(updates.Add));
+            new SyncProgress<UpdateProgress>(updates.Add));
 
         Assert.NotEmpty(updates);
         Assert.All(updates, update => Assert.Equal(UpdatePhase.Check, update.Phase));
@@ -544,7 +544,7 @@ public sealed class WindowsAppUpdateServiceTests
         await service.DownloadInstallerAsync(
             "https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe",
             destination,
-            new Progress<UpdateProgress>(updates.Add),
+            new SyncProgress<UpdateProgress>(updates.Add),
             expectedSha);
 
         Assert.Equal("stub installer", File.ReadAllText(destination));
@@ -568,12 +568,19 @@ public sealed class WindowsAppUpdateServiceTests
             service.DownloadInstallerAsync(
                 "https://downloads.leikwanhost.com/artifacts/leikwan-bridge-setup.exe",
                 destination,
-                new Progress<UpdateProgress>(updates.Add),
+                new SyncProgress<UpdateProgress>(updates.Add),
                 new string('a', 64)));
 
         Assert.Equal("downloaded installer hash mismatch", error.Message);
         Assert.False(File.Exists(destination));
         Assert.Contains(updates, update => update.Phase == UpdatePhase.Verify);
+    }
+
+    // Progress<T> posts each report to the thread pool, so a callback can land after the
+    // awaited call returns and the assertions run. Reports here are recorded inline.
+    private sealed class SyncProgress<T>(Action<T> handler) : IProgress<T>
+    {
+        public void Report(T value) => handler(value);
     }
 
     private sealed class ProgressStubHandler : HttpMessageHandler

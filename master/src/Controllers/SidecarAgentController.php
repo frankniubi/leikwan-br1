@@ -24,7 +24,21 @@ final class SidecarAgentController extends BaseController
         $point = Auth::requireSidecarPointAgent($request, $this->db);
         $body = is_array($request->body()) ? $request->body() : [];
         $bondBinary = $this->artifactMetadata('leikwan_bond_linux_amd64');
-        $sidecarAgent = $this->artifactMetadata('sidecar_agent');
+        $reportedArchitecture = strtolower(trim((string) $request->input(
+            'agent_architecture',
+            $request->header('x-device-architecture') ?? ''
+        )));
+        $agentArchitecture = in_array($reportedArchitecture, ['arm64', 'aarch64', 'armv8', 'armv8l'], true)
+            ? 'arm64'
+            : 'amd64';
+        $reportedRuntimeMode = strtolower(trim((string) $request->input('runtime_binary_mode', '')));
+        $runtimeBinaryMode = in_array($reportedRuntimeMode, ['frozen', 'python'], true)
+            ? $reportedRuntimeMode
+            : '';
+        $sidecarAgent = $this->artifactMetadata('sidecar_agent_linux_' . $agentArchitecture);
+        if ($sidecarAgent === []) {
+            $sidecarAgent = $this->artifactMetadata('sidecar_agent');
+        }
         $sidecarRuntime = $this->artifactMetadata('mptcp_sidecar_runtime');
         $sidecarInstaller = $this->artifactMetadata('bond_sidecar_installer');
         $desiredBondSha256 = (string) ($bondBinary['binary_sha256'] ?? $bondBinary['sha256'] ?? '');
@@ -45,6 +59,9 @@ final class SidecarAgentController extends BaseController
             'wireguard_listen_port' => $request->input('wireguard_listen_port'),
             'wireguard_fallback_tcp_port' => $request->input('wireguard_fallback_tcp_port'),
             'wireguard_peer_state' => $request->input('wireguard_peer_state'),
+            'agent_architecture' => $agentArchitecture,
+            'runtime_binary_mode' => $runtimeBinaryMode,
+            'external_uot' => $request->input('external_uot'),
         ]);
         // Appendix C.6f: consume the stored peer-state and flag one-way return-path failures.
         $peerHealth = $this->evaluateWireguardPeerStates(
@@ -67,6 +84,19 @@ final class SidecarAgentController extends BaseController
             }
         }
         $updateRequestToken = trim((string) ($point['agent_update_request_token'] ?? ''));
+        // Regression sentinel: sidecar_explicit_update_token_one_shot
+        // agent_update_request_token is a one-shot force refresh. The agent keeps
+        // only ONE last_completed_request_token, so a token that stays on the
+        // point forever re-arms every time any other token (a persistent
+        // auto-release mismatch, or a second agent sharing the state file)
+        // completes: explicit -> auto -> explicit ... reinstalling the sidecar
+        // every heartbeat (point 7 fra1: ~750 installs/day, ~27 GB/day).
+        // Retire it as soon as the agent reports it completed.
+        $updateRequestToken = $this->retireCompletedUpdateRequestToken(
+            (int) $point['id'],
+            $updateRequestToken,
+            $request->input('agent_update_state')
+        );
         $sidecarAgentUpdatesEnabled = !in_array(strtolower(trim((string) ($runtimeState['sidecar_agent_update_enabled'] ?? ''))), ['0', 'false', 'no', 'off', ''], true);
         $reportedAgentVersion = $version !== '' ? $version : (string) ($point['agent_version'] ?? '');
 
@@ -396,6 +426,30 @@ final class SidecarAgentController extends BaseController
     }
 
     /**
+     * Clear a one-shot agent_update_request_token once the agent's reported
+     * agent_update_state shows it completed. Returns the token to hand out.
+     * The UPDATE is guarded on the token value so a newer admin request that
+     * landed between the point SELECT and this heartbeat is never dropped.
+     */
+    private function retireCompletedUpdateRequestToken(int $pointId, string $updateRequestToken, mixed $reportedUpdateState): string
+    {
+        if ($updateRequestToken === '' || !is_array($reportedUpdateState)) {
+            return $updateRequestToken;
+        }
+        $completedToken = trim((string) ($reportedUpdateState['last_completed_request_token'] ?? ''));
+        if ($completedToken !== $updateRequestToken) {
+            return $updateRequestToken;
+        }
+        $this->db->execute(
+            'UPDATE sidecar_points
+             SET agent_update_request_token = NULL
+             WHERE id = :id AND agent_update_request_token = :request_token',
+            ['id' => $pointId, 'request_token' => $updateRequestToken]
+        );
+        return '';
+    }
+
+    /**
      * @param array<string, mixed> $existing
      * @param array<string, mixed> $input
      * @return array<string, mixed>
@@ -408,7 +462,7 @@ final class SidecarAgentController extends BaseController
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }
         }
-        foreach (['wireguard_public_key'] as $stringKey) {
+        foreach (['wireguard_public_key', 'agent_architecture', 'runtime_binary_mode'] as $stringKey) {
             if (array_key_exists($stringKey, $input)) {
                 $value = trim((string) ($input[$stringKey] ?? ''));
                 if ($value !== '') {
@@ -424,6 +478,38 @@ final class SidecarAgentController extends BaseController
         foreach (['wireguard_peer_state'] as $arrayKey) {
             if (array_key_exists($arrayKey, $input) && is_array($input[$arrayKey])) {
                 $merged[$arrayKey] = array_values($input[$arrayKey]);
+            }
+        }
+        if (array_key_exists('external_uot', $input) && is_array($input['external_uot'])) {
+            $external = $input['external_uot'];
+            $normalized = [];
+            foreach ([
+                'required', 'healthy', 'binary_present', 'config_present', 'config_valid',
+                'service_active', 'service_enabled', 'listening', 'expected_active',
+            ] as $boolKey) {
+                if (array_key_exists($boolKey, $external)) {
+                    $normalized[$boolKey] = filter_var($external[$boolKey], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? false;
+                }
+            }
+            foreach (['state', 'binary_path', 'binary_version', 'error'] as $stringKey) {
+                if (array_key_exists($stringKey, $external)) {
+                    $value = trim((string) ($external[$stringKey] ?? ''));
+                    $normalized[$stringKey] = substr($value, 0, 255);
+                }
+            }
+            foreach (['forward_count', 'listen_port', 'checked_at'] as $intKey) {
+                if (array_key_exists($intKey, $external)) {
+                    $normalized[$intKey] = max(0, (int) $external[$intKey]);
+                }
+            }
+            foreach (['binary_sha256', 'config_sha256'] as $hashKey) {
+                $value = strtolower(trim((string) ($external[$hashKey] ?? '')));
+                if (preg_match('/^[a-f0-9]{64}$/', $value) === 1) {
+                    $normalized[$hashKey] = $value;
+                }
+            }
+            if ($normalized !== []) {
+                $merged['external_uot'] = $normalized;
             }
         }
         return $merged;

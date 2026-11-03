@@ -32,26 +32,58 @@ type SelectionStatus struct {
 }
 
 type RuntimeStatus struct {
-	UDPRuntimeSession      *SelectionStatus    `json:"udp_runtime_session,omitempty"`
-	HAEvents               []HAEvent           `json:"ha_events,omitempty"`
-	HAFailures             int64               `json:"ha_failures,omitempty"`
-	UDPKeepaliveACKs       int64               `json:"udp_keepalive_acks,omitempty"`
-	UDPLastACKAt           string              `json:"udp_last_ack_at,omitempty"`
-	ForwardID              int                 `json:"forward_id"`
-	State                  string              `json:"state"`
-	DetectedIngressZone    string              `json:"detected_ingress_zone"`
-	LocationSource         string              `json:"location_source"`
-	LatestTCP              *SelectionStatus    `json:"latest_tcp,omitempty"`
-	ActiveUDP              *SelectionStatus    `json:"active_udp,omitempty"`
-	UpdatedAt              string              `json:"updated_at"`
-	ErrorCode              string              `json:"error_code,omitempty"`
-	PolicyGeneration       string              `json:"policy_generation,omitempty"`
-	BytesIn                int64               `json:"bytes_in,omitempty"`
-	BytesOut               int64               `json:"bytes_out,omitempty"`
-	UDPActiveAssociations  int                 `json:"udp_active_associations,omitempty"`
-	UDPPendingAssociations int                 `json:"udp_pending_associations,omitempty"`
-	UDPQueueDrops          int64               `json:"udp_queue_drops,omitempty"`
-	UDPSetupFailures       int64               `json:"udp_setup_failures,omitempty"`
+	// UDPTransport reports which UDP data plane is actually in use, as selected
+	// by the effective bootstrap, so the panel never has to guess.
+	UDPTransport               string         `json:"udp_transport,omitempty"`
+	OperatorQuarantineProtocol string         `json:"operator_quarantine_protocol,omitempty"`
+	OperatorQuarantineActive   bool           `json:"operator_quarantine_active"`
+	OperatorQuarantineUntil    string         `json:"operator_quarantine_until,omitempty"`
+	OperatorQuarantineExcluded int            `json:"operator_quarantine_excluded"`
+	UoTReliable                *reliableStats `json:"reliable_udp,omitempty"`
+	UoTQueueBlocked            uint64         `json:"queue_blocked"`
+	UoTQueueTimeout            uint64         `json:"queue_timeout"`
+	UoTQueueDrop               uint64         `json:"queue_drop"`
+	UoTSocketReceiveDrop       *uint64        `json:"socket_receive_drop"`
+	UoTSocketRcvbuf            int            `json:"socket_rcvbuf"`
+	UoTSocketSndbuf            int            `json:"socket_sndbuf"`
+	UoTSocketBufferError       bool           `json:"socket_buffer_error"`
+	// UoTCarrierLagFailovers counts carriers left because they kept a
+	// standing queue (external_uot_carrier_lagging).
+	UoTCarrierLagFailovers uint64 `json:"carrier_lag_failovers,omitempty"`
+
+	UDPRuntimeSession   *SelectionStatus `json:"udp_runtime_session,omitempty"`
+	HAEvents            []HAEvent        `json:"ha_events,omitempty"`
+	HAFailures          int64            `json:"ha_failures,omitempty"`
+	UDPKeepaliveACKs    int64            `json:"udp_keepalive_acks,omitempty"`
+	UDPLastACKAt        string           `json:"udp_last_ack_at,omitempty"`
+	ForwardID           int              `json:"forward_id"`
+	State               string           `json:"state"`
+	DetectedIngressZone string           `json:"detected_ingress_zone"`
+	LocationSource      string           `json:"location_source"`
+	LatestTCP           *SelectionStatus `json:"latest_tcp,omitempty"`
+	ActiveUDP           *SelectionStatus `json:"active_udp,omitempty"`
+	UpdatedAt           string           `json:"updated_at"`
+	ErrorCode           string           `json:"error_code,omitempty"`
+	PolicyGeneration    string           `json:"policy_generation,omitempty"`
+	// PolicyState is active, awaiting (no policy yet), lapsed (the last
+	// policy expired and none replaced it; listeners stay bound and fail each
+	// connection closed) or revoked. Hosts must not restart a runtime that
+	// reports awaiting or lapsed: it is idle on purpose and resumes as soon
+	// as a valid lease is delivered on the control socket.
+	PolicyState string `json:"policy_state,omitempty"`
+	// PolicyExpiresAt is the expiry of the current (or, when lapsed, the last)
+	// policy in RFC 3339 UTC.
+	PolicyExpiresAt        string `json:"policy_expires_at,omitempty"`
+	BytesIn                int64  `json:"bytes_in,omitempty"`
+	BytesOut               int64  `json:"bytes_out,omitempty"`
+	// QuotaRemainingBytes is the local limiter slice's remaining bytes. A host
+	// renews the lease when this gets low (or counts quota_exhausted stream
+	// ends) instead of letting active downloads pause on a drained slice.
+	QuotaRemainingBytes    int64  `json:"quota_remaining_bytes,omitempty"`
+	UDPActiveAssociations  int    `json:"udp_active_associations,omitempty"`
+	UDPPendingAssociations int    `json:"udp_pending_associations,omitempty"`
+	UDPQueueDrops          int64  `json:"udp_queue_drops,omitempty"`
+	UDPSetupFailures       int64  `json:"udp_setup_failures,omitempty"`
 	// UDPPayloadCeiling is the largest datagram payload the current association was
 	// measured to carry (0 = not measured yet, or the association is unusable).
 	// Hosts size the TUN MTU from this instead of guessing a fixed value.
@@ -60,8 +92,8 @@ type RuntimeStatus struct {
 	// udp_payload_ceiling means the active association carries no real payload.
 	UDPPayloadCeilingSource string `json:"udp_payload_ceiling_source,omitempty"`
 	// UDPOversizeDrops counts datagrams refused because they exceeded that ceiling.
-	UDPOversizeDrops int64 `json:"udp_oversize_drops,omitempty"`
-	CandidateFeedback      []CandidateFeedback `json:"candidate_feedback,omitempty"`
+	UDPOversizeDrops  int64               `json:"udp_oversize_drops,omitempty"`
+	CandidateFeedback []CandidateFeedback `json:"candidate_feedback,omitempty"`
 	// RuntimeAttestation is the identity of the running helper binary.
 	RuntimeAttestation *RuntimeAttestation `json:"runtime_attestation,omitempty"`
 }
@@ -77,16 +109,18 @@ type CandidateFeedback struct {
 }
 
 type StatusWriter struct {
-	path       string
-	interval   time.Duration
-	mu         sync.Mutex
-	writeMu    sync.Mutex
-	status     RuntimeStatus
-	lastWrite  time.Time
-	dirty      bool
-	timer      *time.Timer
-	closed     bool
-	writeCount atomic.Int64
+	path            string
+	interval        time.Duration
+	mu              sync.Mutex
+	writeMu         sync.Mutex
+	status          RuntimeStatus
+	lastWrite       time.Time
+	dirty           bool
+	timer           *time.Timer
+	closed          bool
+	writeCount      atomic.Int64
+	reliableLive    map[[16]byte]reliableStats
+	reliableRetired reliableStats
 }
 
 func newStatusWriter(path string, forwardID int, interval time.Duration) *StatusWriter {
@@ -106,12 +140,84 @@ func newStatusWriter(path string, forwardID int, interval time.Duration) *Status
 	}
 }
 
+// RecordTransportConfig exposes only the selected transport, never bootstrap
+// credentials. Desktop bootstrap is stdin-only, so disk config is not evidence.
+func (writer *StatusWriter) RecordTransportConfig(config Config) {
+	mode := "disabled"
+	if stringsContainsUDP(config.Transport) {
+		mode = "native_udp"
+		if externalUoTEnabled(config) {
+			mode = "external_uot"
+		}
+	}
+	writer.update(func(status *RuntimeStatus) { status.UDPTransport = mode })
+}
+
 func (writer *StatusWriter) UpdateLocation(location LocationResult) {
 	writer.update(func(status *RuntimeStatus) {
 		status.DetectedIngressZone = normalizeRuntimeZone(location.Code)
 		status.LocationSource = boundedStatusText(location.Source, 32)
+		// Location detection runs beside the listeners, so it can finish
+		// after the policy already lapsed: never let it report "ready" then.
+		if policyStateIdle(status.PolicyState) {
+			return
+		}
 		status.State = "ready"
 		status.ErrorCode = ""
+	})
+}
+
+const (
+	policyStateActive   = "active"
+	policyStateAwaiting = "awaiting"
+	policyStateLapsed   = "lapsed"
+	policyStateRevoked  = "revoked"
+)
+
+func policyStateIdle(state string) bool {
+	return state == policyStateAwaiting || state == policyStateLapsed || state == policyStateRevoked
+}
+
+// UpdatePolicyState records the machine-readable policy state. It writes only
+// on a change, so the policy watcher may call it on every tick.
+//
+// awaiting and lapsed also set error_code (awaiting_policy / policy_lapsed),
+// which hosts already key on. Going back to active clears only the error codes
+// that a missing policy causes; any other data-plane error stays visible.
+func (writer *StatusWriter) UpdatePolicyState(state string, expiresAt time.Time) {
+	if writer == nil {
+		return
+	}
+	expires := ""
+	if !expiresAt.IsZero() {
+		expires = expiresAt.UTC().Format(time.RFC3339)
+	}
+	writer.mu.Lock()
+	unchanged := writer.status.PolicyState == state && writer.status.PolicyExpiresAt == expires
+	writer.mu.Unlock()
+	if unchanged {
+		return
+	}
+	writer.update(func(status *RuntimeStatus) {
+		status.PolicyState = state
+		status.PolicyExpiresAt = expires
+		switch state {
+		case policyStateAwaiting:
+			status.State = "degraded"
+			status.ErrorCode = "awaiting_policy"
+		case policyStateLapsed:
+			status.State = "degraded"
+			status.ErrorCode = "policy_lapsed"
+		case policyStateActive:
+			switch status.ErrorCode {
+			case "awaiting_policy", "policy_lapsed", "policy_stopped", "policy_revoked":
+				status.State = "ready"
+				status.ErrorCode = ""
+			}
+		case policyStateRevoked:
+			status.State = "degraded"
+			status.ErrorCode = "policy_revoked"
+		}
 	})
 }
 
@@ -128,6 +234,19 @@ func (writer *StatusWriter) AddUsage(bytesIn, bytesOut int) {
 	writer.update(func(status *RuntimeStatus) {
 		status.BytesIn += int64(maxInt(bytesIn, 0))
 		status.BytesOut += int64(maxInt(bytesOut, 0))
+	})
+}
+
+// UpdateQuotaRemaining records the local limiter slice's remaining bytes. The
+// policy watcher calls it on every tick while a policy is active; the writer
+// still coalesces writes, so this only reaches disk on the regular flush
+// cadence and only when the value moved.
+func (writer *StatusWriter) UpdateQuotaRemaining(remaining int64) {
+	writer.update(func(status *RuntimeStatus) {
+		if status.QuotaRemainingBytes == remaining {
+			return
+		}
+		status.QuotaRemainingBytes = remaining
 	})
 }
 
@@ -178,10 +297,22 @@ func (writer *StatusWriter) RecordCandidateFailure(candidateKeyHash, protocol, r
 // halves are recorded when both failed, so a relay that carries neither
 // protocol is still visible.
 func (writer *StatusWriter) RecordProbeFailure(lease ProviderLease, result udpProbeResult) {
-	if result.Err != nil {
+	// probeTCPLease also stores its error in Err. Treat the UDP half as failed
+	// only when this result actually contains a UDP measurement; otherwise a
+	// TCP-only failure would pollute the panel's UDP reputation stream.
+	udpFailed := false
+	if result.TCPSent == 0 {
+		udpFailed = result.Err != nil
+	} else if result.Sent > 0 {
+		udpFailed = !result.pathUsable(result.Sent, result.Received) &&
+			(result.Sent > 0 || result.Err != nil)
+	}
+	if udpFailed {
 		writer.RecordCandidateFailure(lease.CandidateKeyHash, "udp", errProbeUDPFailed.Error(), lease.LeaseHash)
 	}
-	if result.TCPError != nil {
+	tcpFailed := result.TCPSent > 0 &&
+		(result.TCPError != nil || !result.pathUsable(result.TCPSent, result.TCPReceived))
+	if tcpFailed {
 		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", errProbeTCPFailed.Error(), lease.LeaseHash)
 	}
 }
@@ -319,39 +450,51 @@ func (writer *StatusWriter) AddUDPSetupFailure() {
 
 func (writer *StatusWriter) UpdateError(code string) {
 	writer.update(func(status *RuntimeStatus) {
+		// While the policy is lapsed every refused connection or datagram
+		// reports its own consequence (tcp_connect_failed, policy_stopped,
+		// ...). Keep policy_lapsed as the root cause so a host health check
+		// does not read those as a broken runtime and restart it. Lifecycle
+		// codes still win.
+		if status.PolicyState == policyStateLapsed && code != "runtime_stopped" && code != "control_socket_failed" {
+			return
+		}
 		status.State = "degraded"
 		status.ErrorCode = boundedStatusText(code, 64)
 	})
 }
 
+// update changes the in-memory status and arms a flush. It never touches the
+// disk itself: callers include the HA dial path between candidate attempts and
+// the policy watcher, and a status file write (with its fsync) on a slow disk
+// stalled them for up to a second. The first snapshot is still written at once,
+// on the timer goroutine.
 func (writer *StatusWriter) update(change func(*RuntimeStatus)) {
 	if writer == nil || writer.path == "" {
 		return
 	}
 	writer.mu.Lock()
+	defer writer.mu.Unlock()
 	if writer.closed {
-		writer.mu.Unlock()
 		return
 	}
 	change(&writer.status)
 	writer.status.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	writer.dirty = true
-	remaining := writer.interval - time.Since(writer.lastWrite)
-	if writer.lastWrite.IsZero() || remaining <= 0 {
-		snapshot := writer.status
-		writer.dirty = false
-		writer.lastWrite = time.Now()
-		writer.mu.Unlock()
-		writer.writeSnapshot(snapshot)
+	if writer.timer != nil {
 		return
 	}
-	if writer.timer == nil {
-		writer.timer = time.AfterFunc(remaining, writer.flush)
+	delay := writer.interval - time.Since(writer.lastWrite)
+	if writer.lastWrite.IsZero() || delay < 0 {
+		delay = 0
 	}
-	writer.mu.Unlock()
+	writer.timer = time.AfterFunc(delay, writer.flush)
 }
 
+// flush takes the snapshot while holding writeMu, so two flushes can never land
+// out of order and leave an older snapshot on disk.
 func (writer *StatusWriter) flush() {
+	writer.writeMu.Lock()
+	defer writer.writeMu.Unlock()
 	writer.mu.Lock()
 	writer.timer = nil
 	if writer.closed || !writer.dirty {
@@ -362,9 +505,11 @@ func (writer *StatusWriter) flush() {
 	writer.dirty = false
 	writer.lastWrite = time.Now()
 	writer.mu.Unlock()
-	writer.writeSnapshot(snapshot)
+	writer.writeSnapshotLocked(snapshot)
 }
 
+// Close writes whatever is still pending and returns only once no write is in
+// flight, so a process shutdown cannot leave the previous snapshot on disk.
 func (writer *StatusWriter) Close() {
 	if writer == nil {
 		return
@@ -379,27 +524,31 @@ func (writer *StatusWriter) Close() {
 		writer.timer.Stop()
 		writer.timer = nil
 	}
+	writer.mu.Unlock()
+	writer.writeMu.Lock()
+	defer writer.writeMu.Unlock()
+	writer.mu.Lock()
 	dirty := writer.dirty
 	snapshot := writer.status
 	writer.dirty = false
 	writer.mu.Unlock()
 	if dirty {
-		writer.writeSnapshot(snapshot)
+		writer.writeSnapshotLocked(snapshot)
 	}
-	// A timer callback may have cleared dirty and started an atomic write just
-	// before Close acquired mu. Wait for that write before returning so a
-	// process shutdown cannot leave the caller observing the previous snapshot.
-	writer.writeMu.Lock()
-	writer.writeMu.Unlock()
 }
 
-func (writer *StatusWriter) writeSnapshot(status RuntimeStatus) {
+// testHookStatusWrite runs before each status file write (tests only).
+var testHookStatusWrite func()
+
+// writeSnapshotLocked requires writeMu.
+func (writer *StatusWriter) writeSnapshotLocked(status RuntimeStatus) {
+	if testHookStatusWrite != nil {
+		testHookStatusWrite()
+	}
 	encoded, err := json.Marshal(status)
 	if err != nil || len(encoded) > 64*1024 {
 		return
 	}
-	writer.writeMu.Lock()
-	defer writer.writeMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(writer.path), 0o700); err != nil {
 		return
 	}
@@ -530,4 +679,69 @@ func minInt64(value, maximum int64) int64 {
 		return maximum
 	}
 	return value
+}
+
+func (writer *StatusWriter) AddUoTQueueBlocked() {
+	writer.update(func(s *RuntimeStatus) { s.UoTQueueBlocked++ })
+}
+func (writer *StatusWriter) AddUoTQueueTimeout() {
+	writer.update(func(s *RuntimeStatus) { s.UoTQueueTimeout++; s.UoTQueueDrop++; s.UDPQueueDrops++ })
+}
+func (writer *StatusWriter) AddUoTCarrierLagFailover() {
+	writer.update(func(s *RuntimeStatus) { s.UoTCarrierLagFailovers++ })
+}
+func (writer *StatusWriter) SetUoTSocketBuffers(recv, send int, failed bool) {
+	writer.update(func(s *RuntimeStatus) {
+		s.UoTSocketRcvbuf = recv
+		s.UoTSocketSndbuf = send
+		s.UoTSocketBufferError = failed
+	})
+}
+
+// Counters and sequence totals cover every association, including retired ones.
+// Window gauges cover live associations only; a quiet prewarm carrier must not
+// overwrite the busy data carrier's loss/replay evidence.
+func (w *StatusWriter) SetReliableStats(id [16]byte, s reliableStats, retired bool) {
+	w.update(func(status *RuntimeStatus) {
+		if w.reliableLive == nil {
+			w.reliableLive = make(map[[16]byte]reliableStats)
+		}
+		if retired {
+			delete(w.reliableLive, id)
+			s.WindowPackets, s.WindowBytes, s.OldestUnackedMS = 0, 0, 0
+			addReliableStats(&w.reliableRetired, s)
+		} else {
+			w.reliableLive[id] = s
+		}
+		total := w.reliableRetired
+		for _, item := range w.reliableLive {
+			addReliableStats(&total, item)
+		}
+		status.UoTReliable = &total
+	})
+}
+
+func addReliableStats(total *reliableStats, s reliableStats) {
+	total.QueueBlocked += s.QueueBlocked
+	total.QueueTimeout += s.QueueTimeout
+	total.QueueDrop += s.QueueDrop
+	total.SequenceGap += s.SequenceGap
+	total.RetransmitCount += s.RetransmitCount
+	total.ReconnectReplayCount += s.ReconnectReplayCount
+	total.UnrecoverableCount += s.UnrecoverableCount
+	total.Deduplicated += s.Deduplicated
+	total.Acknowledged += s.Acknowledged
+	total.Delivered += s.Delivered
+	total.WindowPackets += s.WindowPackets
+	total.WindowBytes += s.WindowBytes
+	if s.OldestUnackedMS > total.OldestUnackedMS {
+		total.OldestUnackedMS = s.OldestUnackedMS
+	}
+	if s.Failed != "" {
+		total.Failed = "one or more reliable associations failed"
+	}
+}
+
+func (w *StatusWriter) SetUoTSocketDrops(n *uint64) {
+	w.update(func(s *RuntimeStatus) { s.UoTSocketReceiveDrop = n })
 }

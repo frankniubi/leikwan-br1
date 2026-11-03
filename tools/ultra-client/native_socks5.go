@@ -495,6 +495,23 @@ type nativeSocks5Runtime struct {
 }
 
 func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, status *StatusWriter) error {
+	return serveNativeSocks5WithListeners(ctx, config, store, status, nil, nil)
+}
+
+func serveNativeSocks5WithListeners(
+	ctx context.Context,
+	config Config,
+	store *PolicyStore,
+	status *StatusWriter,
+	tcpListener net.Listener,
+	udpConn *net.UDPConn,
+) error {
+	if tcpListener != nil {
+		defer tcpListener.Close()
+	}
+	if udpConn != nil {
+		defer udpConn.Close()
+	}
 	if !nativeSocks5ListenHostAllowed(config.ListenHost) {
 		return errors.New("native_socks5_listener_not_loopback")
 	}
@@ -504,22 +521,35 @@ func serveNativeSocks5(ctx context.Context, config Config, store *PolicyStore, s
 	if status == nil {
 		status = newStatusWriter("", config.ForwardID, time.Second)
 	}
-	tcpListener, err := net.Listen("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
-	if err != nil {
-		return err
+	var err error
+	if tcpListener == nil {
+		tcpListener, err = net.Listen("tcp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
+		if err != nil {
+			return err
+		}
+		defer tcpListener.Close()
 	}
-	defer tcpListener.Close()
-	udpAddress, err := net.ResolveUDPAddr("udp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
-	if err != nil {
-		return err
+	tcpAddress, ok := tcpListener.Addr().(*net.TCPAddr)
+	if !ok || tcpAddress.Port != config.ListenPort {
+		return errors.New("native_socks5_tcp_listener_mismatch")
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddress)
-	if err != nil {
-		return err
+	if udpConn == nil {
+		udpAddress, resolveErr := net.ResolveUDPAddr("udp", net.JoinHostPort(config.ListenHost, fmt.Sprint(config.ListenPort)))
+		if resolveErr != nil {
+			return resolveErr
+		}
+		udpConn, err = net.ListenUDP("udp", udpAddress)
+		if err != nil {
+			return err
+		}
+		defer udpConn.Close()
+	}
+	udpAddress, ok := udpConn.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddress.Port != config.ListenPort {
+		return errors.New("native_socks5_udp_listener_mismatch")
 	}
 	_ = udpConn.SetReadBuffer(4 << 20)
 	_ = udpConn.SetWriteBuffer(4 << 20)
-	defer udpConn.Close()
 	runtime := &nativeSocks5Runtime{
 		config: config, store: store, status: status, udp: udpConn,
 		associations: make(map[string]*nativeSocks5UDPAssociation),
@@ -647,7 +677,9 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 		request.host,
 		request.port,
 		timeout,
-		dialNativeStream,
+		func(candidate ProviderLease, host string, port int, candidateTimeout time.Duration) (net.Conn, error) {
+			return dialNativeStreamConfig(runtime.config, candidate, host, port, candidateTimeout)
+		},
 		runtime.status,
 	)
 	if err != nil {
@@ -962,6 +994,15 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 		runtime.removeAssociation(association)
 		return
 	}
+	// The response loop owns this socket's reads from here on. Mark ownership
+	// and spawn the reader before the association becomes visible to direct
+	// sends, so a send-path ceiling probe always waits on the reader instead of
+	// racing it for SetReadDeadline/Read (2026-09-16 reader-race fix).
+	if runtime.status != nil {
+		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
+	}
+	session.markSocketReaderOwned()
+	go runtime.readUDPResponses(association, session)
 	if !association.markReady(session, lease) {
 		lease.wipe()
 		return
@@ -969,7 +1010,6 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 	if runtime.status != nil {
 		// Publish the measured ceiling and the panel hint of this association so
 		// the panel can see which relay is narrow.
-		session.onCeilingMeasured = runtime.status.UpdateUDPPayloadCeiling
 		runtime.status.UpdateUDPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, time.Since(started), lease.LeaseHash)
 		runtime.status.UpdateUDPPayloadCeiling(normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling), payloadCeilingSourceDeclared)
 		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
@@ -980,7 +1020,6 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 	for _, request := range association.takePending() {
 		runtime.sendUDPRequest(association, session, request)
 	}
-	go runtime.readUDPResponses(association, session)
 }
 
 func (runtime *nativeSocks5Runtime) startNativeAssociationKeepalive(ctx context.Context, association *nativeSocks5UDPAssociation) {
@@ -1086,6 +1125,9 @@ func (runtime *nativeSocks5Runtime) readUDPResponses(association *nativeSocks5UD
 			return
 		}
 		packet := buffer[:count]
+		if session.dispatchProbeEcho(packet) {
+			continue
+		}
 		if isDatagramKeepaliveResponse(packet, nil) {
 			continue
 		}

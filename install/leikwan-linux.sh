@@ -16,6 +16,7 @@ CONFIG="/etc/leikwan-client-agent/config.json"
 STATE_DIR="/var/lib/leikwan-client-agent"
 BIN_DIR="/usr/local/bin"
 AGENT="$BIN_DIR/leikwan-client-agent.py"
+FROZEN_AGENT="$BIN_DIR/leikwan-client-agent"
 UPDATER="$BIN_DIR/leikwan-client-agent-update"
 FORWARD_STATUS_DIR="/run/ultra"
 
@@ -36,6 +37,13 @@ USAGE
 [ "$(id -u)" = "0" ] || exec sudo "$0" "$@"
 
 agent_version() {
+  if [ -x "$FROZEN_AGENT" ]; then
+    frozen_version="$($FROZEN_AGENT --version 2>/dev/null | head -n 1 || true)"
+    if [ -n "$frozen_version" ]; then
+      printf '%s\n' "$frozen_version"
+      return
+    fi
+  fi
   [ -f "$AGENT" ] || { echo "unknown"; return; }
   sed -n 's/^AGENT_VERSION = "\(.*\)"/\1/p' "$AGENT" | head -n 1
 }

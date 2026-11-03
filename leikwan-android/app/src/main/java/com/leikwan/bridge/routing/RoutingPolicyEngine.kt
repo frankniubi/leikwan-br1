@@ -11,7 +11,8 @@ package com.leikwan.bridge.routing
  *   emits into route.rules / route.rule_set.
  *
  * Precedence (enforced identically in [decide] and in buildRoute):
- *   protected paths > runtime reachability > user country rules > user category rules > global default.
+ *   protected paths > runtime reachability > user app rules > user country rules > user category rules
+ *   > global default.
  * Protected paths win even when a user rule says TUNNEL.
  */
 class RoutingPolicyEngine(
@@ -47,6 +48,7 @@ class RoutingPolicyEngine(
         categoryRules: List<RoutingRule>,
         rulePackVersions: List<String>,
         compiledAtMs: Long,
+        appRules: List<AppRoutingRule> = emptyList(),
     ): RoutingPolicySnapshot {
         val warnings = mutableListOf<String>()
 
@@ -90,6 +92,7 @@ class RoutingPolicyEngine(
             compileTimestampMs = compiledAtMs,
             warnings = warnings,
             precedenceVersion = 1,
+            userAppRules = appRules.distinctBy { it.packageName },
         )
     }
 
@@ -144,6 +147,22 @@ class RoutingPolicyEngine(
      */
     fun compileRouteRules(snapshot: RoutingPolicySnapshot): List<CompiledRouteRule> {
         val compiled = mutableListOf<CompiledRouteRule>()
+        // App rules first, one route rule per distinct outbound.
+        snapshot.userAppRules
+            .groupBy { rule ->
+                when (rule.outcome) {
+                    UserTrafficOutcome.DIRECT -> "direct"
+                    UserTrafficOutcome.TUNNEL -> rule.targetNodeId?.let { nodeSentinel(it) } ?: PROXY_OUTBOUND_SENTINEL
+                }
+            }
+            .forEach { (outbound, rules) ->
+                compiled += CompiledRouteRule(
+                    ruleSetTags = emptyList(),
+                    outbound = outbound,
+                    sourceRuleId = "app:$outbound",
+                    packageNames = rules.map { it.packageName },
+                )
+            }
         snapshot.userCountryRules.forEach { rule ->
             compiled += CompiledRouteRule(
                 ruleSetTags = listOf(geoipTag(rule.matchValue)),

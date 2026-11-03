@@ -33,6 +33,11 @@ type udpProbeResult struct {
 	TCPReceived   int
 	TCPRTT        time.Duration
 	TCPError      error
+	// TCPEmptyClose marks a relay that completed the probe handshake but closed
+	// the probe's first flight without returning a byte (the relay that took
+	// down forward 263 on 2026-10-11). It demotes the candidate instead of
+	// failing it, so a route where every relay does this still has a selection.
+	TCPEmptyClose bool
 	// PayloadCeiling is the payload size this candidate is known to carry: the
 	// panel-declared relay_payload_ceiling, or a locally measured value.
 	// 0 without PayloadCeilingMeasured means unknown, not unusable.
@@ -182,6 +187,7 @@ func dualProbeResult(udp, tcp udpProbeResult) udpProbeResult {
 	result.TCPReceived = tcp.TCPReceived
 	result.TCPRTT = tcp.TCPRTT
 	result.TCPError = tcp.TCPError
+	result.TCPEmptyClose = tcp.TCPEmptyClose
 	udpFailure := udp.Err
 	if udpFailure == nil && !udp.pathUsable(udp.Sent, udp.Received) {
 		udpFailure = errProbeUnavailable
@@ -235,6 +241,9 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 		if lUsable != rUsable {
 			return lUsable
 		}
+		if strings.Contains(transport, "tcp") && l.TCPEmptyClose != r.TCPEmptyClose {
+			return !l.TCPEmptyClose
+		}
 		if lTier, rTier := selectionTierRank(l.SelectionTier), selectionTierRank(r.SelectionTier); lTier != rTier {
 			return lTier < rTier
 		}
@@ -263,6 +272,9 @@ func rankProbeResults(results []udpProbeResult, transport string) []udpProbeResu
 }
 
 func probeLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
+	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+		return probeExternalUoTLease(ctx, lease, config, policy)
+	}
 	switch policy.Transport {
 	case "tcp":
 		return probeTCPLease(ctx, lease, config, policy)
@@ -290,33 +302,58 @@ func stringsContainsUDP(transport string) bool {
 }
 
 func probeTCPLease(ctx context.Context, lease ProviderLease, config Config, policy Policy) udpProbeResult {
-	result := udpProbeResult{SelectionTier: lease.SelectionTier, Sent: 1, TCPSent: 1}
-	started := time.Now()
-	host, port, err := probeTarget(config)
+	result := udpProbeResult{SelectionTier: lease.SelectionTier}
+	host, port, err := probeTCPTarget(config)
 	if err != nil {
+		result.TCPSent = 1
 		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
 		result.Err = result.TCPError
 		return result
 	}
-	select {
-	case <-ctx.Done():
-		result.TCPError = wrapProbeFailure(errProbeTCPFailed, ctx.Err())
-		result.Err = result.TCPError
-		return result
-	default:
+	// A single SYN/relay handshake can lose a packet during a route refresh.
+	// Retry the transport probe a bounded number of times before declaring the
+	// candidate unusable; this is deliberately independent from user streams.
+	const attempts = 3
+	var lastErr error
+	var totalRTT time.Duration
+	for attempt := 0; attempt < attempts; attempt++ {
+		result.TCPSent++
+		select {
+		case <-ctx.Done():
+			result.TCPError = wrapProbeFailure(errProbeTCPFailed, ctx.Err())
+			result.Err = result.TCPError
+			return result
+		default:
+		}
+		started := time.Now()
+		connection, dialErr := dialStreamConfig(config, lease, host, port, probeTimeout(config))
+		if dialErr == nil {
+			rtt := time.Since(started)
+			reply := checkTCPProbeReply(ctx, connection, tcpProbeReplyWait(config))
+			_ = connection.Close()
+			result.TCPReceived++
+			totalRTT += rtt
+			result.TCPRTT = totalRTT / time.Duration(result.TCPReceived)
+			result.MedianRTT = result.TCPRTT
+			result.P95RTT = result.TCPRTT
+			// A relay that lost its upstream completes the handshake and then
+			// closes the first flight empty, so the handshake alone cannot
+			// tell it from a working relay. Retry it like a lost SYN; keep the
+			// verdict only if every attempt ends that way.
+			result.TCPEmptyClose = errors.Is(reply, errProbeRelayClosedEmpty)
+			if !result.TCPEmptyClose {
+				return result
+			}
+			continue
+		}
+		lastErr = dialErr
 	}
-	connection, err := dialStream(lease, host, port, probeTimeout(config))
-	if err != nil {
-		result.TCPError = wrapProbeFailure(errProbeTCPFailed, err)
-		result.Err = result.TCPError
+	if result.TCPReceived > 0 {
+		log.Printf("tcp probe relay closed the first flight empty selection_ref=%s attempts=%d", lease.SelectionRef, result.TCPSent)
 		return result
 	}
-	_ = connection.Close()
-	result.Received = 1
-	result.TCPReceived = 1
-	result.TCPRTT = time.Since(started)
-	result.MedianRTT = result.TCPRTT
-	result.P95RTT = result.TCPRTT
+	result.TCPError = wrapProbeFailure(errProbeTCPFailed, lastErr)
+	result.Err = result.TCPError
 	return result
 }
 
@@ -335,7 +372,7 @@ func probeUDPLease(ctx context.Context, lease ProviderLease, config Config) udpP
 	// Association setup scans the relay's bounded SID range and is distinct
 	// from the per-packet measurement timeout. Do not let an 800ms DNS reply
 	// timeout truncate a cold association before the quality window starts.
-	session, err := armDatagram(lease, probeAssociationTimeout(config))
+	session, err := armDatagramConfig(config, lease, probeAssociationTimeout(config))
 	if err != nil {
 		result.Err = err
 		return result
@@ -549,6 +586,18 @@ func probeTarget(config Config) (string, int, error) {
 	return "1.1.1.1", 53, nil
 }
 
+func probeTCPTarget(_ Config) (string, int, error) {
+	host, port, err := net.SplitHostPort(defaultTCPProbeTarget)
+	if err != nil {
+		return "", 0, err
+	}
+	var numericPort int
+	if _, err := fmt.Sscanf(port, "%d", &numericPort); err != nil || numericPort < 1 || numericPort > 65535 {
+		return "", 0, errors.New("tcp probe target port invalid")
+	}
+	return host, numericPort, nil
+}
+
 func summarizeRTTs(rtts []time.Duration) (time.Duration, time.Duration, time.Duration) {
 	if len(rtts) == 0 {
 		return 0, 0, 0
@@ -580,7 +629,7 @@ func probeTimeout(config Config) time.Duration {
 }
 
 func selectBestLease(ctx context.Context, config Config, policy Policy, leases []ProviderLease) (ProviderLease, udpProbeResult, error) {
-	return selectBestLeaseWithProbe(ctx, config, policy, leases, probeLease)
+	return selectBestLeaseWithProbe(ctx, config, effectiveProbePolicy(config, policy), leases, probeLease)
 }
 
 // probeFailureSink receives every candidate that failed its probe in a batch.
@@ -603,7 +652,17 @@ func selectBestLeaseReporting(
 	leases []ProviderLease,
 	onFailure probeFailureSink,
 ) (ProviderLease, udpProbeResult, error) {
-	return selectBestLeaseWithProbeReporting(ctx, config, policy, leases, probeLease, onFailure)
+	return selectBestLeaseWithProbeReporting(ctx, config, effectiveProbePolicy(config, policy), leases, probeLease, onFailure)
+}
+
+func effectiveProbePolicy(config Config, policy Policy) Policy {
+	if externalUoTEnabled(config) && stringsContainsUDP(policy.Transport) {
+		// External UoT health is established by the TCP carrier plus sidecar
+		// HELLO. Requiring native command-3 UDP here would recreate the exact
+		// false-negative that this mode is intended to avoid.
+		policy.Transport = "tcp"
+	}
+	return policy
 }
 
 type leaseProbe func(context.Context, ProviderLease, Config, Policy) udpProbeResult

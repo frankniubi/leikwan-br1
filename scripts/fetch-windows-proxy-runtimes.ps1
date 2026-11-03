@@ -3,6 +3,8 @@ param(
     [string]$Proxy = "http://127.0.0.1:2080",
     [string]$SingBoxVersion = "1.13.19",
     [string]$ChinaIpList = "CN.conf",
+    [string]$GeoIpRuleSet = "geoip-cn.srs",
+    [string]$GeoSiteRuleSet = "geosite-cn.srs",
     [switch]$SkipProcessRedirector
 )
 
@@ -49,6 +51,13 @@ try {
         throw "China IP list missing: $ChinaIpList"
     }
     Copy-Item -LiteralPath $ChinaIpList -Destination (Join-Path $OutputDir "CN.conf") -Force
+    foreach ($ruleSet in @($GeoIpRuleSet, $GeoSiteRuleSet)) {
+        if (-not (Test-Path -LiteralPath $ruleSet)) {
+            throw "sing-box rule-set missing: $ruleSet"
+        }
+    }
+    Copy-Item -LiteralPath $GeoIpRuleSet -Destination (Join-Path $OutputDir "geoip-cn.srs") -Force
+    Copy-Item -LiteralPath $GeoSiteRuleSet -Destination (Join-Path $OutputDir "geosite-cn.srs") -Force
 
     if (-not $SkipProcessRedirector) {
         $netchArchive = Join-Path $scratch "Netch.7z"
@@ -89,6 +98,12 @@ try {
             source = "CN.conf"
             format = 'route <cidr> via "lo";'
             sha256 = (Get-FileHash (Join-Path $OutputDir "CN.conf") -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        china_rule_sets = [ordered]@{
+            source = "https://github.com/SagerNet/sing-geoip, https://github.com/SagerNet/sing-geosite"
+            license = "GPL-3.0-or-later"
+            geoip_cn_sha256 = (Get-FileHash (Join-Path $OutputDir "geoip-cn.srs") -Algorithm SHA256).Hash.ToLowerInvariant()
+            geosite_cn_sha256 = (Get-FileHash (Join-Path $OutputDir "geosite-cn.srs") -Algorithm SHA256).Hash.ToLowerInvariant()
         }
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDir "runtime-manifest.json") -Encoding UTF8

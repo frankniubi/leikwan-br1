@@ -4,6 +4,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
+import com.leikwan.bridge.runtime.UltraUsageRow
 
 data class PullConfigsResponse(
     val ok: Boolean,
@@ -15,6 +16,8 @@ data class PullConfigsResponse(
     @SerializedName("direction_runtime_bindings") val directionRuntimeBindings: List<DirectionRuntimeBindingDto>? = null,
     @SerializedName("capabilities") val routeRuleCapabilities: RouteRuleCapabilitiesDto? = null,
     @SerializedName("native_outbound") val nativeOutbound: NativeOutboundCapabilityDto? = null,
+    /** `{"minimum_version": "0.2.45"}` when the panel enforces a minimum; read by ClientUpdatePolicy. */
+    @SerializedName("client_update") val clientUpdate: JsonElement? = null,
 )
 
 data class HeartbeatRequest(
@@ -22,9 +25,15 @@ data class HeartbeatRequest(
     @SerializedName("os_release") val osRelease: String = android.os.Build.VERSION.RELEASE.orEmpty(),
     @SerializedName("supports_route_direction_rules") val supportsRouteDirectionRules: Boolean = true,
     @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
+    /** Per-forward Ultra usage deltas; null (omitted) when there is nothing to report. */
+    @SerializedName("ultra_usage") val ultraUsage: List<UltraUsageRow>? = null,
 )
 
-data class HeartbeatResponse(val ok: Boolean)
+data class HeartbeatResponse(
+    val ok: Boolean,
+    /** Absent on older panels: then `ok` acknowledges the usage batch (desktop contract). */
+    @SerializedName("ultra_usage_acknowledged") val ultraUsageAcknowledged: Boolean? = null,
+)
 
 data class UltraLeaseForwardRequest(
     @SerializedName("forward_id") val forwardId: Long,

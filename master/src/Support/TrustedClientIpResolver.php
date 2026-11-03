@@ -49,8 +49,24 @@ final class TrustedClientIpResolver
 
         $forwardedAddress = trim((string) ($request->header('x-forwarded-for') ?? ''));
         if ($forwardedAddress !== '') {
-            $firstForwarded = trim((string) explode(',', $forwardedAddress, 2)[0]);
-            return $this->normalizeAddress($firstForwarded) ?? $remoteAddress;
+            // Walk from the nearest hop back and stop at the first address
+            // that is not one of our proxies. The leftmost entries are
+            // whatever the client sent (Cloudflare and nginx append to an
+            // incoming X-Forwarded-For), so taking the first entry would let
+            // anyone choose their own address.
+            $hops = array_reverse(explode(',', $forwardedAddress));
+            $resolved = null;
+            foreach ($hops as $hop) {
+                $address = $this->normalizeAddress($hop);
+                if ($address === null) {
+                    break;
+                }
+                $resolved = $address;
+                if (!$this->isTrustedProxy($address)) {
+                    break;
+                }
+            }
+            return $resolved ?? $remoteAddress;
         }
 
         $realAddress = trim((string) ($request->header('x-real-ip') ?? ''));

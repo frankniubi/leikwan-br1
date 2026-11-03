@@ -28,7 +28,7 @@ foreach ([
     "public function toggleForward(Request \$request, array \$params): Response",
     "\$action === 'start'",
     "setForwardEnabled(",
-    "本期用量",
+    "Usage this cycle",
     "formatTrafficBytes",
     "'Pause'",
     "'Start'",

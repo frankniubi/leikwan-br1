@@ -1,0 +1,10 @@
+/* Generated: Bridge UI text (zh-Hans). Keys are the English source text. */
+
+"Native outbound: %@" = "原生出口：%@";
+"Ultra forward %@: %@" = "Ultra 转发 %@：%@";
+"The forward settings changed. Reconnect" = "转发配置已变更，请重新连接";
+"Ultra authorization unavailable (service inactive or expired)" = "Ultra 授权不可用（服务未激活或已过期）";
+"Line key check failed (%@)" = "线路密钥校验失败（%@）";
+"The local Ultra runtime rejected the line" = "本地 Ultra 运行时拒绝了线路";
+"No line available yet; retrying automatically" = "暂无可用线路，稍后自动重试";
+"Could not get a line (%@); retrying automatically" = "获取线路失败（%@），稍后自动重试";

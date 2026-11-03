@@ -18,8 +18,9 @@ type Config struct {
 	DeviceID    string
 	ClientID    int
 
-	// Operating mode: forward | gateway | hybrid
-	Mode string
+	// PanelEgressInterface pins Panel traffic to one device: "auto" (the
+	// physical WAN), "none" (no pinning), or a device / UCI interface name.
+	PanelEgressInterface string
 
 	PollIntervalSecs      int
 	HeartbeatIntervalSecs int
@@ -35,31 +36,12 @@ type Config struct {
 	RunDir     string
 	RuntimeBin string
 
-	// Gateway (LAN-wide transparent egress)
-	GatewayEnabled     bool
+	// Native outbound relay. The relay itself starts when the Panel grants
+	// native outbound; the operator only narrows the scope/policy ("auto"
+	// follows the line's direction and the plan's grant).
 	GatewayForwardID   int
 	GatewayRouteScope  string
 	GatewayRoutePolicy string
-	GatewayTunAddress  string
-	GatewayTunMTU      int
-	GatewayDNSMode     string
-	GatewayDNSServers  string
-	GatewayBypassCN    bool
-	GatewaySingBoxBin  string
-	GatewayRedirectLAN bool
-
-	// Uplink (multi-WAN) high availability
-	UplinkEnabled       bool
-	UplinkScope         string
-	UplinkInterfaces    []string
-	UplinkProbeTargets  []string
-	UplinkIntervalSecs  int
-	UplinkTimeoutMS     int
-	UplinkFailThreshold int
-	UplinkRecoverThresh int
-	UplinkMinImprovePct int
-	UplinkRouteTable    int
-	UplinkFwMark        int
 
 	CNIPList string
 }
@@ -88,55 +70,30 @@ func applyEnvOverrides(cfg *Config) {
 	if value := os.Getenv("LEIKWAN_PANEL_URL"); value != "" {
 		cfg.PanelURL = strings.TrimRight(value, "/")
 	}
-	if value := os.Getenv("LEIKWAN_SINGBOX_BIN"); value != "" {
-		cfg.GatewaySingBoxBin = value
-	}
 }
 
 func defaultConfig() Config {
 	return Config{
-		Enabled:               true,
-		PanelURL:              "https://v3.leikwanhost.com",
-		FallbackURL:           "https://api-leikwanbridge.nbwly.com",
-		Mode:                  "forward",
-		PollIntervalSecs:      30,
-		HeartbeatIntervalSecs: 30,
-		HealthIntervalSecs:    20,
-		ColdStartGraceSecs:    90,
-		RestartCooldownSecs:   30,
-		LeaseRenewLeadSecs:    90,
-		MaxCandidates:         4,
-		AutoUpdate:            true,
-		LogLevel:              "info",
-		DataDir:               "/etc/leikwan",
-		RunDir:                "/var/run/leikwand",
-		RuntimeBin:            "/usr/libexec/leikwan/ultra-client",
-		GatewayRouteScope:     "global",
-		GatewayRoutePolicy:    "restricted",
-		GatewayTunAddress:     "172.19.0.1/30",
-		GatewayTunMTU:         1420,
-		GatewayDNSMode:        "remote",
-		GatewayDNSServers:     "1.1.1.1",
-		GatewayBypassCN:       true,
-		GatewaySingBoxBin:     "/usr/bin/sing-box",
-		UplinkScope:           "relay",
-		UplinkIntervalSecs:    5,
-		UplinkTimeoutMS:       2000,
-		UplinkFailThreshold:   3,
-		UplinkRecoverThresh:   2,
-		UplinkMinImprovePct:   20,
-		UplinkRouteTable:      1001,
-		UplinkFwMark:          0x4c4b,
-		CNIPList:              "/etc/leikwan/CN.conf",
+		Enabled:                 true,
+		PanelURL:                "https://v3.leikwanhost.com",
+		FallbackURL:             "https://api-leikwanbridge.nbwly.com",
+		PanelEgressInterface:    egressAuto,
+		PollIntervalSecs:        30,
+		HeartbeatIntervalSecs:   30,
+		HealthIntervalSecs:      20,
+		ColdStartGraceSecs:      90,
+		RestartCooldownSecs:     30,
+		LeaseRenewLeadSecs:      90,
+		MaxCandidates:           4,
+		AutoUpdate:              true,
+		LogLevel:                "info",
+		DataDir:                 "/etc/leikwan",
+		RunDir:                  "/var/run/leikwand",
+		RuntimeBin:              "/usr/libexec/leikwan/ultra-client",
+		GatewayRouteScope:       "auto",
+		GatewayRoutePolicy:      "auto",
+		CNIPList:                "/etc/leikwan/CN.conf",
 	}
-}
-
-func (c Config) gatewayActive() bool {
-	return c.GatewayEnabled && (c.Mode == "gateway" || c.Mode == "hybrid")
-}
-
-func (c Config) forwardActive() bool {
-	return c.Mode == "forward" || c.Mode == "hybrid"
 }
 
 // loadConfig reads UCI without shelling out to the uci binary, so the daemon
@@ -163,7 +120,7 @@ func loadConfig() Config {
 	cfg.DeviceName = get("device_name", "")
 	cfg.DeviceID = get("device_id", "")
 	cfg.ClientID = atoiDefault(get("client_id", "0"), 0)
-	cfg.Mode = normalizeMode(get("mode", cfg.Mode))
+	cfg.PanelEgressInterface = get("panel_egress_interface", cfg.PanelEgressInterface)
 
 	cfg.PollIntervalSecs = clampInt(atoiDefault(get("poll_interval", ""), cfg.PollIntervalSecs), 5, 3600)
 	cfg.HeartbeatIntervalSecs = clampInt(atoiDefault(get("heartbeat_interval", ""), cfg.HeartbeatIntervalSecs), 5, 3600)
@@ -179,55 +136,20 @@ func loadConfig() Config {
 	cfg.RunDir = get("run_dir", cfg.RunDir)
 	cfg.RuntimeBin = get("runtime_bin", cfg.RuntimeBin)
 
-	cfg.GatewayEnabled = boolDefault(get("gateway_enabled", "0"), false)
+	// Legacy gateway/uplink keys are ignored on purpose: the transparent
+	// gateway and the multi-WAN manager no longer exist in this edition, and
+	// an operator's leftover options must not resurrect them.
 	cfg.GatewayForwardID = atoiDefault(get("gateway_forward_id", "0"), 0)
-	cfg.GatewayRouteScope = normalizeRouteScope(get("gateway_route_scope", cfg.GatewayRouteScope))
-	cfg.GatewayRoutePolicy = normalizeRoutePolicy(get("gateway_route_policy", cfg.GatewayRoutePolicy))
-	cfg.GatewayTunAddress = get("gateway_tun_address", cfg.GatewayTunAddress)
-	cfg.GatewayTunMTU = clampInt(atoiDefault(get("gateway_tun_mtu", ""), cfg.GatewayTunMTU), 576, 9000)
-	cfg.GatewayDNSMode = strings.ToLower(get("gateway_dns_mode", cfg.GatewayDNSMode))
-	cfg.GatewayDNSServers = get("gateway_dns_servers", cfg.GatewayDNSServers)
-	cfg.GatewayBypassCN = boolDefault(get("gateway_bypass_cn", "1"), true)
-	cfg.GatewaySingBoxBin = get("gateway_singbox_bin", cfg.GatewaySingBoxBin)
-	cfg.GatewayRedirectLAN = boolDefault(get("gateway_redirect_lan", "0"), false)
-
-	cfg.UplinkEnabled = boolDefault(get("uplink_enabled", "0"), false)
-	cfg.UplinkScope = strings.ToLower(get("uplink_scope", cfg.UplinkScope))
-	cfg.UplinkInterfaces = splitList(get("uplink_interfaces", ""))
-	cfg.UplinkProbeTargets = splitList(get("uplink_probe", "1.1.1.1 223.5.5.5"))
-	cfg.UplinkIntervalSecs = clampInt(atoiDefault(get("uplink_interval", ""), cfg.UplinkIntervalSecs), 1, 300)
-	cfg.UplinkTimeoutMS = clampInt(atoiDefault(get("uplink_timeout_ms", ""), cfg.UplinkTimeoutMS), 200, 30000)
-	cfg.UplinkFailThreshold = clampInt(atoiDefault(get("uplink_fail_threshold", ""), cfg.UplinkFailThreshold), 1, 60)
-	cfg.UplinkRecoverThresh = clampInt(atoiDefault(get("uplink_recover_threshold", ""), cfg.UplinkRecoverThresh), 1, 60)
-	cfg.UplinkMinImprovePct = clampInt(atoiDefault(get("uplink_min_improve_pct", ""), cfg.UplinkMinImprovePct), 0, 90)
-	cfg.UplinkRouteTable = atoiDefault(get("uplink_route_table", ""), cfg.UplinkRouteTable)
-	cfg.UplinkFwMark = atoiDefault(get("uplink_fwmark", ""), cfg.UplinkFwMark)
+	cfg.GatewayRouteScope = normalizeGatewayChoice(get("gateway_route_scope", cfg.GatewayRouteScope), "cn_only", "intl_only", "global")
+	cfg.GatewayRoutePolicy = normalizeGatewayChoice(get("gateway_route_policy", cfg.GatewayRoutePolicy), "restricted", "unrestricted")
 
 	cfg.CNIPList = get("cn_ip_list", cfg.CNIPList)
 	applyEnvOverrides(&cfg)
 	return cfg
 }
 
-func normalizeMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "gateway", "proxy", "transparent", "tun":
-		return "gateway"
-	case "hybrid", "both", "all":
-		return "hybrid"
-	default:
-		return "forward"
-	}
-}
-
-func normalizeRouteScope(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "cn_only", "intl_only", "global":
-		return strings.ToLower(strings.TrimSpace(value))
-	default:
-		return "global"
-	}
-}
-
+// normalizeRoutePolicy maps any spelling to restricted/unrestricted. The
+// native lease contract uses this for both the request and validation.
 func normalizeRoutePolicy(value string) string {
 	if strings.ToLower(strings.TrimSpace(value)) == "unrestricted" {
 		return "unrestricted"
@@ -382,4 +304,16 @@ func rewriteUCIFileOption(path, section, option, value string) error {
 		return err
 	}
 	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+// normalizeGatewayChoice keeps "auto" (resolved against the Panel grant at
+// run time) or one of the allowed values; anything else is "auto".
+func normalizeGatewayChoice(value string, allowed ...string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value
+		}
+	}
+	return "auto"
 }

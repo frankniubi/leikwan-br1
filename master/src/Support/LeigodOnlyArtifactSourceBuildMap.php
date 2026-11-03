@@ -15,9 +15,13 @@ final class LeigodOnlyArtifactSourceBuildMap
         $this->repoRoot = $repoRoot !== null ? rtrim($repoRoot, DIRECTORY_SEPARATOR . '/') : dirname(__DIR__, 3);
         $this->activationCritical = [
             'client_agent' => ['paths' => ['client-agent/client_agent.py'], 'route_path' => '/artifacts/client-agent.py', 'platform_family' => 'linux-bond'],
+            'client_agent_linux_amd64' => ['paths' => ['client-agent', 'artifacts/python-agent/leikwan-client-agent_linux_amd64'], 'route_path' => '/artifacts/python-agent/leikwan-client-agent_linux_amd64', 'platform_family' => 'linux-bond'],
+            'client_agent_linux_arm64' => ['paths' => ['client-agent', 'artifacts/python-agent/leikwan-client-agent_linux_arm64'], 'route_path' => '/artifacts/python-agent/leikwan-client-agent_linux_arm64', 'platform_family' => 'linux-bond'],
             'slave_agent' => ['paths' => ['slave-agent/slave_agent.py'], 'route_path' => '/artifacts/slave-agent.py', 'platform_family' => 'linux-bond'],
             'leigod_forward_relay' => ['paths' => ['slave-agent/leigod_forward_relay.py'], 'route_path' => '/artifacts/leikwan-leigod-forward-relay.py', 'platform_family' => 'linux-bond'],
             'sidecar_agent' => ['paths' => ['sidecar-agent/sidecar_agent.py'], 'route_path' => '/artifacts/sidecar-agent.py', 'platform_family' => 'linux-bond'],
+            'sidecar_agent_linux_amd64' => ['paths' => ['sidecar-agent', 'client-agent/leikwan_uot.py', 'artifacts/python-agent/leikwan-sidecar-agent_linux_amd64'], 'route_path' => '/artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', 'platform_family' => 'linux-bond'],
+            'sidecar_agent_linux_arm64' => ['paths' => ['sidecar-agent', 'client-agent/leikwan_uot.py', 'artifacts/python-agent/leikwan-sidecar-agent_linux_arm64'], 'route_path' => '/artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', 'platform_family' => 'linux-bond'],
             'gost_linux_amd64' => ['paths' => ['artifacts/gost/gost_linux_amd64'], 'route_path' => '/artifacts/gost/gost_linux_amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'leigod_linux_amd64' => ['paths' => ['artifacts/leigod/leigod-linux-amd64'], 'route_path' => '/artifacts/leigod/leigod-linux-amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
             'lguot_linux_amd64' => ['paths' => ['artifacts/lguot/lguot_linux_amd64'], 'route_path' => '/artifacts/lguot/lguot_linux_amd64', 'platform_family' => 'linux-bond', 'immutable_provenance' => true],
@@ -61,15 +65,22 @@ final class LeigodOnlyArtifactSourceBuildMap
                 'route_path' => '/artifacts/ultra/ultra-client_windows_amd64.exe',
                 'platform_family' => 'windows-bond',
             ],
-            'ultra_client_runtime_macos_x64' => [
-                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_macos_amd64'],
-                'route_path' => '/artifacts/ultra/ultra-client_macos_amd64',
-                'platform_family' => 'macos-bond',
-            ],
+            // ultra_client_runtime_macos_x64 is retired (Intel macOS dropped): its
+            // artifact is frozen at runtime 2026.10.12.1 and is never rebuilt from source.
             'ultra_client_runtime_macos_arm64' => [
                 'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_macos_arm64'],
                 'route_path' => '/artifacts/ultra/ultra-client_macos_arm64',
                 'platform_family' => 'macos-bond',
+            ],
+            'ultra_client_runtime_android_arm64' => [
+                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_android_arm64'],
+                'route_path' => '/artifacts/ultra/ultra-client_android_arm64',
+                'platform_family' => 'android-bond',
+            ],
+            'ultra_client_runtime_android_x86_64' => [
+                'paths' => ['tools/ultra-client', 'artifacts/ultra/ultra-client_android_x86_64'],
+                'route_path' => '/artifacts/ultra/ultra-client_android_x86_64',
+                'platform_family' => 'android-bond',
             ],
             'tcp_accel_runtime' => ['paths' => ['tools/tcp-accel/tcp_accel.py'], 'route_path' => '/artifacts/leikwan-tcp-accel.py'],
             'tcp_accel_bridge_runtime' => ['paths' => ['slave-agent/leigod_tcp_accel_bridge.py'], 'route_path' => '/artifacts/leikwan-tcp-accel-bridge.py'],

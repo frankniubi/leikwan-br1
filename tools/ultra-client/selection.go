@@ -51,14 +51,17 @@ func (coordinator *selectionCoordinator) isLatest(epoch uint64) bool {
 }
 
 func controlDeadlineDuration(config Config) time.Duration {
-	if !config.AutoSelect {
+	// Even a single external-UoT lease performs authenticated carrier HELLO.
+	// Giving it 2s and subtracting the 5s response grace creates an already
+	// expired probe context, rejecting every cold start/renewal in this mode.
+	if !config.AutoSelect && !(externalUoTEnabled(config) && stringsContainsUDP(config.Transport)) {
 		return 2 * time.Second
 	}
 	// Keep the control deadline at least as long as the association budget used
 	// by probeUDPLease. A configured connect timeout can exceed the default
 	// thirteen-second SID scan budget, and a fixed grace would cancel a valid
 	// probe before its measurement window starts.
-	return probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace
+	return probeDuration(config) + probeAssociationTimeout(config) + selectionResponseGrace + activeCandidateFallbackBudget(config)
 }
 
 func sameLeaseSelection(left, right ProviderLease) bool {

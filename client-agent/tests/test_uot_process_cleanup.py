@@ -26,6 +26,10 @@ leikwan_mptcp_client = load_module(
 
 
 class UotProcessCleanupTests(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "UoT client systemd service and UDP listener cleanup are Linux-only",
+    )
     def test_ensure_uot_client_service_kills_conflicting_udp_listener_processes(self) -> None:
         commands: list[list[str]] = []
 

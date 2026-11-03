@@ -49,6 +49,7 @@ final class ApiException extends RuntimeException
             'required_collection_mode', 'retry_after_seconds', 'blocked_until',
             'next_location_check_at', 'matched_entity_type', 'violation_count',
             'window_seconds', 'temporary_block_seconds',
+            'online_device_limit', 'active_online_devices',
         ] as $field) {
             if (array_key_exists($field, $this->details)) {
                 $safe[$field] = $this->details[$field];

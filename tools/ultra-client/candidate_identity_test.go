@@ -47,7 +47,7 @@ func TestLeaseAndStatusCarryOpaqueCandidateIdentity(t *testing.T) {
 		t.Fatalf("lease hash=%q, want opaque sha256 lease identity", lease.LeaseHash)
 	}
 
-	writer := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Second)
+	writer := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Second)
 	writer.UpdateTCPWithTierAndCandidate(lease.SelectionRef, lease.SelectionTier, lease.CandidateKeyHash, 12*time.Millisecond)
 	if writer.status.LatestTCP == nil || writer.status.LatestTCP.CandidateKeyHash != candidateHash {
 		t.Fatalf("tcp status=%+v, want candidate hash", writer.status.LatestTCP)

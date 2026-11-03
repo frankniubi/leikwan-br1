@@ -9,7 +9,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=leikwand
-PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.0.0)
+PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.2.6)
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
@@ -21,7 +21,7 @@ define Package/leikwand
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
-  TITLE:=Leikwan convergence agent (panel-managed, two-layer HA)
+  TITLE:=Leikwan convergence agent (panel-managed forwarding + native relay)
   URL:=https://v3.leikwanhost.com
   DEPENDS:=
 endef
@@ -29,10 +29,11 @@ endef
 define Package/leikwand/description
  Router-side agent for the Leikwan convergence service.
 
- It keeps a supervised forwarding runtime in sync with the central panel,
- delivers high-availability candidate lines over the runtime control socket,
- fails over between multiple WAN uplinks, and can act as a transparent egress
- for the whole LAN. Managed from LuCI (luci-app-leikwan).
+ It keeps one supervised forwarding runtime per assigned line in sync with
+ the central panel, delivers high-availability candidate lines over the
+ runtime control socket, and exposes the panel's native outbound as a local
+ SOCKS5 relay on 127.0.0.1:2080 when the plan grants it. Managed from LuCI
+ (luci-app-leikwan); onboarding is the panel-issued client id + agent token.
 endef
 
 define Package/leikwand/conffiles

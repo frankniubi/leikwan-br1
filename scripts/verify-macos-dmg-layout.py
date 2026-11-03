@@ -33,7 +33,10 @@ def validate(volume, version, architecture):
         raise ValueError('apphost missing or not executable')
     with executable.open('rb') as stream:
         header = stream.read(8)
-    expected_cpu = {'arm64': 0x100000c, 'x86_64': 0x1000007}[architecture]
+    # The macOS client ships for Apple Silicon only.
+    if architecture != 'arm64':
+        raise ValueError(f'unsupported architecture {architecture!r}: the macOS client is Apple Silicon (arm64) only')
+    expected_cpu = 0x100000c
     if len(header) != 8 or struct.unpack('<II', header) != (0xfeedfacf, expected_cpu):
         raise ValueError('apphost architecture mismatch')
     return {'install_surface_ok': True, 'version': version, 'architecture': architecture,
@@ -44,6 +47,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('volume', type=Path)
     parser.add_argument('--version', required=True)
-    parser.add_argument('--architecture', required=True, choices=('arm64', 'x86_64'))
+    parser.add_argument('--architecture', required=True, choices=('arm64',),
+                        help='arm64 only: the macOS client supports Apple Silicon only')
     args = parser.parse_args()
     print(json.dumps(validate(args.volume, args.version, args.architecture)))

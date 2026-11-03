@@ -42,6 +42,16 @@ class PanelControlInterceptor(
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val response = chain.proceed(chain.request())
+        if (response.code == 429) {
+            // A full online device limit is recoverable, never terminal: surface it as its own
+            // exception so every endpoint (Response<T> or plain body) reports it the same way.
+            val limit = PanelErrorParser.deviceLimitFromHttp(
+                response.code,
+                runCatching { response.peekBody(MAX_CONTROL_BODY_BYTES).string() }.getOrNull(),
+            ) ?: return response
+            response.close()
+            throw limit
+        }
         if (response.code != 403 && response.code != 409) return response
 
         val envelope = runCatching {

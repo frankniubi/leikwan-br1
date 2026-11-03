@@ -5,7 +5,7 @@ $admin = (string) file_get_contents(__DIR__ . '/../src/Controllers/AdminControll
 $tenant = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 
 foreach ([
-    'admin' => [$admin, 'saveSidecarPoint', ['list', 'create', 'edit', 'updates'], ['/admin-transport-endpoints', '/request-update', '/delete']],
+    'admin' => [$admin, 'saveSidecarPoint', ['list', 'create', 'edit', 'updates', 'health'], ['/admin-transport-endpoints', '/request-update', '/delete']],
     'tenant' => [$tenant, 'saveSidecarPoint', ['list', 'create', 'edit'], ['/tenant-transport-endpoints', '/request-update', '/delete']],
 ] as $label => [$source, $next, $views, $actions]) {
     $start = strpos($source, 'public function sidecarsPage(');
@@ -20,6 +20,22 @@ foreach ([
     }
     foreach ($actions as $action) {
         if (!str_contains($method, $action)) throw new RuntimeException($label . ' endpoint action missing ' . $action);
+    }
+}
+
+if (!str_contains($admin, 'External UoT Health')
+    || !str_contains($admin, 'externalUotHealthInfo')
+    || !str_contains($admin, 'manifest match')
+    || !str_contains($admin, 'Configured Forwards')
+    || !str_contains($admin, 'Agent Runtime / Arch')
+    || !str_contains($admin, 'Configured external target')
+    || !str_contains($admin, 'unregistered / no heartbeat')) {
+    throw new RuntimeException('admin transport endpoint health view is missing the external UoT audit surface');
+}
+
+foreach (["'runtime'", '/admin/clients?view=runtime', 'Runtime / Arch', 'runtime_binary_mode', 'agent_architecture'] as $marker) {
+    if (!str_contains($admin, $marker)) {
+        throw new RuntimeException('admin client runtime audit surface is missing ' . $marker);
     }
 }
 

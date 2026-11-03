@@ -30,6 +30,22 @@ class TcpAccelInstallerDistributionTests(unittest.TestCase):
             source.index('VERSIONS_JSON=')
         )
 
+    def test_tcp_accel_downloads_go_direct_to_the_doh_resolved_panel(self) -> None:
+        # A host whose system DNS only returns unreachable (IPv6 or polluted)
+        # panel addresses used to be carried by the retired proxy.env.
+        accel = (REPO_ROOT / "install" / "install-tcp-accel.sh").read_text(encoding="utf-8")
+        self.assertIn("CURL_PIN=(--noproxy '*')", accel)
+        self.assertIn('CURL_PIN+=(--resolve "$LEIKWAN_CURL_RESOLVE")', accel)
+        for line in accel.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("curl ") or '"$(curl ' in stripped:
+                self.assertIn('"${CURL_PIN[@]}"', stripped, stripped)
+
+        installer = (REPO_ROOT / "install" / "install-client-agent.sh").read_text(encoding="utf-8")
+        self.assertIn('leikwan_protected_download --resolve-pin "$DOWNLOAD_BASE"', installer)
+        self.assertIn('LEIKWAN_CURL_RESOLVE="$TCP_ACCEL_RESOLVE"', installer)
+        self.assertIn('if sys.argv[1] == "--resolve-pin":', installer)
+
     def test_role_installers_download_and_run_tcp_accel_installer(self) -> None:
         expectations = [
             (

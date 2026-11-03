@@ -266,6 +266,55 @@ class TunnelOrchestratorTest {
     }
 
     @Test
+    fun `a picked node whose relay failed stops the connect instead of using another node`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val sharedPrefs = context.getSharedPreferences("orchestrator-picked-leg-test-prefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().clear().commit()
+        val prefs = Prefs(sharedPrefs)
+        val userRuleStore = UserRoutingRuleStore(db)
+        val registry = SafePathRegistry.androidBaseline(prefs.panelUrl, "v3-mirror.leikwanhost.com")
+        val orchestrator = TunnelOrchestrator(
+            context = context,
+            prefs = prefs,
+            db = db,
+            userRuleStore = userRuleStore,
+            rulePackManager = RulePackManager(db, prefs),
+            explainabilityStore = RoutingExplainabilityStore(db, prefs),
+            routingEngine = RoutingPolicyEngine(registry, RoutingCategoryCatalog.default()),
+        )
+        val taiwan = ssNode("taiwan").copy(id = 1L)
+        val hongKong = ssNode("hongkong").copy(id = 2L)
+        val nodes = listOf(taiwan, hongKong)
+
+        val selectedFailed = runCatching {
+            orchestrator.requirePickedNodesRunning(taiwan.id, setOf(taiwan.id), nodes)
+        }.exceptionOrNull()
+        assertTrue(selectedFailed?.message.orEmpty().contains("taiwan"))
+
+        // An unpicked node's failed relay only drops that outbound.
+        orchestrator.requirePickedNodesRunning(taiwan.id, setOf(hongKong.id), nodes)
+
+        prefs.routingSelectorEnabled = true
+        userRuleStore.upsert(
+            RoutingRule(
+                id = "category-video",
+                kind = RoutingRuleKind.WEBSITE_CATEGORY,
+                matchValue = "video",
+                outcome = UserTrafficOutcome.TUNNEL,
+                enabled = true,
+                targetNodeId = hongKong.id,
+            )
+        )
+        val ruleNodeFailed = runCatching {
+            orchestrator.requirePickedNodesRunning(taiwan.id, setOf(hongKong.id), nodes)
+        }.exceptionOrNull()
+        assertTrue(ruleNodeFailed?.message.orEmpty().contains("hongkong"))
+    }
+
+    @Test
     fun `node leg ports are allocated by index to avoid modulo collisions`() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
@@ -931,13 +980,23 @@ class TunnelOrchestratorTest {
         })
 
         orchestrator.refreshNativeForTest(now.plusSeconds(61))
-        orchestrator.refreshNativeForTest(now.plusSeconds(100))
+        // Renewal is due at min(lease expiry - 90 s, renew_after - 30 s) = +90 s here.
+        orchestrator.refreshNativeForTest(now.plusSeconds(85))
 
         assertEquals(1, processRunner.started.size)
         assertEquals(stopAllCallsAfterStart, processRunner.stopAllCalls)
         assertEquals(2, deliveredBatches.size)
         assertEquals(deliveredPaths.first(), deliveredPaths.last())
         assertEquals(2, panelApi.resolveUltraLeaseCalls)
+
+        // The refreshed lease runs to +240 s, but renew_after (+120 s) still drives the cadence,
+        // so a long (offline-capable) lease does not delay the next online renewal.
+        orchestrator.refreshNativeForTest(now.plusSeconds(95))
+        assertEquals(1, processRunner.started.size)
+        assertEquals(stopAllCallsAfterStart, processRunner.stopAllCalls)
+        assertEquals(3, deliveredBatches.size)
+        assertEquals(deliveredPaths.first(), deliveredPaths.last())
+        assertEquals(3, panelApi.resolveUltraLeaseCalls)
         assertTrue(deliveredBatches.flatten().all { lease ->
             lease.user.all { it.toInt() == 0 } && lease.password.all { it.toInt() == 0 }
         })
@@ -1039,6 +1098,7 @@ class TunnelOrchestratorTest {
         override suspend fun resolveUltraLease(
             auth: String,
             request: com.leikwan.bridge.api.UltraLeaseRequest,
+            leaseKey: String?,
         ): Response<com.leikwan.bridge.api.UltraLeaseResponse> {
             val index = resolveUltraLeaseCalls++
             return ultraLeaseResponses.getOrNull(index)

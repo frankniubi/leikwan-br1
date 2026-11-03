@@ -20,4 +20,5 @@ if (!str_contains($agent, 'agent_update_state')) fail('client heartbeat must rep
 if (!str_contains($helper, '/artifacts/install-client-agent.sh')) fail('client update helper must route through artifact controller installer');
 $artifactController = file_get_contents(__DIR__ . '/../src/Controllers/ArtifactController.php');
 if ($artifactController === false || !str_contains($artifactController, "'install_forward_runtime'")) fail('client manifest must advertise install_forward_runtime');
+if (!str_contains($artifactController, "'client_agent_linux_amd64'")) fail('client manifest must advertise the amd64 frozen agent');
 echo "ok\n";

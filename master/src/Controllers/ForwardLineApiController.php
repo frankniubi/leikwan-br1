@@ -7,9 +7,11 @@ use Throwable;
 use Leikwan\Master\Http\Request;
 use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\ApiRateLimiter;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\ForwardLineApiContract;
 use Leikwan\Master\Support\ProvisioningService;
+use Leikwan\Master\Support\ServiceStatus;
 
 final class ForwardLineApiController extends BaseController
 {
@@ -19,6 +21,42 @@ final class ForwardLineApiController extends BaseController
         private ProvisioningService $provisioning,
     ) {
         parent::__construct($config, $db);
+    }
+
+    /**
+     * The service ids every other endpoint takes. They are services.id, not the
+     * Client ID on the Clients page nor the WHMCS service id, and tenants could
+     * not find them anywhere, so a program can discover them here first.
+     */
+    public function services(Request $request, array $params): Response
+    {
+        return $this->run(function () use ($request): Response {
+            $user = $this->authenticateTenant($request);
+            $rows = $this->db->fetchAll(
+                'SELECT s.*, u.feature_flags_json AS user_feature_flags_json,
+                        p.name AS plan_name, p.feature_flags_json AS plan_feature_flags_json
+                 FROM services s
+                 INNER JOIN users u ON u.id = s.user_id
+                 LEFT JOIN service_plans p ON p.id = s.plan_id
+                 WHERE s.user_id = :user_id
+                 ORDER BY s.id ASC',
+                ['user_id' => (int) $user['id']]
+            );
+            $services = [];
+            foreach ($rows as $service) {
+                $serviceId = (int) ($service['id'] ?? 0);
+                $service['status'] = ServiceStatus::effective($service);
+                $service['effective_features'] = $this->effectiveFeatures($service);
+                $service['active_forward_count'] = $this->activeForwardCount($serviceId);
+                $service['forward_limit'] = $this->provisioning->forwardLimitForService($serviceId);
+                $services[] = ForwardLineApiContract::presentService($service);
+            }
+
+            return $this->success([
+                'ok' => true,
+                'services' => $services,
+            ]);
+        });
     }
 
     public function options(Request $request, array $params): Response
@@ -169,6 +207,15 @@ final class ForwardLineApiController extends BaseController
             $structural = array_key_exists('forward_route_id', $changes)
                 || array_key_exists('target_source', $changes)
                 || array_key_exists('target_service_id', $changes)
+                // Toggling native outbound rewrites the target and placement, so
+                // it must take the structural (saveForward) path rather than the
+                // narrow non-structural update that ignores native_outbound.
+                || array_key_exists('native_outbound', $changes)
+                // A native forward's target is the server-assigned loopback
+                // port, which the non-structural path re-validates as a tenant
+                // target and rejects as reserved_range, so every native edit
+                // (even listen_port alone) goes through saveForward.
+                || !empty($forward['native_outbound_enabled'])
                 || (array_key_exists('transport_mode', $changes)
                     && (string) $merged['transport_mode'] !== (string) ($forward['transport_mode'] ?? 'tcp'))
                 || (array_key_exists('listen_port', $changes) && (int) $changes['listen_port'] === 0);
@@ -230,13 +277,28 @@ final class ForwardLineApiController extends BaseController
         if ((string) ($user['role'] ?? '') !== 'tenant' || (string) ($user['status'] ?? '') !== 'active') {
             throw new ApiException('user_auth_failed', 401);
         }
+        self::throttleTenant($this->config, $request, (int) $user['id']);
         return $user;
+    }
+
+    /**
+     * Shared by the v1 and legacy tenant APIs so both draw on one budget.
+     */
+    public static function throttleTenant(\Leikwan\Master\Config $config, Request $request, int $userId): void
+    {
+        $limiter = ApiRateLimiter::fromConfig($config);
+        $limiter->hit('tenant-api:' . $userId, $config->getInt('FORWARD_API_RATE_PER_MINUTE', 120));
+        if (!in_array(strtoupper($request->method()), ['GET', 'HEAD'], true)) {
+            $limiter->hit('tenant-api-write:' . $userId, $config->getInt('FORWARD_API_MUTATION_RATE_PER_MINUTE', 30));
+        }
     }
 
     /** @param array<string, mixed> $service */
     private function assertServiceMutationAllowed(array $service, bool $delete): void
     {
-        if ((string) ($service['status'] ?? '') !== 'active') {
+        // Use the effective status: services.status is never written 'expired',
+        // so a raw check let a service past expire_at keep managing forwards.
+        if (\Leikwan\Master\Support\ServiceStatus::effective($service) !== 'active') {
             throw new ApiException('service_inactive', 409);
         }
         $features = $this->effectiveFeatures($service);
@@ -259,7 +321,9 @@ final class ForwardLineApiController extends BaseController
         }
         if ($request->rawBody() !== '') {
             $decoded = json_decode($request->rawBody(), true);
-            if (!is_array($decoded)) {
+            // A JSON array also decodes to a PHP array; reject it here so it
+            // is not reported as unknown_fields ["0", "1", ...].
+            if (!is_array($decoded) || ($decoded !== [] && array_is_list($decoded))) {
                 throw new ApiException('validation_failed', 422, ['fields' => ['body' => 'json_object_required']]);
             }
             return $decoded;
@@ -348,11 +412,15 @@ final class ForwardLineApiController extends BaseController
             throw new ApiException('idempotency_resource_inactive', 409);
         }
         $owned = $this->loadOwnedForward((int) $forward['id'], $userId, false);
+        // Content-Location, not Location: under php-fpm a 200 carries no
+        // Status line, and nginx turns any FastCGI response with a Location
+        // header but no Status into 302 Found, so the documented 200 replay
+        // reached tenants as a redirect (ticket ZZN-514526).
         return $this->resourceResponse(
             ['ok' => true, 'forward' => ForwardLineApiContract::presentForward($owned)],
             ForwardLineApiContract::etag($owned),
             200
-        )->withHeaders(['Location' => '/api/v1/user/forwards/' . (int) $owned['id']]);
+        )->withHeaders(['Content-Location' => '/api/v1/user/forwards/' . (int) $owned['id']]);
     }
 
     private function pathId(array $params, string $errorCode): int
@@ -436,6 +504,21 @@ final class ForwardLineApiController extends BaseController
             'target_service_not_found' => 'validation_failed',
             'target_service_not_allowed' => 'validation_failed',
             'target_service_ip_missing' => 'validation_failed',
+            // Internal placement/combination constraints resolved server-side.
+            // Map to stable public codes so tenants get a 409/422 instead of an
+            // opaque 500, without leaking internal node/sidecar topology names.
+            'forward_combination_not_found' => 'route_unavailable',
+            'forward_combination_not_allowed' => 'route_unavailable',
+            'node_group_not_allowed' => 'forward_route_not_allowed',
+            'line_client_required' => 'route_unavailable',
+            'line_client_not_allowed' => 'route_unavailable',
+            'line_client_group_not_allowed' => 'route_unavailable',
+            'ultra_reprovision_unavailable' => 'route_unavailable',
+            'shared_sidecar_public_port_forbidden' => 'route_unavailable',
+            'sidecar_must_be_overseas_for_aggregation' => 'route_unavailable',
+            'invalid_forward_combination_client_mode' => 'route_unavailable',
+            'endpoint_mode_not_supported_yet' => 'route_unavailable',
+            'native_target_port_unavailable' => 'route_unavailable',
         ];
         $code = $aliases[$internalCode] ?? $internalCode;
         $statuses = [
@@ -447,6 +530,8 @@ final class ForwardLineApiController extends BaseController
             'service_inactive' => 409,
             'forward_quota_exceeded' => 409,
             'forward_storage_quota_exceeded' => 409,
+            'insufficient_balance' => 409,
+            'rate_limited' => 429,
             'idempotency_conflict' => 409,
             'idempotency_resource_inactive' => 409,
             'route_unavailable' => 409,
@@ -456,10 +541,17 @@ final class ForwardLineApiController extends BaseController
             'idempotency_key_invalid' => 422,
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
+            'forward_target_not_allowed' => 422,
             'idempotency_key_required' => 428,
             'precondition_required' => 428,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
+            // Native outbound codes (see docs/api/native-outbound.md). Without
+            // these the native path's exceptions collapsed to 500.
+            'native_outbound_not_allowed' => 403,
+            'native_outbound_requires_ultra_tcp_udp' => 422,
+            'native_outbound_direction_missing' => 422,
+            'native_direction_conflict' => 409,
             'operation_failed' => 500,
         ];
         if (!array_key_exists($code, $statuses)) {
@@ -474,18 +566,27 @@ final class ForwardLineApiController extends BaseController
             'validation_failed' => 'The forward request is invalid.',
             'unknown_fields' => 'The forward request contains unknown fields.',
             'route_unavailable' => 'The selected route is currently unavailable.',
+            'forward_target_not_allowed' => 'The selected route only accepts target IP addresses on its allowlist.',
+            'insufficient_balance' => 'Top up your wallet before adding or starting forwards on this service.',
+            'rate_limited' => 'Too many requests. Retry after the time in the Retry-After header.',
         ];
         $error = [
             'code' => $code,
             'message' => $messages[$code] ?? 'The forward operation could not be completed.',
         ];
         $details = $exception->details();
-        if (in_array($code, ['validation_failed', 'unknown_fields'], true)
-            && is_array($details['fields'] ?? null)) {
-            $error['fields'] = $this->safeFields($details['fields']);
+        $fields = is_array($details['fields'] ?? null)
+            ? $details['fields']
+            : ForwardLineApiContract::fieldsForInternalCode($internalCode);
+        if (in_array($code, ['validation_failed', 'unknown_fields'], true) && is_array($fields)) {
+            $error['fields'] = $this->safeFields($fields);
         }
 
-        return $this->success(['ok' => false, 'error' => $error], $statuses[$code]);
+        $response = $this->success(['ok' => false, 'error' => $error], $statuses[$code]);
+        if ($code === 'rate_limited') {
+            $response = $response->withHeaders(['Retry-After' => (string) max(1, (int) ($details['retry_after'] ?? 60))]);
+        }
+        return $response;
     }
 
     /** @return array<string, string>|list<string> */

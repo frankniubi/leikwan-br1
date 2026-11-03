@@ -13,11 +13,19 @@ $admin = (string) file_get_contents(__DIR__ . '/../src/Controllers/AdminControll
 $tenant = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 foreach ([
     [$admin, 'tenantsPage'], [$admin, 'servicesPage'], [$admin, 'clientsPage'], [$admin, 'nodesPage'], [$admin, 'sidecarsPage'],
-    [$tenant, 'dashboard'], [$tenant, 'sidecarsPage'],
+    [$tenant, 'sidecarsPage'],
 ] as [$source, $method]) {
     if (!str_contains(methodSource($source, $method), 'pg-mobile-resource-row')) {
         throw new RuntimeException($method . ' lacks a mobile resource row');
     }
+}
+
+// The tenant dashboard (/tenant/forwards) lists one card per service package
+// since 9fa96694 instead of a resource table, so it needs no mobile row; pin
+// that it stays card-based rather than regressing to an un-collapsible table.
+$tenantDashboard = methodSource($tenant, 'dashboard');
+if (!str_contains($tenantDashboard, 'console-service-head') || str_contains($tenantDashboard, '<table')) {
+    throw new RuntimeException('tenant dashboard must render responsive service cards, not a table');
 }
 
 // The tenant Client page is intentionally install-only and no longer renders a

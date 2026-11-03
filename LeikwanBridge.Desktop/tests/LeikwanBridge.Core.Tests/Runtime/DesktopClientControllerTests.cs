@@ -25,6 +25,23 @@ public sealed class DesktopClientControllerTests
     }
 
     [Fact]
+    public async Task ClientUpdatePolicyFromTheSessionIsForwardedUntilDisconnect()
+    {
+        var runtime = new FakeRuntimeSession();
+        await using var controller = CreateController(SignedInConfig(), runtime);
+        var received = new List<string?>();
+        controller.ClientUpdatePolicyReceived += policy => received.Add(policy?.MinimumVersion);
+        await controller.ConnectAsync();
+
+        runtime.RaiseClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "1.0.59" });
+        runtime.RaiseClientUpdatePolicy(null);
+        await controller.DisconnectAsync();
+        runtime.RaiseClientUpdatePolicy(new ClientUpdatePolicy { MinimumVersion = "1.0.60" });
+
+        Assert.Equal(["1.0.59", null], received);
+    }
+
+    [Fact]
     public async Task ProxyForwardLeaseKeepsItsRunningSnapshotWhenAnotherRouteIsOperated()
     {
         using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
@@ -311,6 +328,9 @@ public sealed class DesktopClientControllerTests
         public event Action<NativeOutboundCapability?>? NativeOutboundChanged;
         public event Action<int, string>? ForwardRejected;
         public event Action<string>? LogRaised { add { } remove { } }
+        public event Action<ClientUpdatePolicy?>? ClientUpdatePolicyReceived;
+
+        public void RaiseClientUpdatePolicy(ClientUpdatePolicy? policy) => ClientUpdatePolicyReceived?.Invoke(policy);
 
         public IReadOnlyList<ForwardConfig> InitialForwards { get; init; } = [];
         public string RejectionNotice { get; init; } = string.Empty;

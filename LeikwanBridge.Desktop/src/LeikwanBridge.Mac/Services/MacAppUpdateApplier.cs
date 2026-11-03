@@ -68,10 +68,28 @@ public sealed record MacUpdateApplyRequest
 
     [JsonPropertyName("main_executable_sha256")]
     public string MainExecutableSha256 { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Bundle the helper is launched from. It must NOT be the staged bundle, because
+    /// the swap renames that bundle while the helper is still running from it; the
+    /// helper resolves its managed payload relative to its own bundle, so renaming it
+    /// makes the post-swap verification throw and silently roll the update back.
+    /// </summary>
+    [JsonPropertyName("applier_bundle_path")]
+    public string ApplierBundlePath { get; init; } = string.Empty;
 }
+
+/// <summary>Outcome of one apply attempt, including the reason when nothing was applied.</summary>
+public sealed record MacUpdateApplyOutcome(bool Success, string Code, string Detail);
 
 public static class MacAppUpdateApplier
 {
+    /// <summary>Step log written next to the apply request.</summary>
+    public const string ApplyLogFileName = "update-apply.log";
+
+    /// <summary>Machine-readable outcome of the most recent apply.</summary>
+    public const string LastApplyResultFileName = "last-apply-result.json";
+
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static void WriteRequest(string path, MacUpdateApplyRequest request)
@@ -123,19 +141,49 @@ public static class MacAppUpdateApplier
         string requestPath,
         IMacUpdateLauncher? launcher = null,
         CancellationToken ct = default)
+        => (await ApplyFromRequestOutcomeAsync(requestPath, launcher, ct).ConfigureAwait(false)).Success;
+
+    /// <summary>
+    /// Applies a staged bundle and reports WHY it did or did not happen. The
+    /// previous implementation swallowed every failure into a bare <c>false</c>,
+    /// which made a rolled-back update indistinguishable from one that never
+    /// started - the caller then reported success because the helper process had
+    /// launched. Every step, including the rollback reason, is appended to
+    /// <see cref="ApplyLogFileName"/> next to the request, and the last outcome is
+    /// published to <see cref="LastApplyResultFileName"/> for a waiting caller.
+    /// </summary>
+    public static async Task<MacUpdateApplyOutcome> ApplyFromRequestOutcomeAsync(
+        string requestPath,
+        IMacUpdateLauncher? launcher = null,
+        CancellationToken ct = default)
     {
         launcher ??= new MacUpdateLauncher();
+        var logPath = ApplyLogPath(requestPath);
         MacUpdateApplyRequest request;
         try
         {
             request = ReadRequest(requestPath);
             ValidateRequest(request, requireFiles: true);
-            await WaitForProcessExitAsync(request.CurrentProcessId, ct);
         }
-        catch
+        catch (Exception exception)
         {
+            var rejected = new MacUpdateApplyOutcome(false, ErrorCode(exception), exception.Message);
+            AppendLog(logPath, $"rejected reason={Describe(exception)}");
+            WriteResult(requestPath, rejected);
             TryDeleteFile(requestPath);
-            return false;
+            return rejected;
+        }
+
+        AppendLog(
+            logPath,
+            $"begin version={request.Version} current={request.CurrentBundlePath} staged={request.StagedBundlePath} helper={request.ApplierBundlePath}");
+        // A caller that is itself being replaced (the running app) must exit before the
+        // swap; the command-line updater passes 0 and waits for this helper instead, so
+        // it can verify the result instead of trusting that the helper started.
+        if (request.CurrentProcessId > 0)
+        {
+            AppendLog(logPath, $"waiting for caller pid={request.CurrentProcessId}");
+            await WaitForProcessExitAsync(request.CurrentProcessId, ct).ConfigureAwait(false);
         }
 
         var movedCurrent = false;
@@ -154,24 +202,35 @@ public static class MacAppUpdateApplier
 
             Directory.Move(request.CurrentBundlePath, request.BackupBundlePath);
             movedCurrent = true;
+            AppendLog(logPath, "moved current -> backup");
             Directory.Move(request.StagedBundlePath, request.CurrentBundlePath);
             movedStaged = true;
+            AppendLog(logPath, "moved staged -> current");
 
             var installedExecutable = Path.Combine(
                 request.CurrentBundlePath,
                 "Contents",
                 "MacOS",
                 "LeikwanBridge.Mac");
-            if (!HashMatches(installedExecutable, request.MainExecutableSha256)
-                || !launcher.OpenApplication(request.CurrentBundlePath))
+            if (!HashMatches(installedExecutable, request.MainExecutableSha256))
+                throw new InvalidDataException("update_staged_hash_mismatch");
+            if (!launcher.OpenApplication(request.CurrentBundlePath))
                 throw new IOException("update_relaunch_failed");
+            AppendLog(logPath, $"verified installed executable and requested relaunch version={request.Version}");
 
+            // Publish before the backup is removed: when this helper ran from the
+            // installed app, the backup IS the caller's own bundle.
+            var applied = new MacUpdateApplyOutcome(true, "ok", "installed " + request.Version);
+            WriteResult(requestPath, applied);
             Directory.Delete(request.BackupBundlePath, recursive: true);
             TryDeleteFile(requestPath);
-            return true;
+            AppendLog(logPath, "success");
+            return applied;
         }
-        catch
+        catch (Exception exception)
         {
+            var failed = new MacUpdateApplyOutcome(false, ErrorCode(exception), exception.Message);
+            AppendLog(logPath, $"rollback reason={Describe(exception)}");
             try
             {
                 if (movedStaged && Directory.Exists(request.CurrentBundlePath))
@@ -180,12 +239,93 @@ public static class MacAppUpdateApplier
                     Directory.Move(request.BackupBundlePath, request.CurrentBundlePath);
                 if (Directory.Exists(request.CurrentBundlePath))
                     _ = launcher.OpenApplication(request.CurrentBundlePath);
+                AppendLog(logPath, "rollback complete; installed bundle restored");
             }
-            catch
+            catch (Exception rollbackException)
             {
+                AppendLog(logPath, $"ROLLBACK FAILED reason={Describe(rollbackException)}");
             }
+            WriteResult(requestPath, failed);
             TryDeleteFile(requestPath);
-            return false;
+            return failed;
+        }
+    }
+
+    private static string ErrorCode(Exception exception)
+        => exception is InvalidDataException or IOException && !string.IsNullOrWhiteSpace(exception.Message)
+            ? exception.Message
+            : exception.GetType().Name;
+
+    private static string Describe(Exception exception)
+        => exception.GetType().Name + ": " + exception.Message;
+
+    private static string ApplyLogPath(string requestPath)
+        => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(requestPath)) ?? ".", ApplyLogFileName);
+
+    /// <summary>Appends one line to the apply log; diagnostics must never throw.</summary>
+    private static void AppendLog(string path, string message)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+            File.AppendAllText(path, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}");
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static void WriteResult(string requestPath, MacUpdateApplyOutcome outcome)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(requestPath));
+            if (string.IsNullOrEmpty(directory))
+                return;
+            Directory.CreateDirectory(directory);
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                success = outcome.Success,
+                code = outcome.Code,
+                detail = outcome.Detail,
+                request = Path.GetFileName(requestPath),
+                at = DateTimeOffset.UtcNow.ToString("O"),
+            }, JsonOptions);
+            var path = Path.Combine(directory, LastApplyResultFileName);
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            File.WriteAllBytes(temporary, bytes);
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Reads the outcome of the most recent apply under <paramref name="updatesRoot"/>,
+    /// or null when no apply has reported yet. The command-line updater uses this to
+    /// distinguish "applied" from "the helper started".
+    /// </summary>
+    public static MacUpdateApplyOutcome? ReadLastResult(string updatesRoot)
+    {
+        try
+        {
+            var path = Path.Combine(updatesRoot, LastApplyResultFileName);
+            if (!File.Exists(path))
+                return null;
+            using var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            var root = document.RootElement;
+            var success = root.TryGetProperty("success", out var successValue)
+                && successValue.ValueKind == JsonValueKind.True;
+            var code = root.TryGetProperty("code", out var codeValue) ? codeValue.GetString() ?? string.Empty : string.Empty;
+            var detail = root.TryGetProperty("detail", out var detailValue) ? detailValue.GetString() ?? string.Empty : string.Empty;
+            return new MacUpdateApplyOutcome(success, code, detail);
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -201,6 +341,10 @@ public static class MacAppUpdateApplier
         var current = RequireBundlePath(request.CurrentBundlePath);
         var staged = RequireBundlePath(request.StagedBundlePath);
         var backup = RequireBundlePath(request.BackupBundlePath);
+        // Deliberately allowed to live outside the target parent: the helper copy is
+        // kept in a stable directory so the swap cannot rename it out from under itself.
+        if (!string.IsNullOrWhiteSpace(request.ApplierBundlePath))
+            _ = RequireBundlePath(request.ApplierBundlePath);
         var parent = Path.GetDirectoryName(current);
         if (!string.Equals(parent, Path.GetDirectoryName(staged), StringComparison.Ordinal)
             || !string.Equals(parent, Path.GetDirectoryName(backup), StringComparison.Ordinal)

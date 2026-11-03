@@ -66,7 +66,7 @@ public static class WindowsProxyElevation
                 continue;
             if (index + 2 >= args.Count
                 || !Enum.TryParse<WindowsProxyMode>(args[index + 1], true, out var mode)
-                || mode != WindowsProxyMode.Process
+                || mode is not (WindowsProxyMode.Process or WindowsProxyMode.Tun)
                 || !int.TryParse(args[index + 2], NumberStyles.None, CultureInfo.InvariantCulture, out var profileId)
                 || profileId <= 0)
             {

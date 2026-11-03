@@ -86,6 +86,22 @@ foreach (['--headless', 'com.leikwan.bridge.headless', '/Library/LaunchDaemons',
         failHeadless('macOS headless installer missing: ' . $needle);
     }
 }
+foreach ([
+    'client-manifest.json',
+    'macos_client_app_arm64',
+    'Apple Silicon (arm64) required',
+    'plutil -extract',
+    'hdiutil attach',
+    'shasum -a 256',
+    'ditto',
+    'Contents/Resources/dotnet',
+    'Contents/Resources/bin',
+    'sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client',
+] as $needle) {
+    if (!str_contains($macInstaller, $needle)) {
+        failHeadless('macOS installer is not self-bootstrapping: ' . $needle);
+    }
+}
 if (str_contains($macInstaller, 'agent-token=') || str_contains($macInstaller, 'Authorization:')) {
     failHeadless('macOS headless installer embeds credential material');
 }
@@ -208,6 +224,11 @@ $linuxCli = (string) file_get_contents($root . '/install/leikwan-linux.sh');
 foreach (['status', 'start', 'stop', 'restart', 'logs', 'doctor', 'version', 'update', '--check', 'leikwan-client-agent.service', 'journalctl', 'leikwan-client-agent-update'] as $needle) {
     if (!str_contains($linuxCli, $needle)) {
         failHeadless('linux leikwan CLI missing: ' . $needle);
+    }
+}
+foreach (['FROZEN_AGENT=', 'frozen_version=', '$FROZEN_AGENT --version'] as $needle) {
+    if (!str_contains($linuxCli, $needle)) {
+        failHeadless('linux leikwan CLI must prefer the frozen agent version: ' . $needle);
     }
 }
 if (str_contains($linuxCli, 'agent-token ') || str_contains($linuxCli, 'token=')) {

@@ -74,6 +74,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         if (leases is null || leases.Count is < 1 or > 4)
             throw new ArgumentException("Ultra lease candidates are required", nameof(leases));
         byte[] bootstrap = [];
+        var phase = "validate";
         try
         {
             Log.Information("ultra runtime start begin for forward {ForwardId}", forward.ForwardId);
@@ -84,6 +85,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 throw new InvalidOperationException("ultra_runtime_unavailable");
             if (_portPreflight is not null)
             {
+                phase = "port_preflight";
                 Log.Information("ultra port preflight begin for forward {ForwardId}", forward.ForwardId);
                 var preflight = _portPreflight.Invoke(forward.ListenPort);
                 Log.Information("ultra port preflight complete blocked={Blocked} for forward {ForwardId}",
@@ -92,6 +94,7 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                     throw new InvalidOperationException("ultra_port_conflict");
             }
 
+            phase = "stop_previous_runtime";
             Log.Information("ultra previous runtime stop begin for forward {ForwardId}", forward.ForwardId);
             Stop(forward.ForwardId);
             Log.Information("ultra previous runtime stop complete for forward {ForwardId}", forward.ForwardId);
@@ -126,12 +129,19 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 ["target_digest"] = leases[0].TargetDigest,
                 ["auto_select"] = autoSelect,
                 ["max_tcp_connections"] = 512,
-                ["udp_queue_packets"] = 256,
+                ["udp_queue_packets"] = 1024,
                 ["connect_timeout_seconds"] = 5,
                 ["status_path"] = statusPath,
                 ["location_cache_path"] = Path.Combine(runtimeDirectory, "location.json"),
                 ["location_lock_path"] = Path.Combine(runtimeDirectory, "location.lock"),
+                // The runtime exits when its parent changes (POSIX re-parenting to
+                // launchd after a host crash), so an orphan cannot keep serving a
+                // forward port. The host and the ultra-client in
+                // Contents/Resources/bin always ship together in one bundle, so the
+                // runtime reading this optional key is the one built with it.
+                ["parent_pid"] = Environment.ProcessId,
             };
+            EgressInterfaceConfig.Apply(bootstrapConfig, _config.PreferredEgressInterface);
             if (udpCapable)
             {
                 bootstrapConfig["udp_prewarm"] = true;
@@ -146,6 +156,17 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 bootstrapConfig["probe_interval_ms"] = UltraProbeContract.IntervalMilliseconds;
                 bootstrapConfig["probe_workers"] = UltraProbeContract.Workers;
             }
+            // Bootstrap-only contract: the runtime reads external_uot from its
+            // startup config, so a rotated token needs a runtime restart (the
+            // lease-socket delivery cannot update it). The payload only exists
+            // in memory and is zeroed in the finally block below.
+            var externalUot = ExternalUotGrant.Select(leases);
+            if (externalUot is not null)
+                bootstrapConfig["external_uot"] = externalUot.ToBootstrapPayload();
+            var firstFlight = forward.UltraAccess?.TCPFirstFlight?.ToBootstrapPayload(forward, leases);
+            if (firstFlight is not null)
+                bootstrapConfig["tcp_first_flight"] = firstFlight;
+            phase = "spawn_runtime";
             bootstrap = JsonSerializer.SerializeToUtf8Bytes(bootstrapConfig);
             _supervisor.StartProcess(
                 forward.ForwardId,
@@ -157,10 +178,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
                 logArguments: false,
                 workingDirectory: runtimeDirectory);
             Log.Information("ultra runtime process started for forward {ForwardId}", forward.ForwardId);
+            phase = "wait_control_socket";
             var socketReady = WaitForSocket(socketPath, TimeSpan.FromSeconds(2));
             Log.Information("ultra control socket ready={SocketReady} for forward {ForwardId}", socketReady, forward.ForwardId);
             if (!socketReady)
                 throw new InvalidOperationException("ultra_control_socket_not_ready");
+            phase = "deliver_lease";
             Log.Information("ultra lease delivery begin for forward {ForwardId}", forward.ForwardId);
             using var deliveryTimeout = new CancellationTokenSource(LeaseDeliveryTimeout);
             var leaseDelivered = (leases.Count == 1
@@ -172,11 +195,14 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Log.Information("ultra lease delivery result={LeaseDelivered} for forward {ForwardId}", leaseDelivered, forward.ForwardId);
             if (!leaseDelivered)
                 throw new InvalidOperationException("ultra_lease_delivery_failed");
-            var portReady = WaitForPort(forward.ListenPort, TimeSpan.FromSeconds(6));
+            phase = "wait_listener";
+            var portReady = WindowsUltraRuntimeHost.WaitForPort(forward.ListenPort, _portListeningProbe,
+                WindowsUltraRuntimeHost.ListenerReadyTimeout, () => _supervisor.IsRunning(forward.ForwardId));
             Log.Information("ultra listener ready={PortReady} for forward {ForwardId}", portReady, forward.ForwardId);
             if (!portReady)
                 throw new InvalidOperationException("ultra_listener_not_ready");
 
+            phase = "persist_applied_state";
             var applied = _stateManager.LoadApplied();
             applied[forward.ForwardId.ToString()] = new AppliedForwardState
             {
@@ -198,10 +224,12 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         }
         catch (Exception exception)
         {
-            Log.Warning("ultra runtime start failed for forward {ForwardId} ({ErrorType})",
-                forward.ForwardId, exception.GetType().Name);
+            Log.Warning(exception, "ultra runtime start failed for forward {ForwardId} phase={Phase} ({ErrorType})",
+                forward.ForwardId,
+                phase,
+                exception.GetType().Name);
             Stop(forward.ForwardId);
-            throw new InvalidOperationException("ultra_runtime_start_failed");
+            throw new InvalidOperationException("ultra_runtime_start_failed", exception);
         }
         finally
         {
@@ -220,6 +248,9 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         => _runtimes.TryGetValue(forwardId, out var runtime)
             ? MacUltraRuntimeStatusReader.ReadPayloadCeiling(runtime.StatusPath)
             : 0;
+
+    public string? GetStatusPath(int forwardId)
+        => _runtimes.TryGetValue(forwardId, out var runtime) ? runtime.StatusPath : null;
 
     public bool Refresh(ForwardConfig forward, UltraLease lease)
         => Refresh(forward, new[] { lease });
@@ -303,18 +334,6 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
             Thread.Sleep(25);
         }
         return _socketExists(socketPath);
-    }
-
-    private bool WaitForPort(int port, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (_portListeningProbe(port))
-                return true;
-            Thread.Sleep(25);
-        }
-        return _portListeningProbe(port);
     }
 
     private static void DeletePrivateDirectory(string directory, string allowedRoot, string requiredPrefix)

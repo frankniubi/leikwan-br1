@@ -1,17 +1,20 @@
 package com.leikwan.bridge.ui
 
+import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.view.WindowCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -19,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.BuildConfig
+import com.leikwan.bridge.R
 import com.leikwan.bridge.proxy.ImportRouter
 import com.leikwan.bridge.security.DeviceSecurity
 import com.leikwan.bridge.security.DeviceSecurityResult
@@ -27,6 +31,7 @@ import com.leikwan.bridge.ui.login.EnrollmentScreen
 import com.leikwan.bridge.ui.nav.MainScreen
 import com.leikwan.bridge.ui.security.BlockedDeviceScreen
 import com.leikwan.bridge.ui.theme.LeikwanTheme
+import com.leikwan.bridge.ui.theme.ThemeController
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.security.MessageDigest
@@ -38,6 +43,10 @@ private data class EnrollmentLink(
 )
 
 class MainActivity : ComponentActivity() {
+    private companion object {
+        /** Per process, so a declined prompt is not repeated on every connect. */
+        var batteryPromptOffered = false
+    }
 
     private var vpnPermissionCallback: (() -> Unit)? = null
 
@@ -69,17 +78,39 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Offers the battery-optimization exemption once per app run, and only when the app is not
+     * exempt yet: without it Android may kill the VPN in the background and refuse to restart it.
+     */
+    fun offerBatteryOptimizationExemption() {
+        if (batteryPromptOffered) return
+        val power = getSystemService(PowerManager::class.java) ?: return
+        if (power.isIgnoringBatteryOptimizations(packageName)) return
+        batteryPromptOffered = true
+        AlertDialog.Builder(this)
+            .setTitle(R.string.battery_prompt_title)
+            .setMessage(R.string.battery_prompt_message)
+            .setPositiveButton(R.string.battery_prompt_allow) { _, _ ->
+                val request = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                )
+                runCatching { startActivity(request) }
+                    .recoverCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+            }
+            .setNegativeButton(R.string.battery_prompt_later, null)
+            .show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Transparent bars whose icons follow the light/dark theme.
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(Color.WHITE, Color.WHITE),
-            navigationBarStyle = SystemBarStyle.light(Color.WHITE, Color.WHITE),
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
         )
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
         handleIncomingIntent(intent)
+        ThemeController.load(Prefs.get(this))
         setContent {
             LeikwanTheme {
                 val security = androidx.compose.runtime.remember {

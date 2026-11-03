@@ -5,7 +5,7 @@ namespace LeikwanBridge.Mac.ViewModels;
 
 public sealed partial class MacConnectionEditorViewModel : ObservableObject
 {
-    public IReadOnlyList<string> ProtocolOptions { get; } = MacConnectionProtocol.Supported;
+    public IReadOnlyList<string> ProtocolOptions { get; } = MacConnectionProtocol.Editable;
     public IReadOnlyList<string> ShadowsocksMethodOptions { get; } =
     [
         "aes-256-gcm",
@@ -29,6 +29,13 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
     [ObservableProperty] private string _mtuText = "1420";
     [ObservableProperty] private string _keepaliveText = "25";
 
+    /// <summary>
+    /// The loaded node is hosted by the panel or only expressible as a share link
+    /// (SOCKS5 / VLESS / SS plugin). The field editor would lose its cloud identity or
+    /// settings, so such nodes are managed on the Nodes page instead.
+    /// </summary>
+    public bool IsShareLinkNode { get; private set; }
+
     public bool IsShadowsocks => string.Equals(Protocol, MacConnectionProtocol.Shadowsocks, StringComparison.Ordinal);
     public bool IsWireGuard => string.Equals(Protocol, MacConnectionProtocol.WireGuard, StringComparison.Ordinal);
     public bool IsExternal => string.Equals(Protocol, MacConnectionProtocol.External, StringComparison.Ordinal);
@@ -36,7 +43,7 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
     partial void OnProtocolChanged(string value)
     {
         var normalized = value?.Trim().ToLowerInvariant() ?? string.Empty;
-        if (!MacConnectionProtocol.IsSupported(normalized))
+        if (!MacConnectionProtocol.Editable.Contains(normalized))
         {
             if (!string.Equals(value, MacConnectionProtocol.Shadowsocks, StringComparison.Ordinal))
                 Protocol = MacConnectionProtocol.Shadowsocks;
@@ -52,9 +59,9 @@ public sealed partial class MacConnectionEditorViewModel : ObservableObject
         var source = profile ?? new MacConnectionProfile();
         Id = source.Id;
         Name = source.Name;
-        Protocol = MacConnectionProtocol.IsSupported(source.Protocol)
-            ? source.Protocol.Trim().ToLowerInvariant()
-            : MacConnectionProtocol.Shadowsocks;
+        IsShareLinkNode = source.HasShareLink || source.IsHosted;
+        var protocol = source.Protocol?.Trim().ToLowerInvariant() ?? string.Empty;
+        Protocol = MacConnectionProtocol.Editable.Contains(protocol) ? protocol : MacConnectionProtocol.Shadowsocks;
         Server = source.Server;
         PortText = source.Port > 0 ? source.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) : "443";
         Method = string.IsNullOrWhiteSpace(source.Method) ? "aes-256-gcm" : source.Method;

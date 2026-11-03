@@ -9,3 +9,11 @@
 - Start any new debug/fix/feature work from the current `master`, or branch/worktree from `master`.
 - Do not base new work on old topic branches or stale worktrees unless the user explicitly asks for that branch.
 - `codex/android-single-bond-linux-parity` may be kept aligned as a mirror branch, but `master` is the default source of truth for future agent changes.
+
+## Ultra Mode Hard Redline
+
+- Never involve LeiKwan slave/CDN hosts in Ultra mode analysis, diagnostics, deployment, SSH access, or data-path descriptions.
+- Ultra TCP path: `client -> leased Ultra provider relay -> target`.
+- External-UoT UDP path: `client -> leased Ultra provider relay -> external UoT sidecar -> UDP target`.
+- A leased Ultra provider relay is not a LeiKwan slave. Do not call it a slave or inspect `cantons.txt` / `shanghais.txt` for Ultra mode work.
+- For Ultra mode, access the client, panel, and sidecar directly. If direct access is unavailable, report that exact blocker instead of introducing a slave hop.

@@ -3,7 +3,7 @@
 
 <h2>开始前准备</h2>
 <ul>
-  <li>面板「客户端」页面上的 <strong>Client ID</strong> 和 <strong>Agent Token</strong>，它们就是这台机器的登录凭据，请像密码一样保管。</li>
+  <li>控制台「客户端」页面上的 <strong>客户端 ID</strong> 和 <strong>客户端令牌</strong>，它们就是这台机器的登录凭据，请像密码一样保管。</li>
   <li>在这台机器上安装软件的权限（Windows 需要管理员，macOS 需要你自己的密码）。</li>
   <li>两分钟时间。macOS 下载约 80 MB，Windows 约 34 MB。</li>
 </ul>
@@ -11,33 +11,33 @@
 <h2>操作步骤</h2>
 <pre class="mermaid">flowchart TD
 accTitle: 不用屏幕的电脑设置流程
-accDescr: 选择电脑，安装后台客户端，然后在面板确认线路已经在运行。
+accDescr: 选择电脑，安装后台客户端，然后在控制台确认线路已经在运行。
 A[选择电脑] --&gt; B{哪个系统}
 B -- macOS --&gt; C[先装应用，再运行一条命令]
 B -- Windows --&gt; D[解压下载包，再运行一条命令]
 C --&gt; E[确认显示 running]
 D --&gt; E
-E --&gt; F[在面板看到设备在线]</pre>
+E --&gt; F[在控制台看到设备在线]</pre>
 <p>整件事就是这张图：选系统、运行一条命令、确认结果。之后的一切都在后台进行。</p>
 <figure class="kb-screenshot-figure">
-  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install.png" width="1440" height="960" alt="客户端页面，显示下载入口以及这台机器的 Client ID 与 Agent Token">
-  <figcaption>Client ID 和 Agent Token 就在这个页面上，旁边的下载按你的系统选择。</figcaption>
+  <img src="/assets/knowledgebase/screenshots/tenant/03-client-install-zh-hans.png" width="1440" height="960" alt="客户端页面，显示下载入口以及这台机器的客户端 ID 与客户端令牌">
+  <figcaption>客户端 ID 和客户端令牌在同一页，下载按你的系统选择「无界面版」。</figcaption>
 </figure>
 <ol>
   <li><strong>挑选电脑。</strong>用一台长期开机的机器，不需要显示器、不需要键盘，也不需要有人登录。</li>
   <li><strong>先安装应用。</strong>macOS：打开下载的磁盘映像，把 <strong>LeiKwan Bridge</strong> 拖进 <strong>应用程序</strong>。Windows：把无界面版下载包解压到一个文件夹。</li>
-  <li><strong>运行一次安装命令。</strong>macOS：打开「终端」，粘贴客户端页面上的 macOS 命令。Windows：在解压出来的文件夹上右键，以管理员身份打开终端，粘贴页面上的 Windows 命令。两条命令里都已经带了这台机器的身份。</li>
+  <li><strong>运行一次安装命令。</strong>macOS：打开「终端」，粘贴客户端页面「无界面版」里「复制 macOS 命令」得到的命令。Windows：在解压出来的文件夹上右键，以管理员身份打开终端，粘贴「复制 Windows 命令」得到的命令。两条命令里都已经带了这台机器的身份。</li>
   <li><strong>确认已经启动。</strong>输入 <code>leikwan status</code>，看到转发显示为 running 就对了。</li>
-  <li><strong>回到面板看一眼。</strong>这台设备会像装了普通客户端的电脑一样显示在线。</li>
+  <li><strong>回到控制台看一眼。</strong>这台设备会像装了普通客户端的电脑一样出现在「在线设备」里。</li>
   <li><strong>以后只需要三条命令。</strong>查看用 <code>leikwan status</code>，觉得卡住用 <code>leikwan restart</code>，升级用 <code>leikwan update</code>；如果只想看看有没有新版本，用 <code>leikwan update --check</code>。</li>
   <li><strong>需要卸载时：</strong>运行同一个客户端页面上的卸载命令，或者先用 <code>leikwan stop</code> 暂时关掉它。</li>
 </ol>
 
 <h2>如何确认成功</h2>
-<p>两个简单检查。面板里这台电脑显示在线，和其他设备一样；在电脑上运行 <code>leikwan status</code>，线路显示为 running，并且命令以成功状态结束，所以监控工具也可以直接用它。想看细节时，<code>leikwan logs -n 50</code> 显示最近 50 行日志，<code>leikwan doctor</code> 一次列清整体状态。</p>
+<p>两个简单检查。控制台「在线设备」里能看到这台电脑，和其他设备一样；在电脑上运行 <code>leikwan status</code>，线路显示为 running，并且命令以成功状态结束，所以监控工具也可以直接用它。想看细节时，<code>leikwan logs -n 50</code> 显示最近 50 行日志，<code>leikwan doctor</code> 一次列清整体状态。</p>
 
 <h2>如果没有成功</h2>
-<p><strong>先停止把 Agent Token 发给任何人 —— 聊天、工单、截图都不行。</strong>最常见的原因是 Agent Token 抄错或已失效：面板会显示设备离线，日志里会写着登录被拒绝。回到客户端页面重新复制 Client ID 与 Agent Token，再运行一次安装命令即可。如果面板显示设备在线、但某条转发仍是停止状态，等半分钟 —— 转发由面板决定，电脑会在几秒内跟上。仍然不通，就把 <code>leikwan doctor</code> 的输出发给客服，那份内容不含任何机密。</p>
+<p><strong>先停止把客户端令牌发给任何人 —— 聊天、工单、截图都不行。</strong>最常见的原因是客户端令牌抄错或已失效：控制台里看不到这台设备在线，日志里会写着登录被拒绝。回到客户端页面重新复制客户端 ID 与客户端令牌，再运行一次安装命令即可。如果控制台显示设备在线、但某条转发仍是停止状态，等半分钟 —— 转发由控制台决定，电脑会在几秒内跟上。仍然不通，就把 <code>leikwan doctor</code> 的输出发给客服，那份内容不含任何机密。</p>
 
 <h2>相关指南</h2>
 <ul>

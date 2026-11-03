@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -21,6 +22,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     private readonly IMacUpdateLauncher _launcher;
     private readonly Func<string, bool> _directoryWritable;
     private readonly MacBundleValidator _validator;
+    private readonly bool _waitForCallerExit;
     private readonly Dictionary<LeikwanHttpClientKind, HttpClient> _clients = [];
     private Uri? _panelOrigin;
 
@@ -33,18 +35,36 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         Action<HttpRequestMessage>? onRequestForTest = null,
         IMacUpdateLauncher? launcher = null,
         Func<string, bool>? directoryWritable = null,
-        MacBundleValidator? validator = null)
+        MacBundleValidator? validator = null,
+        bool waitForCallerExit = true)
     {
         _updatesRoot = Path.GetFullPath(updatesRoot);
         _currentBundlePath = Path.GetFullPath(currentBundlePath);
         _architecture = MacBundleValidator.NormalizeArchitecture(architecture);
+        // The macOS client ships for Apple Silicon only; the panel's legacy
+        // macos_client_*_x64 entries are never selected.
+        if (!string.Equals(_architecture, "arm64", StringComparison.Ordinal))
+            throw new PlatformNotSupportedException("mac_architecture_unsupported");
         _httpClientFactory = httpClientFactory ?? LeikwanHttpClientFactory.Create;
         _ownsHttpClient = ownsHttpClient;
         _onRequestForTest = onRequestForTest;
         _launcher = launcher ?? new MacUpdateLauncher();
         _directoryWritable = directoryWritable ?? IsDirectoryWritable;
         _validator = validator ?? new MacBundleValidator();
+        // A windowed/GUI caller is replaced by the update and lets the helper wait for
+        // it to exit. A command-line caller stays alive to verify the result, so the
+        // helper must not wait for it (that would deadlock).
+        _waitForCallerExit = waitForCallerExit;
     }
+
+    /// <summary>Bundle this service treats as the installed application.</summary>
+    public string CurrentBundlePath => _currentBundlePath;
+
+    /// <summary>Directory the apply requests, helper log and last result live in.</summary>
+    public string UpdatesRoot => _updatesRoot;
+
+    /// <summary>Installed bundle version, or null when the bundle/plist is unreadable.</summary>
+    public string? ReadInstalledVersion() => MacBundleValidator.ReadBundleVersion(_currentBundlePath);
 
     public Task<ClientAppArtifact?> CheckAsync(
         string panelUrl,
@@ -84,9 +104,8 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             CryptographicOperations.ZeroMemory(json);
         }
 
-        var suffix = _architecture == "arm64" ? "arm64" : "x64";
-        if (!manifest.Manifest.TryGetValue($"macos_client_update_{suffix}", out var update)
-            || !manifest.Manifest.TryGetValue($"macos_client_app_{suffix}", out var installer))
+        if (!manifest.Manifest.TryGetValue("macos_client_update_arm64", out var update)
+            || !manifest.Manifest.TryGetValue("macos_client_app_arm64", out var installer))
             throw new InvalidDataException("update_manifest_architecture_missing");
         update = ValidateArtifact(update, "zip", panel);
         installer = ValidateArtifact(installer, "dmg", panel);
@@ -99,7 +118,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         if (!VersionsEquivalent(update.Version, installer.Version))
             throw new InvalidDataException("update_manifest_version_mismatch");
         if (!IsRemoteVersionNewer(update.Version, currentVersion)
-            && !HasRuntimeDrift(update, _currentBundlePath, _architecture))
+            && !HasRuntimeDrift(update, _currentBundlePath))
         {
             Report(progress, UpdateProgress.Checking("Update check finished."));
             return null;
@@ -108,13 +127,13 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         return update with { ManualInstaller = installer };
     }
 
-    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath, string architecture)
+    private static bool HasRuntimeDrift(ClientAppArtifact artifact, string bundlePath)
     {
         if (artifact.RuntimeSha256.Count == 0)
             return false;
         foreach (var (key, expected) in artifact.RuntimeSha256)
         {
-            if (!TryResolveRuntimePath(key, bundlePath, architecture, out var path))
+            if (!TryResolveRuntimePath(key, bundlePath, out var path))
                 continue;
             if (!Regex.IsMatch(expected ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
                 || !File.Exists(path)
@@ -127,15 +146,11 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
     private static bool TryResolveRuntimePath(
         string key,
         string bundlePath,
-        string architecture,
         out string path)
     {
         path = string.Empty;
         var normalized = key.Trim();
-        var activeUltraKey = architecture == "arm64"
-            ? "ultra_client_runtime_macos_arm64"
-            : "ultra_client_runtime_macos_x64";
-        if (string.Equals(normalized, activeUltraKey, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(normalized, "ultra_client_runtime_macos_arm64", StringComparison.OrdinalIgnoreCase))
         {
             path = Path.Combine(bundlePath, "Contents", "Resources", "bin", "ultra-client");
             return true;
@@ -227,18 +242,29 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         MoveOrCopyDirectory(update.StagedBundlePath, siblingStage);
         _validator.Validate(siblingStage, update.Artifact);
         var stagedExecutable = MacBundleValidator.GetMainExecutablePath(siblingStage);
+        EnsurePrivateDirectory(_updatesRoot);
+        // The helper must not run from the bundle the swap renames. It resolves its
+        // managed payload relative to its own bundle, so renaming that bundle out from
+        // under it makes the post-swap verification throw; the catch-all in
+        // ApplyFromRequestAsync then rolled the update back while the CLI still
+        // reported "applied" (field-observed 2026-09-14: "applied 1.0.37", exit 0,
+        // bundle still 1.0.36, reproduced 3x). Launch a stable copy instead.
+        PruneStaleApplierBundles();
+        var applierBundle = Path.Combine(_updatesRoot, $"applier-{Guid.NewGuid():N}.app");
+        CloneOrCopyDirectory(siblingStage, applierBundle);
+        var applierExecutable = MacBundleValidator.GetMainExecutablePath(applierBundle);
         var request = new MacUpdateApplyRequest
         {
-            CurrentProcessId = Environment.ProcessId,
+            CurrentProcessId = _waitForCallerExit ? Environment.ProcessId : 0,
             CurrentBundlePath = _currentBundlePath,
             StagedBundlePath = siblingStage,
             BackupBundlePath = backup,
+            ApplierBundlePath = applierBundle,
             Version = update.Artifact.Version,
             PackageSizeBytes = update.Artifact.SizeBytes,
             PackageSha256 = update.Artifact.Sha256,
             MainExecutableSha256 = MacBundleValidator.ComputeSha256(stagedExecutable),
         };
-        EnsurePrivateDirectory(_updatesRoot);
         var requestPath = Path.Combine(
             _updatesRoot,
             deferUntilRestart ? "pending-update.json" : $"apply-{Guid.NewGuid():N}.json");
@@ -250,10 +276,14 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         }
 
         Report(progress, UpdateProgress.Applying(90, "Starting update helper..."));
-        if (!_launcher.StartProcess(stagedExecutable, ["--apply-update", requestPath]))
+        // Discard any previous outcome so a caller waiting for this apply cannot read
+        // a stale "ok" from an earlier run.
+        TryDeleteFile(Path.Combine(_updatesRoot, MacAppUpdateApplier.LastApplyResultFileName));
+        if (!_launcher.StartProcess(applierExecutable, ["--apply-update", requestPath]))
         {
             TryDeleteFile(requestPath);
             TryDeleteDirectory(siblingStage);
+            TryDeleteDirectory(applierBundle);
             throw new IOException("update_helper_launch_failed");
         }
         Report(progress, UpdateProgress.Applying(100, "Update started."));
@@ -275,7 +305,14 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
                 CurrentProcessId = currentProcessId,
             };
             MacAppUpdateApplier.WriteRequest(requestPath, request);
-            var executable = MacBundleValidator.GetMainExecutablePath(request.StagedBundlePath);
+            // Same rule as the immediate path: never launch the helper from the bundle
+            // the swap renames. Older requests carry no applier path, so they keep the
+            // previous behaviour rather than failing to install at all.
+            var helperBundle = !string.IsNullOrWhiteSpace(request.ApplierBundlePath)
+                && Directory.Exists(request.ApplierBundlePath)
+                    ? request.ApplierBundlePath
+                    : request.StagedBundlePath;
+            var executable = MacBundleValidator.GetMainExecutablePath(helperBundle);
             return (launcher ?? new MacUpdateLauncher()).StartProcess(
                 executable,
                 ["--apply-update", requestPath]);
@@ -284,6 +321,80 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Removes helper copies from earlier attempts. A copy created moments ago may
+    /// still be the running helper, so only stale ones are pruned.
+    /// </summary>
+    private void PruneStaleApplierBundles()
+    {
+        try
+        {
+            var pendingHelper = ReadPendingHelperBundle();
+            foreach (var directory in Directory.EnumerateDirectories(_updatesRoot, "applier-*.app"))
+            {
+                if (string.Equals(directory, pendingHelper, StringComparison.Ordinal))
+                    continue;
+                if (DateTime.UtcNow - Directory.GetCreationTimeUtc(directory) < TimeSpan.FromHours(1))
+                    continue;
+                TryDeleteDirectory(directory);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>Helper bundle a deferred (next-start) update is still waiting to use.</summary>
+    private string? ReadPendingHelperBundle()
+    {
+        try
+        {
+            var requestPath = Path.Combine(_updatesRoot, "pending-update.json");
+            if (!File.Exists(requestPath))
+                return null;
+            var pending = MacAppUpdateApplier.ReadRequest(requestPath).ApplierBundlePath;
+            return string.IsNullOrWhiteSpace(pending) ? null : Path.GetFullPath(pending);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Copies a bundle cheaply when the filesystem supports cloning (APFS
+    /// <c>clonefile</c> costs no extra blocks) and falls back to a real copy.
+    /// </summary>
+    private static void CloneOrCopyDirectory(string source, string destination)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo("/bin/cp")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                startInfo.ArgumentList.Add("-cR");
+                startInfo.ArgumentList.Add(source);
+                startInfo.ArgumentList.Add(destination);
+                using var process = Process.Start(startInfo);
+                if (process is not null)
+                {
+                    process.WaitForExit();
+                    if (process.ExitCode == 0 && Directory.Exists(destination))
+                        return;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+            }
+            TryDeleteDirectory(destination);
+        }
+        CopyDirectory(source, destination);
     }
 
     public static bool IsRemoteVersionNewer(string remoteVersion, string currentVersion)
@@ -330,9 +441,7 @@ public sealed class MacAppUpdateService : IAppUpdater, IDisposable
             || artifact.SizeBytes is <= 0 or > MaximumPackageBytes
             || !Regex.IsMatch(artifact.Sha256 ?? string.Empty, "^[A-Fa-f0-9]{64}$", RegexOptions.CultureInvariant)
             || !string.Equals(artifact.Format, format, StringComparison.OrdinalIgnoreCase)
-            // NormalizeArchitecture() maps x64 -> "x86_64" while _architecture keeps
-            // the process name ("x64"), so comparing a normalized manifest value with a
-            // raw runtime value made every Intel/Rosetta Mac fail this check outright.
+            // Both sides are normalized: an x86_64-labelled artifact never matches arm64.
             || !string.Equals(
                 MacBundleValidator.NormalizeArchitecture(artifact.Architecture),
                 MacBundleValidator.NormalizeArchitecture(_architecture),

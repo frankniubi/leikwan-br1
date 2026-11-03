@@ -5,6 +5,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 using Brush = System.Windows.Media.Brush;
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
     // never persist an endpoint the user did not choose.
     private bool _suppressEndpointChangeHandling = true;
     private bool _updateFailureWasInstall;
+    private int _requiredUpdateCheckRunning;
     private readonly WindowsAppUpdateService _updateService = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
     private readonly ConnectionRecoverySupervisor _connectionRecovery;
@@ -38,6 +40,7 @@ public partial class MainWindow : Window
     private bool _shutdownCloseRequested;
     private bool _shutdownCloseFinalizing;
     private bool _saveLoginInfo;
+    private bool _suppressEgressSelectionHandling;
 
     public MainWindow()
     {
@@ -71,6 +74,13 @@ public partial class MainWindow : Window
             new StateManager(Path.GetDirectoryName(App.ConfigPath)!).SaveConfig(App.ConfigPath, App.Config);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
         _vm.RetryUpdateHandler = RetryFailedUpdateAsync;
+        _vm.CloudPairingsApplied += () =>
+        {
+            SaveCurrentConfig();
+            ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+        };
+        SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
+        ThemeManager.ThemeChanged += OnThemeChanged;
 
         // Auto-scroll log
         _vm.LogEntries.CollectionChanged += (_, _) =>
@@ -90,8 +100,10 @@ public partial class MainWindow : Window
             : App.Config.MasterUrl;
         SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         RestoreSetupLoginInfo();
+        PopulateSetupEgressInterfaces();
         _suppressEndpointChangeHandling = false;
 
+        UpdateCoreToggle();
         Loaded += (_, _) =>
         {
             _startupTask = InitializeWindowAsync(_lifecycleCts.Token);
@@ -161,6 +173,8 @@ public partial class MainWindow : Window
         }
 
         SetupStatus.Text = FindResource("SetupConnecting") as string ?? "Connecting...";
+        // The adapter choice must be in force before the first sign-in request.
+        EnsureSetupEgressApplied();
 
         try
         {
@@ -170,12 +184,22 @@ public partial class MainWindow : Window
                 MasterApiClient.BuildWindowsDeviceId(clientId, Environment.MachineName),
                 $"Leikwan Bridge on {Environment.MachineName}",
                 "windows-desktop");
+            var deviceLimit = default(DeviceLimitReachedException);
             if (!await api.TestConnectionAsync())
             {
-                SetupStatus.Text = string.IsNullOrWhiteSpace(api.LastErrorMessage)
-                    ? (FindResource("SetupFailed") as string ?? "Connection failed.")
-                    : api.LastErrorMessage;
-                return;
+                deviceLimit = api.LastDeviceLimit;
+                if (deviceLimit is null)
+                {
+                    SetupStatus.Text = string.IsNullOrWhiteSpace(api.LastErrorMessage)
+                        ? (FindResource("SetupFailed") as string ?? "Connection failed.")
+                        : api.LastErrorMessage;
+                    return;
+                }
+                // The panel accepted the token and only refused this device
+                // because the online device limit is full. Save the profile and
+                // continue: the main window keeps the explanation visible and
+                // rejoins automatically once a slot frees.
+                SetupStatus.Text = MainViewModel.FormatDeviceLimitMessage(deviceLimit);
             }
 
             _vm.Config.MasterUrl = masterUrl;
@@ -194,7 +218,8 @@ public partial class MainWindow : Window
             var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
             _vm.Config.RememberLoginInfo = _saveLoginInfo;
             stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
-            SetupStatus.Text = FindResource("SetupSuccess") as string ?? "Connection successful!";
+            if (deviceLimit is null)
+                SetupStatus.Text = FindResource("SetupSuccess") as string ?? "Connection successful!";
             await _vm.ConnectCommand.ExecuteAsync(null);
             if (!_saveLoginInfo)
                 ClearSetupLoginInfo();
@@ -210,7 +235,33 @@ public partial class MainWindow : Window
         if (sender is FrameworkElement element && element.DataContext is ForwardViewModel forward)
         {
             _vm.SelectForwardCommand.Execute(forward);
+            ScrollToServicesSection();
         }
+    }
+
+    /// <summary>The services and nodes section sits below the connection settings on the connect page.</summary>
+    private void ScrollToServicesSection()
+        => Dispatcher.BeginInvoke(() => ForwardPairingPanel.BringIntoView(), DispatcherPriority.Loaded);
+
+    private void OnConnectSegmentClick(object sender, RoutedEventArgs e)
+    {
+        if (ReferenceEquals(sender, ServicesSectionSegment))
+            ForwardPairingPanel.BringIntoView();
+        else
+            ConnectPanel.ScrollToTop();
+    }
+
+    /// <summary>
+    /// Keeps the section bar on the section being read. Services is active once it reaches the
+    /// lower half of the viewport, and at the bottom of the page.
+    /// </summary>
+    private void OnConnectPanelScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        var servicesTop = ForwardPairingPanel.TransformToAncestor(ConnectPanel).Transform(new System.Windows.Point(0, 0)).Y;
+        var atBottom = ConnectPanel.ScrollableHeight > 0 && ConnectPanel.VerticalOffset >= ConnectPanel.ScrollableHeight - 1;
+        var servicesActive = atBottom || servicesTop < ConnectPanel.ViewportHeight / 2;
+        ServicesSectionSegment.IsChecked = servicesActive;
+        ConnectSectionSegment.IsChecked = !servicesActive;
     }
 
 
@@ -231,6 +282,10 @@ public partial class MainWindow : Window
             App.Config.PollIntervalSeconds = poll;
         if (int.TryParse(SettHealthInterval.Text.Trim(), out int health) && health > 0)
             App.Config.HealthCheckIntervalSeconds = health;
+        if (SettEgressInterface.SelectedValue is string egressInterface)
+            ApplyEgressInterface(egressInterface, persist: false);
+        if (SettLogLevel.SelectedItem is ComboBoxItem logLevel)
+            App.Config.LogLevel = DesktopLogLevel.Normalize(logLevel.Tag?.ToString());
         App.Config.AutoStart = SettAutoStart.IsChecked == true;
         App.Config.MinimizeToTray = SettMinimizeTray.IsChecked == true;
 
@@ -245,6 +300,7 @@ public partial class MainWindow : Window
         App.Config.RememberLoginInfo = _saveLoginInfo;
         var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
         stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+        App.ApplyLogLevel(App.Config.LogLevel);
 
         // Handle auto-start
         SetAutoStart(App.Config.AutoStart);
@@ -318,6 +374,114 @@ public partial class MainWindow : Window
     {
         SettClientId.Text = string.Empty;
         SettAgentToken.Password = string.Empty;
+    }
+
+    // The sign-in selector and the settings page share one option list (with a
+    // localized Automatic entry) and one field: App.Config.PreferredEgressInterface.
+    private IReadOnlyList<EgressInterfaceOption> BuildEgressOptions()
+        => EgressInterfaceCatalog.Enumerate(TryFindResource("SetupEgressAutomatic") as string);
+
+    private void PopulateSetupEgressInterfaces()
+    {
+        var options = BuildEgressOptions();
+        var choice = EgressInterfaceSelection.Reconcile(options, App.Config.PreferredEgressInterface);
+        _suppressEgressSelectionHandling = true;
+        try
+        {
+            SetupEgressInterface.ItemsSource = options;
+            SetupEgressInterface.SelectedValue = choice.SelectedId;
+        }
+        finally
+        {
+            _suppressEgressSelectionHandling = false;
+        }
+        ShowSetupEgressNotice(choice);
+    }
+
+    private void ShowSetupEgressNotice(EgressInterfaceChoice choice)
+    {
+        if (!choice.FellBackToAutomatic)
+        {
+            SetupEgressNotice.Text = string.Empty;
+            SetupEgressNotice.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var template = TryFindResource("SetupEgressMissing") as string
+            ?? "The saved adapter \"{0}\" is not available. Automatic is used instead.";
+        SetupEgressNotice.Text = string.Format(CultureInfo.CurrentCulture, template, choice.MissingInterface);
+        SetupEgressNotice.Visibility = Visibility.Visible;
+    }
+
+    private void OnSetupEgressInterfaceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressEgressSelectionHandling || SetupEgressInterface.SelectedValue is not string selected)
+            return;
+        ShowSetupEgressNotice(new EgressInterfaceChoice(selected, string.Empty));
+        ApplyEgressInterface(selected);
+    }
+
+    private void OnSetupEgressRefresh_Click(object sender, RoutedEventArgs e)
+        => PopulateSetupEgressInterfaces();
+
+    /// <summary>
+    /// Re-validates the sign-in selection against the current adapters (one
+    /// may have been unplugged since the list was drawn) and applies it, so a
+    /// vanished adapter falls back to Automatic before the request is sent.
+    /// </summary>
+    private void EnsureSetupEgressApplied()
+    {
+        var options = BuildEgressOptions();
+        var requested = SetupEgressInterface.SelectedValue as string ?? App.Config.PreferredEgressInterface;
+        var choice = EgressInterfaceSelection.Reconcile(options, requested);
+        if (choice.FellBackToAutomatic)
+        {
+            _suppressEgressSelectionHandling = true;
+            try
+            {
+                SetupEgressInterface.ItemsSource = options;
+                SetupEgressInterface.SelectedValue = choice.SelectedId;
+            }
+            finally
+            {
+                _suppressEgressSelectionHandling = false;
+            }
+            ShowSetupEgressNotice(choice);
+        }
+        ApplyEgressInterface(choice.SelectedId);
+    }
+
+    /// <summary>
+    /// Puts an adapter choice into force for panel direct egress and Ultra,
+    /// keeps both selectors in sync, and (from the sign-in page) persists it.
+    /// </summary>
+    private void ApplyEgressInterface(string? interfaceName, bool persist = true)
+    {
+        App.Config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+        PanelDirectEgress.SetPreferredInterface(App.Config.PreferredEgressInterface);
+        _vm.SetPreferredEgressInterface(App.Config.PreferredEgressInterface);
+        _suppressEgressSelectionHandling = true;
+        try
+        {
+            SetupEgressInterface.SelectedValue = App.Config.PreferredEgressInterface;
+            SettEgressInterface.SelectedValue = App.Config.PreferredEgressInterface;
+        }
+        finally
+        {
+            _suppressEgressSelectionHandling = false;
+        }
+
+        if (!persist)
+            return;
+        try
+        {
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "egress interface preference could not be persisted");
+        }
     }
 
     private AgentConfig BuildPersistedLoginConfig()
@@ -450,15 +614,18 @@ public partial class MainWindow : Window
     {
         try
         {
-            await _vm.ImportProxyProfileAsync(PairingImportUri.Text);
+            var result = await _vm.ImportNodesAsync(PairingImportUri.Text);
             SaveCurrentConfig();
             PopulateProxyUi();
             PairingImportUri.Clear();
             ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
+            PairingProxyPassword.Password = _vm.ProxyEditor.Password;
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+            SetNodesStatus(DescribeImport(result), error: false);
         }
         catch (Exception exception)
         {
+            SetNodesStatus(DescribeNodeError(exception), error: true);
             SetProxyStatusError(exception.Message);
         }
     }
@@ -473,11 +640,13 @@ public partial class MainWindow : Window
             PopulateProxyUi();
             ForwardPairingProfileList.SelectedValue = _vm.SelectedProxyProfileId;
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node saved";
+            SetNodesStatus(FindResource("ForwardPairingSaved") as string ?? "Node saved", error: false);
         }
         catch (Exception ex)
         {
+            SetNodesStatus(DescribeNodeError(ex), error: true);
             SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to save pairing node");
+            Log.Warning("failed to save pairing node: {Code}", LeikwanBridge.Core.Nodes.HostedNodeSyncService.ErrorCode(ex));
         }
     }
 
@@ -485,17 +654,26 @@ public partial class MainWindow : Window
     {
         if (ForwardPairingProfileList.SelectedItem is not WindowsProxyProfile profile)
             return;
+        if (profile.IsHosted && System.Windows.MessageBox.Show(
+                this,
+                string.Format(FindResource("NodesDeleteHostedConfirm") as string ?? "Delete {0} from the cloud and all devices?", profile.Name),
+                FindResource("AppTitle") as string ?? "Leikwan Bridge",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
         try
         {
             await _vm.DeleteProxyProfileAsync(profile.Id);
             SaveCurrentConfig();
             PopulateProxyUi();
             ForwardPairingStatus.Text = FindResource("ForwardPairingSaved") as string ?? "Node list updated";
+            SetNodesStatus(FindResource("NodesDeleted") as string ?? "Node deleted", error: false);
         }
         catch (Exception ex)
         {
+            SetNodesStatus(DescribeNodeError(ex), error: true);
             SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to delete pairing node");
+            Log.Warning("failed to delete pairing node: {Code}", LeikwanBridge.Core.Nodes.HostedNodeSyncService.ErrorCode(ex));
         }
     }
 
@@ -537,22 +715,8 @@ public partial class MainWindow : Window
         var row = _vm.PairedProxyForwardRows.FirstOrDefault(item => item.ForwardId == _vm.SelectedProxyForwardId);
         if (row is null || !row.CanConnect)
             return;
-        try
-        {
-            await row.ConnectAsync();
-            SaveCurrentConfig();
-        }
-        catch (Exception ex)
-        {
-            if (ex is OperationCanceledException)
-            {
-                SetProxyReady();
-                Log.Debug(ex, "paired proxy start cancelled");
-                return;
-            }
-            SetProxyStatusError(ex.Message);
-            Log.Warning(ex, "failed to start local proxy for selected paired forward");
-        }
+        _vm.SelectedProxyProfileId = row.SelectedProfileId;
+        await StartSelectedProxyAsync();
     }
 
     private async void OnProxySelectedDisconnect_Click(object sender, RoutedEventArgs e)
@@ -577,8 +741,6 @@ public partial class MainWindow : Window
         ProxyProfileList.SelectedItem = null;
         _vm.ProxyEditor.Load(null);
         ProxyPassword.Password = string.Empty;
-        ProxyNodeEditorExpander.IsExpanded = true;
-        ProxyNodeEditorExpander.BringIntoView();
         SetProxyReady();
     }
 
@@ -588,26 +750,6 @@ public partial class MainWindow : Window
             return;
         _vm.ProxyEditor.Load(profile);
         ProxyPassword.Password = profile.Password;
-        ProxyNodeEditorExpander.IsExpanded = true;
-        ProxyNodeEditorExpander.BringIntoView();
-    }
-
-    private async void OnProxyImport_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await _vm.ImportProxyProfileAsync(ProxyImportUri.Text);
-            SaveCurrentConfig();
-            PopulateProxyUi();
-            ProxyImportUri.Clear();
-            ProxyNodeEditorExpander.IsExpanded = false;
-            ProxyPairedForwardCombo.BringIntoView();
-            SetProxyReady();
-        }
-        catch (Exception exception)
-        {
-            SetProxyStatusError(exception.Message);
-        }
     }
 
     private async void OnProxySave_Click(object sender, RoutedEventArgs e)
@@ -618,7 +760,6 @@ public partial class MainWindow : Window
             await _vm.SaveProxyProfileAsync();
             SaveCurrentConfig();
             PopulateProxyUi();
-            ProxyNodeEditorExpander.IsExpanded = false;
             ProxyPairedForwardCombo.BringIntoView();
             SetProxyReady();
         }
@@ -669,6 +810,28 @@ public partial class MainWindow : Window
         }
         CaptureProxyDnsSettings();
         var mode = GetSelectedProxyMode();
+
+        // TUN and process mode run a local sing-box that needs administrator
+        // rights.  Rather than elevate sing-box on its own (a black console
+        // window plus an unkillable TUN), relaunch the whole app elevated and
+        // let it start the proxy as a captured child.  External profiles run
+        // through the forward without a local sing-box, so they never elevate.
+        if (ModeNeedsElevation(mode) && !_vm.IsExternalProxySelected && !WindowsProxyElevation.IsElevated())
+        {
+            App.Config.ProxyActiveMode = mode.ToString();
+            App.Config.ProxyActiveProfileId = profileId;
+            App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
+            App.Config.ProxyModeChosen = true;
+            SaveCurrentConfig();
+            SetProxyStarting();
+            if (await TryLaunchElevatedProxyAsync(profileId, gameId, mode))
+                return;
+            // Declined or could not relaunch: do not attempt a doomed
+            // non-elevated TUN that would only fail and tear the forward down.
+            SetProxyStatusError("administrator_required");
+            return;
+        }
+
         SetProxyStarting();
         try
         {
@@ -684,7 +847,7 @@ public partial class MainWindow : Window
                 Log.Debug(ex, "proxy start cancelled");
                 return;
             }
-            if (mode == WindowsProxyMode.Process
+            if (ModeNeedsElevation(mode)
                 && profileId > 0
                 && string.Equals(ex.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
             {
@@ -692,14 +855,17 @@ public partial class MainWindow : Window
                 App.Config.ProxyActiveProfileId = profileId;
                 App.Config.ProxyActiveGameId = gameId?.Trim() ?? string.Empty;
                 SaveCurrentConfig();
-                if (await TryLaunchElevatedProxyAsync(profileId, gameId))
+                if (await TryLaunchElevatedProxyAsync(profileId, gameId, mode))
                     return;
             }
 
-            SetProxyStatusError(ex.Message);
+            SetProxyStatusError(ex.Message, (ex as ProxyForwardStartException)?.ForwardId ?? 0);
             Log.Warning(ex, "failed to start local proxy");
         }
     }
+
+    private static bool ModeNeedsElevation(WindowsProxyMode mode)
+        => mode is WindowsProxyMode.Tun or WindowsProxyMode.Process;
 
     private void OnNativeForwardSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -728,6 +894,16 @@ public partial class MainWindow : Window
             && Enum.TryParse<WindowsProxyMode>(item.Tag?.ToString(), true, out var parsed)
             ? parsed
             : WindowsProxyMode.Tun;
+        // Native outbound TUN/process mode also needs administrator rights for
+        // the local sing-box.  We do not yet relaunch the whole app elevated for
+        // this path (the session carries more state than the saved-profile
+        // request), so fail with a clear message instead of launching a sing-box
+        // that cannot create the TUN.
+        if (ModeNeedsElevation(mode) && !WindowsProxyElevation.IsElevated())
+        {
+            SetProxyStatusError("administrator_required");
+            return;
+        }
         SetProxyStarting();
         try
         {
@@ -782,9 +958,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> TryLaunchElevatedProxyAsync(int profileId, string? gameId)
+    private async Task<bool> TryLaunchElevatedProxyAsync(int profileId, string? gameId, WindowsProxyMode mode)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() || !ModeNeedsElevation(mode))
             return false;
 
         var executablePath = Process.GetCurrentProcess().MainModule?.FileName;
@@ -803,7 +979,7 @@ public partial class MainWindow : Window
                 WindowsProxyElevation.BuildRelaunchStartInfo(
                     executablePath,
                     new WindowsProxyStartRequest(
-                        WindowsProxyMode.Process,
+                        mode,
                         profileId,
                         gameId?.Trim() ?? string.Empty)));
             if (elevated is null)
@@ -1055,7 +1231,7 @@ public partial class MainWindow : Window
     {
         if (NativeOutboundCard is null)
             return;
-        var visible = _vm.CurrentView == "Proxy"
+        var visible = _vm.CurrentView == "Native"
             && _vm.IsNativeOutboundVisible
             && _vm.NativeOutboundForwards.Count > 0;
         NativeOutboundCard.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
@@ -1128,7 +1304,8 @@ public partial class MainWindow : Window
             UpdateVisiblePanel();
         }
         if (e.PropertyName == nameof(MainViewModel.ActiveForwardCount)
-            || e.PropertyName == nameof(MainViewModel.ConnectionStatus))
+            || e.PropertyName == nameof(MainViewModel.ConnectionStatus)
+            || e.PropertyName == nameof(MainViewModel.IsDeviceLimitReached))
         {
             UpdateTrayText();
         }
@@ -1142,8 +1319,17 @@ public partial class MainWindow : Window
         {
             UpdateUpdatePromptText();
         }
+        if (e.PropertyName == nameof(MainViewModel.IsUpdateRequired) && _vm.IsUpdateRequired)
+        {
+            _ = CheckForRequiredUpdateAsync();
+        }
         if (e.PropertyName == nameof(MainViewModel.ProxySnapshot))
+        {
             ApplyProxyVisualState();
+            UpdateCoreToggle();
+        }
+        if (e.PropertyName == nameof(MainViewModel.RunningTimeText))
+            UpdateCoreToggle();
         if (e.PropertyName == nameof(MainViewModel.SelectedProxyProfileId))
         {
             ProxyProfileList.SelectedValue = _vm.SelectedProxyProfileId;
@@ -1202,7 +1388,7 @@ public partial class MainWindow : Window
             WindowsProxyConnectionState.Error =>
                 string.IsNullOrWhiteSpace(snapshot.ErrorCode)
                     ? (FindResource("ProxyError") as string ?? "Proxy failed")
-                    : snapshot.ErrorCode,
+                    : ProxyErrorText(snapshot.ErrorCode, snapshot.ErrorForwardId),
             _ => FindResource("ProxyReady") as string ?? "Ready",
         };
 
@@ -1220,17 +1406,16 @@ public partial class MainWindow : Window
             WindowsProxyConnectionState.Error => "DangerBrush",
             _ => "PrimaryBrush",
         };
-        ProxyStatusTitle.Foreground = FindResource(titleBrushKey) as Brush ?? Brushes.Black;
-        ProxyStatusText.Foreground = snapshot.State == WindowsProxyConnectionState.Error
-            ? (FindResource("DangerBrush") as Brush ?? Brushes.DarkRed)
-            : (FindResource("MutedTextBrush") as Brush ?? Brushes.Gray);
-        ProxyStatusBanner.BorderBrush = FindResource(borderBrushKey) as Brush ?? Brushes.Gray;
-        ProxyStatusBanner.Background = new SolidColorBrush(snapshot.State switch
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, titleBrushKey);
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty,
+            snapshot.State == WindowsProxyConnectionState.Error ? "DangerBrush" : "MutedTextBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, borderBrushKey);
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, snapshot.State switch
         {
-            WindowsProxyConnectionState.Connected => Color.FromRgb(236, 253, 245),
-            WindowsProxyConnectionState.Starting => Color.FromRgb(255, 251, 235),
-            WindowsProxyConnectionState.Error => Color.FromRgb(254, 242, 242),
-            _ => Color.FromRgb(239, 246, 255),
+            WindowsProxyConnectionState.Connected => "SuccessContainerBrush",
+            WindowsProxyConnectionState.Starting => "WarningContainerBrush",
+            WindowsProxyConnectionState.Error => "DangerContainerBrush",
+            _ => "InfoContainerBrush",
         });
 
         ProxyLocalListenPortCombo.IsEnabled = snapshot.State is not WindowsProxyConnectionState.Connected
@@ -1240,6 +1425,8 @@ public partial class MainWindow : Window
         ProxyProfileList.IsEnabled = ProxyLocalListenPortCombo.IsEnabled;
         ProxyTestUdpButton.IsEnabled = snapshot.State == WindowsProxyConnectionState.Connected
             && snapshot.Mode != WindowsProxyMode.Tun && !_vm.IsExternalProxyActive;
+        ApplySwitchLock(!ProxyLocalListenPortCombo.IsEnabled);
+        UpdateHttpModeNotice();
         UpdateNativeOutboundUi();
     }
 
@@ -1247,14 +1434,15 @@ public partial class MainWindow : Window
     {
         ProxyStatusTitle.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
         ProxyStatusText.Text = FindResource("ProxyStarting") as string ?? "Starting proxy";
-        ProxyStatusTitle.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusText.Foreground = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusBanner.BorderBrush = FindResource("WarningBrush") as Brush ?? Brushes.DarkOrange;
-        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(255, 251, 235));
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty, "WarningBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, "WarningBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, "WarningContainerBrush");
         ProxyLocalListenPortCombo.IsEnabled = false;
         ProxyForwardCombo.IsEnabled = false;
         ProxyPairedForwardCombo.IsEnabled = false;
         ProxyProfileList.IsEnabled = false;
+        ApplySwitchLock(true);
     }
 
     private void SetProxyReady()
@@ -1264,33 +1452,52 @@ public partial class MainWindow : Window
             ProxyStatusText.Text = FindResource("ProxyReady") as string ?? "Ready";
     }
 
-    private void SetProxyStatusError(string message)
+    private string LocalizedProxyError(string code) => code switch
     {
-        message = message switch
-        {
-            "proxy_import_shadowsocks_only" => FindResource("ProxyImportSupported") as string ?? message,
-            "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? message,
-            "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? message,
-            "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? message,
-            "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? message,
-            "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? message,
-            "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? message,
-            "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? message,
-            "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? message,
-            "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? message,
-            "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? message,
-            _ => message,
-        };
+        "local_port_in_use" => FindResource("ProxyErrLocalPortInUse") as string ?? code,
+        "local_port_held_by_system" => FindResource("ProxyErrLocalPortHeldBySystem") as string ?? code,
+        "local_port_reserved" => FindResource("ProxyErrLocalPortReserved") as string ?? code,
+        "administrator_required" => FindResource("ProxyErrAdministratorRequired") as string ?? code,
+        "permission_required" => FindResource("ProxyErrPermissionRequired") as string ?? code,
+        "proxy_runtime_unavailable" => FindResource("ProxyErrRuntimeUnavailable") as string ?? code,
+        "proxy_saved_profile_required" => FindResource("ProxySavedProfileRequired") as string ?? code,
+        "proxy_forward_required" => FindResource("ProxyForwardRequired") as string ?? code,
+        "proxy_forward_unavailable" => FindResource("ProxyForwardUnavailable") as string ?? code,
+        "proxy_forward_runtime_unavailable" => FindResource("ProxyForwardRuntimeUnavailable") as string ?? code,
+        "proxy_forward_policy_unavailable" => FindResource("ProxyForwardPolicyUnavailable") as string ?? code,
+        "proxy_forward_readiness_timeout" => FindResource("ProxyForwardReadinessTimeout") as string ?? code,
+        "proxy_forward_tcp_required" => FindResource("ProxyForwardTcpRequired") as string ?? code,
+        "proxy_forward_transport_invalid" => FindResource("ProxyForwardTransportInvalid") as string ?? code,
+        "proxy_external_endpoint_invalid" => FindResource("ProxyExternalEndpointInvalid") as string ?? code,
+        "proxy_mode_required" => FindResource("ProxyModeSelect") as string ?? code,
+        _ => code,
+    };
+
+    /// <summary>
+    /// Banner text for a failure. A forward-scoped failure is prefixed with the
+    /// forward number so the user can tell which line failed.
+    /// </summary>
+    private string ProxyErrorText(string code, int forwardId)
+    {
+        var text = LocalizedProxyError(code);
+        return forwardId > 0
+            ? string.Format(FindResource("ProxyErrorForwardFormat") as string ?? "Forward #{0}: {1}", forwardId, text)
+            : text;
+    }
+
+    private void SetProxyStatusError(string message, int forwardId = 0)
+    {
         ProxyStatusTitle.Text = FindResource("ProxyError") as string ?? "Proxy failed";
-        ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : message;
-        ProxyStatusTitle.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusText.Foreground = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusBanner.BorderBrush = FindResource("DangerBrush") as Brush ?? Brushes.DarkRed;
-        ProxyStatusBanner.Background = new SolidColorBrush(Color.FromRgb(254, 242, 242));
+        ProxyStatusText.Text = string.IsNullOrWhiteSpace(message) ? "Unknown error" : ProxyErrorText(message, forwardId);
+        ProxyStatusTitle.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
+        ProxyStatusText.SetResourceReference(TextBlock.ForegroundProperty, "DangerBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BorderBrushProperty, "DangerBrush");
+        ProxyStatusBanner.SetResourceReference(Border.BackgroundProperty, "DangerContainerBrush");
         ProxyLocalListenPortCombo.IsEnabled = true;
         ProxyForwardCombo.IsEnabled = true;
         ProxyPairedForwardCombo.IsEnabled = true;
         ProxyProfileList.IsEnabled = true;
+        ApplySwitchLock(false);
     }
 
     private void SetProxyTransientStatus(string message, bool error, bool preserveTitle)
@@ -1322,16 +1529,28 @@ public partial class MainWindow : Window
 
     private void UpdateVisiblePanel()
     {
-        var pairing = _vm.CurrentView == "Forwards";
-        DashboardPanel.Visibility = _vm.CurrentView == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
-        ForwardPairingPanel.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
-        ProxyPanel.Visibility = _vm.CurrentView == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
-        LogPanel.Visibility = _vm.CurrentView == "Log" ? Visibility.Visible : Visibility.Collapsed;
-        SettingsPanel.Visibility = _vm.CurrentView == "Settings" ? Visibility.Visible : Visibility.Collapsed;
-        SidebarStartAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        SidebarStopAllButton.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        ProxyPageTitle.Visibility = pairing ? Visibility.Collapsed : Visibility.Visible;
-        ForwardPairingPageTitle.Visibility = pairing ? Visibility.Visible : Visibility.Collapsed;
+        var view = _vm.CurrentView;
+        // Native outbound is only listed while the plan assigns one; fall back to the connect page otherwise.
+        if (view == "Native" && !_vm.IsNativeOutboundVisible)
+        {
+            _vm.NavigateToCommand.Execute("Proxy");
+            return;
+        }
+        DashboardPanel.Visibility = view == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        PageTitleText.SetResourceReference(TextBlock.TextProperty, view switch
+        {
+            "Proxy" => "NavProxy",
+            "Native" => "NavNative",
+            "Log" => "NavLog",
+            "Settings" => "NavSettings",
+            _ => "NavDashboard",
+        });
+        // The start / stop button belongs to the dashboard; the connect page has its own controls.
+        CoreToggleButton.Visibility = view == "Dashboard" ? Visibility.Visible : Visibility.Collapsed;
+        ConnectPage.Visibility = view == "Proxy" ? Visibility.Visible : Visibility.Collapsed;
+        NativePanel.Visibility = view == "Native" ? Visibility.Visible : Visibility.Collapsed;
+        LogPanel.Visibility = view == "Log" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = view == "Settings" ? Visibility.Visible : Visibility.Collapsed;
         ProxySavedNodesSidebar.Visibility = Visibility.Collapsed;
         if (ProxySidebarColumn is not null)
             ProxySidebarColumn.Width = new GridLength(0);
@@ -1340,6 +1559,7 @@ public partial class MainWindow : Window
 
     private void PopulateSettings()
     {
+        PopulateThemeSelection();
         var normalizedMasterUrl = AppDefaults.NormalizeMasterUrl(App.Config.MasterUrl);
         SettMasterUrl.Text = string.IsNullOrWhiteSpace(normalizedMasterUrl)
             ? AppDefaults.DefaultMasterUrl
@@ -1355,6 +1575,9 @@ public partial class MainWindow : Window
             ClearSettingsLoginInfo();
         SettPollInterval.Text = App.Config.PollIntervalSeconds.ToString();
         SettHealthInterval.Text = App.Config.HealthCheckIntervalSeconds.ToString();
+        SettEgressInterface.ItemsSource = BuildEgressOptions();
+        SettEgressInterface.SelectedValue = App.Config.PreferredEgressInterface ?? string.Empty;
+        SelectLogLevel(App.Config.LogLevel);
         SettAutoStart.IsChecked = App.Config.AutoStart;
         SettMinimizeTray.IsChecked = App.Config.MinimizeToTray;
 
@@ -1367,6 +1590,16 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    private void SelectLogLevel(string? value)
+    {
+        var normalized = DesktopLogLevel.Normalize(value);
+        var selected = SettLogLevel.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), normalized, StringComparison.Ordinal));
+        if (selected is not null)
+            SettLogLevel.SelectedItem = selected;
     }
 
     private void OnSignOut_Click(object sender, RoutedEventArgs e)
@@ -1382,6 +1615,7 @@ public partial class MainWindow : Window
         SettSaveInfoCheckBox.IsChecked = _saveLoginInfo;
         SetupStatus.Text = string.Empty;
         PopulateSettings();
+        PopulateSetupEgressInterfaces();
     }
 
 
@@ -1412,7 +1646,8 @@ public partial class MainWindow : Window
 
     private async void OnDeferUpdateUntilRestart_Click(object sender, RoutedEventArgs e)
     {
-        if (_vm.AvailableUpdateArtifact == null)
+        // A required update cannot be deferred (the button is hidden as well).
+        if (_vm.AvailableUpdateArtifact == null || !_vm.CanDeferUpdate)
             return;
 
         _updateFailureWasInstall = true;
@@ -1428,6 +1663,27 @@ public partial class MainWindow : Window
         {
             _vm.ReportUpdateFailed(ex.Message);
             Log.Warning(ex, "deferred update flow failed");
+        }
+    }
+
+    /// <summary>
+    /// The panel's minimum version is not met: fetch the manifest so the
+    /// required overlay can offer "Install now". A failed fetch leaves the
+    /// overlay up with Retry (RetryFailedUpdateAsync re-runs the check).
+    /// </summary>
+    private async Task CheckForRequiredUpdateAsync()
+    {
+        if (_vm.ShowUpdatePrompt || _vm.IsUpdateInProgress)
+            return;
+        if (Interlocked.Exchange(ref _requiredUpdateCheckRunning, 1) != 0)
+            return;
+        try
+        {
+            await CheckForUpdatesAsync(_lifecycleCts.Token);
+        }
+        finally
+        {
+            Volatile.Write(ref _requiredUpdateCheckRunning, 0);
         }
     }
 
@@ -1947,6 +2203,11 @@ public partial class MainWindow : Window
     private string BuildTrayText()
     {
         var baseText = "Leikwan Bridge";
+        if (_vm.IsDeviceLimitReached)
+        {
+            var limited = $"{baseText} - {GetString("DeviceLimitStatus")}";
+            return limited.Length > 63 ? limited[..63] : limited;
+        }
         if (_vm.ActiveForwardCount <= 0)
             return baseText;
 

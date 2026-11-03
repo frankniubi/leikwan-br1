@@ -113,52 +113,51 @@ if (($carrierUnknown['isp'] ?? '') !== 'unknown'
     failUltraInventory('unknown carrier must degrade to unknown and provider must be bounded');
 }
 
-// Tencent-marked entries are dispatched last (2026-09-11).
-if (UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'title' => '北京-德国-BGP']) !== 'low'
-    || UltraInventoryService::dispatchClass(['provider' => '', 'title' => '上海-日本-BGP-腾讯云【本土】']) !== 'low'
-    || UltraInventoryService::dispatchClass(['provider' => '层峰', 'title' => '上海-韩国-电信']) !== 'normal'
-    || UltraInventoryService::dispatchClass([]) !== 'normal') {
-    failUltraInventory('tencent-marked entries must be classified as low dispatch priority');
+// A provider/title label is not evidence that a particular line is unhealthy.
+// Only an explicit per-line audit declaration may demote it.
+foreach ([
+    ['provider' => '腾讯云', 'title' => '北京-德国-BGP'],
+    ['provider' => '', 'title' => '上海-日本-BGP-腾讯云【本土】'],
+    ['provider' => 'UCloud', 'title' => 'Shanghai-Tokyo-BGP'],
+    ['provider' => '', 'title' => 'Shanghai-Tokyo-UCloud'],
+    ['provider' => '优云', 'title' => '上海-日本-BGP-优云'],
+    ['provider' => '层峰', 'title' => '上海-韩国-电信'],
+    [],
+] as $unmeasuredProviderLine) {
+    if (UltraInventoryService::dispatchClass($unmeasuredProviderLine) !== 'normal') {
+        failUltraInventory('unmeasured provider/title must not receive low priority');
+    }
 }
-$dispatch = UltraInventoryService::normalizeInventoryLine([
-    'line_id' => 493,
-    'title' => '北京-德国-BGP-腾讯云',
-    'provider' => '腾讯云',
-    'config_sha256' => str_repeat('7', 64),
+$ucloudDeclaredNormal = UltraInventoryService::normalizeInventoryLine([
+    'line_id' => 497,
+    'title' => 'Shanghai-Tokyo-UCloud',
+    'provider' => 'UCloud',
+    'dispatch_class' => 'normal',
+    'config_sha256' => str_repeat('3', 64),
 ], $zones, 1_893_456_000);
-if (($dispatch['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('dispatch class must be persisted by the inventory normalizer');
+if (($ucloudDeclaredNormal['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('explicit normal declaration must override provider/title labels');
 }
-$normalPriority = UltraInventoryService::normalizeInventoryLine([
-    'line_id' => 494,
-    'title' => '北京-德国-BGP-层峰',
-    'provider' => '层峰',
-    'config_sha256' => str_repeat('8', 64),
-], $zones, 1_893_456_000);
-if (($normalPriority['dispatch_class'] ?? '') !== 'normal') {
-    failUltraInventory('unmarked entries must stay normal priority');
-}
-// A source may declare the priority itself: lines whose relay association drops
-// big datagrams sit at the same table as the Tencent ones.
 $declaredLow = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 495,
     'title' => '上海-韩国-BGP-层峰',
     'provider' => '层峰',
     'dispatch_class' => 'low',
-    'config_sha256' => str_repeat('5', 64),
+    'config_sha256' => str_repeat('8', 64),
 ], $zones, 1_893_456_000);
-if (($declaredLow['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('a source-declared low priority must survive normalization');
+if (($declaredLow['dispatch_class'] ?? '') !== 'low'
+    || UltraInventoryService::dispatchClass(['provider' => '腾讯云', 'dispatch_class' => 'low']) !== 'low') {
+    failUltraInventory('explicit per-line low declaration must be preserved');
 }
 $declaredUnknown = UltraInventoryService::normalizeInventoryLine([
     'line_id' => 496,
-    'title' => '北京-德国-BGP-腾讯云',
-    'provider' => '腾讯云',
+    'title' => '北京-德国-BGP-UCloud',
+    'provider' => 'UCloud',
     'dispatch_class' => 'unknown',
     'config_sha256' => str_repeat('4', 64),
 ], $zones, 1_893_456_000);
-if (($declaredUnknown['dispatch_class'] ?? '') !== 'low') {
-    failUltraInventory('an unknown declaration must fall back to the provider/title rule');
+if (($declaredUnknown['dispatch_class'] ?? '') !== 'normal') {
+    failUltraInventory('unknown declaration must not be inferred from provider/title');
 }
 
 // Direction is derived from the resolved catalog zones; an admin choice survives
@@ -242,7 +241,7 @@ foreach ([
     'provider = VALUES(provider)',
     'dispatch_class = VALUES(dispatch_class)',
     "'ul.isp = :isp'",
-    "'ul.dispatch_class = :dispatch_class'",
+    "'COALESCE(ul.admin_dispatch_class, ul.dispatch_class) = :dispatch_class'",
     "'direction_class' => self::deriveDirection(",
     "WHEN ultra_lines.direction_class = \'unknown\' THEN VALUES(direction_class)",
 ] as $needle) {

@@ -39,7 +39,7 @@ const STATUS = {
 	ok: true,
 	data: {
 		version: '1.0.0', platform: 'openwrt', architecture: 'amd64', uptime_seconds: 7543,
-		mode: 'hybrid', enabled: true, enrolled: true,
+		enabled: true, enrolled: true,
 		panel_url: 'https://v3.leikwanhost.com', panel_platform_tag: 'openwrt',
 		device_id: 'openwrt-abc123', device_name: 'Leikwan Bridge on router',
 		client_id: 42, client_name: 'Home Router', config_revision: 'rev-abcdef123456',
@@ -62,17 +62,24 @@ const STATUS = {
 				lease_expires_at: '', lease_error: 'no_healthy_candidate', bytes_in: 0, bytes_out: 0
 			}
 		],
-		uplinks: [
-			{ interface: 'wan', up: true, healthy: true, active: true, gateway: '192.168.1.1', metric: 10, latency_ms: 12, loss_percent: 0, consecutive_successes: 42, consecutive_failures: 0, last_error: '', last_switch: '' },
-			{ interface: 'wanb', up: true, healthy: false, active: false, gateway: '192.168.2.1', metric: 910, latency_ms: 0, loss_percent: 100, consecutive_successes: 0, consecutive_failures: 5, last_error: 'no_probe_response', last_switch: '' }
-		],
 		gateway: {
-			enabled: true, running: true, carrier_forward_id: 3, route_scope: 'global',
-			route_policy: 'restricted', tun_address: '172.19.0.1/30', socks_port: 2080,
-			bypass_cn: true, last_error: '', sing_box_version: ''
+			enabled: true, active: true, running: true, relay_running: true,
+			native_granted: true, carrier_forward_id: 7, direction: 'SHA -> HKG', route_scope: 'intl_only',
+			route_policy: 'unrestricted', configured_route_scope: 'auto', configured_route_policy: 'auto',
+			unrestricted_allowed: true, socks_port: 2080,
+			candidates: 2,
+			lease_expires_at: '2026-01-01T00:04:00Z', lease_error: '',
+			notes: [ 'route scope cn_only is not offered by this line (intl_only,global); using auto' ],
+			last_error: '',
+			carriers: [
+				{ forward_id: 7, direction: 'SHA -> HKG', route_scopes: [ 'intl_only', 'global' ], default_route_scope: 'global', unrestricted_allowed: true, default: true },
+				{ forward_id: 9, direction: 'HKG -> SHA', route_scopes: [ 'cn_only', 'global' ], default_route_scope: 'global', unrestricted_allowed: false, default: false }
+			]
 		},
-		runtime_bin: '/usr/libexec/leikwan/ultra-client', runtime_present: true, singbox_present: true,
-		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok'
+		runtime_bin: '/usr/libexec/leikwan/ultra-client', runtime_present: true,
+		runtime_version: '1.0.0', runtime_sha256: 'a'.repeat(64), runtime_drift: 'ok',
+		panel_egress_device: 'pppoe-wan', panel_egress_reason: 'default_route_non_tun',
+		panel_egress_override: 'auto', proxy_ignored: true
 	}
 };
 
@@ -92,8 +99,8 @@ const DIAGNOSE = {
 	data: {
 		generated_at: '2026-01-01T00:00:00Z', version: '1.0.0', architecture: 'amd64',
 		kernel: '6.6.110', panel: 'https://v3.leikwanhost.com', panel_platform_tag: 'openwrt',
-		runtime_present: true, singbox_present: true,
-		effective_config: { mode: 'hybrid', poll_interval: '30', uplink_enabled: 'true' },
+		runtime_present: true,
+		effective_config: { poll_interval: '30' },
 		checks: [
 			{ name: 'runtime_binary', ok: true, detail: '/usr/libexec/leikwan/ultra-client' },
 			{ name: 'panel_reachable', ok: true, detail: 'https://v3.leikwanhost.com' },
@@ -109,10 +116,8 @@ const RPC_RESPONSES = {
 	diagnose: DIAGNOSE,
 	test_connection: { ok: true, data: { panel: 'https://v3.leikwanhost.com', platform: 'openwrt' } },
 	get_config: { ok: true, data: { mode: 'hybrid', enabled: '1', panel_url: 'https://v3.leikwanhost.com' } },
-	enroll: { ok: true, data: { client_id: 42, client_name: 'Home Router' } },
-	pair: { ok: true, data: { client_id: 42, client_name: 'Home Router' } },
+	register: { ok: true, data: { registered: true, error: null, message: null, details: null, status: STATUS.data } },
 	sign_out: { ok: true, data: { signed_out: true } },
-	forward_action: { ok: true, data: {} },
 	reload: { ok: true, data: STATUS.data },
 	set_config: { ok: true, data: { applied: {} } }
 };
@@ -122,19 +127,15 @@ const UCI_VALUES = {
 		'main': 'main',
 		'main.enabled': '1',
 		'main.panel_url': 'https://v3.leikwanhost.com',
-		'main.mode': 'hybrid',
-		'main.gateway_enabled': '1',
-		'main.uplink_enabled': '1',
-		'main.uplink_interfaces': 'wan wanb'
+		'main.gateway_route_scope': 'auto',
+		'main.gateway_route_policy': 'auto'
 	},
 	leikwan: {
 		'main': 'main',
 		'main.enabled': '1',
 		'main.panel_url': 'https://v3.leikwanhost.com',
-		'main.mode': 'hybrid',
-		'main.gateway_enabled': '1',
-		'main.uplink_enabled': '1',
-		'main.uplink_interfaces': 'wan wanb'
+		'main.gateway_route_scope': 'auto',
+		'main.gateway_route_policy': 'auto'
 	}
 };
 
@@ -142,9 +143,9 @@ const UCI_VALUES = {
 // Suite 1: load and render every view
 // ---------------------------------------------------------------------------
 
-async function renderView(file) {
+async function renderView(file, rpcResponses) {
 	const source = fs.readFileSync(path.join(VIEW_DIR, file), 'utf8');
-	const stubs = createStubs({ rpcResponses: RPC_RESPONSES, uciValues: UCI_VALUES });
+	const stubs = createStubs({ rpcResponses: rpcResponses || RPC_RESPONSES, uciValues: UCI_VALUES });
 	const m = stubs.modules;
 
 	// LuCI loads a view as a function body: the leading 'require x' lines are
@@ -185,7 +186,7 @@ async function renderView(file) {
 async function suiteViews() {
 	step('view rendering (real render path, stubbed LuCI runtime)');
 	const files = fs.readdirSync(VIEW_DIR).filter(f => f.endsWith('.js')).sort();
-	check('views discovered', files.length === 7, 'found ' + files.length);
+	check('views discovered', files.length === 4, 'found ' + files.length);
 
 	for (const file of files) {
 		try {
@@ -291,7 +292,7 @@ function suiteContracts() {
 	let rpcd;
 	try { rpcd = rpcdMethods(); }
 	catch (err) { bad('rpcd signature table is parseable', err.message); return; }
-	check('rpcd advertises methods', rpcd.size >= 12, 'found ' + rpcd.size);
+	check('rpcd advertises methods', rpcd.size >= 10, 'found ' + rpcd.size);
 
 	for (const [method, files] of [...declared.entries()].sort()) {
 		check('rpcd implements "' + method + '" (used by ' + [...files].join(', ') + ')', rpcd.has(method));
@@ -310,7 +311,7 @@ function suiteContracts() {
 	for (const method of readOnly)
 		check('ACL keeps "' + method + '" read-only', !acl.write.has(method));
 
-	const writeOnly = ['enroll', 'pair', 'sign_out', 'forward_action', 'set_config'];
+	const writeOnly = ['register', 'sign_out', 'set_config'];
 	for (const method of writeOnly)
 		check('ACL grants write for "' + method + '"', acl.write.has(method) || wildcard);
 
@@ -318,11 +319,32 @@ function suiteContracts() {
 	// from a view or from the documented CLI/ubus surface. Anything else is
 	// dead weight nobody can call.
 	const cliOnly = new Set(['forwards', 'get_config', 'set_config']);
+	const removed = ['enroll', 'pair', 'forward_action'];
+	for (const method of removed) {
+		check('removed method "' + method + '" is gone from rpcd', !rpcd.has(method));
+		check('removed method "' + method + '" is gone from the ACL', !granted.has(method));
+	}
 	for (const method of [...rpcd].sort()) {
 		const reachable = declared.has(method) || cliOnly.has(method);
 		check('rpcd method "' + method + '" is reachable', reachable);
 		check('rpcd method "' + method + '" is ACL-granted', wildcard || granted.has(method));
 	}
+}
+
+// The rpcd backend runs leikwand through fs.popen(). ucode on OpenWrt 25.12
+// rejects the argument-vector form with "Invalid argument", which made every
+// call report agent_unavailable while the daemon was healthy. The string form
+// is the only one that works on every supported release, so pin it.
+function suiteRpcdInvocation() {
+	step('rpcd invokes leikwand with a command string');
+
+	const src = fs.readFileSync(RPCD, 'utf8');
+	check('ctl() does not pass an argv array to fs.popen',
+		!/fs\.popen\(\s*argv\s*,/.test(src));
+	check('ctl() quotes each argument for /bin/sh',
+		/function shellQuote\(/.test(src) && /map\(argv, shellQuote\)/.test(src));
+	check('ctl() discards stderr so a diagnostic cannot corrupt the JSON line',
+		/2>\/dev\/null/.test(src));
 }
 
 function suiteMenu() {
@@ -346,9 +368,129 @@ function suiteMenu() {
 	check('ACL constrains the control runtime directory', text.includes('/var/run/leikwand'));
 }
 
+// ---------------------------------------------------------------------------
+// Suite 1b: the online device limit must read as a quota, not a bug
+// ---------------------------------------------------------------------------
+
+const LIMIT_MESSAGE = 'Device limit reached (2 of 2 devices online). Disconnect another device or ask your provider ' +
+	'to raise the device limit. This router reconnects automatically about 3 minutes after another device disconnects.';
+
+async function suiteOnlineLimit() {
+	step('online device limit messaging');
+	const limited = JSON.parse(JSON.stringify(STATUS));
+	Object.assign(limited.data, {
+		last_pull_error: LIMIT_MESSAGE,
+		last_pull_error_code: 'client_online_limit_reached',
+		online_device_limit: 2,
+		active_online_devices: 2
+	});
+
+	try {
+		const result = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: limited }));
+		check('overview shows the device-limit banner', result.text.includes('设备数量已达上限'));
+		check('overview shows the counts', result.text.includes('2 / 2'));
+		check('overview shows the agent message', result.text.includes(LIMIT_MESSAGE));
+
+		const plain = await renderView('overview.js');
+		check('overview hides the banner without the code', !plain.text.includes('设备数量已达上限'));
+	}
+	catch (err) {
+		bad('overview renders the device-limit state', String(err && err.stack || err));
+	}
+
+	try {
+		const refused = {
+			ok: true, registered: false, error: 'client_online_limit_reached', message: LIMIT_MESSAGE,
+			details: { online_device_limit: 2, active_online_devices: 2 }
+		};
+		const result = await renderView('setup.js', Object.assign({}, RPC_RESPONSES, { register: refused }));
+		result.instance.clientInput.value = '42';
+		result.instance.tokenInput.value = 'lw-token';
+		await result.instance.handleRegister();
+		const text = result.instance.nodes.result.allText();
+		check('registration refusal shows the device-limit title', text.includes('设备数量已达上限'));
+		check('registration refusal shows the agent message', text.includes(LIMIT_MESSAGE));
+		check('registration refusal never shows the raw panel error', !text.includes('panel error 429'));
+	}
+	catch (err) {
+		bad('setup renders the registration refusal', String(err && err.stack || err));
+	}
+
+	try {
+		const result = await renderView('setup.js');
+		// The panel install command may be pasted as a whole: the wizard must
+		// extract both values instead of demanding manual surgery.
+		result.instance.clientInput.value = 'curl https://panel/artifacts/install-client-agent.sh | bash -s -- --master https://v3.leikwanhost.com --client-id 42 --agent-token lw-secret-token';
+		const credentials = result.instance.extractCredentials();
+		check('install-command paste extracts the client id', credentials.client_id === '42', credentials.client_id);
+		check('install-command paste extracts the token', credentials.agent_token === 'lw-secret-token', credentials.agent_token);
+	}
+	catch (err) {
+		bad('setup extracts credentials from the install command', String(err && err.stack || err));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Suite 1c: Panel egress (direct, pinned to the physical WAN)
+// ---------------------------------------------------------------------------
+
+async function suitePanelEgress() {
+	step('panel egress');
+	try {
+		const result = await renderView('overview.js');
+		check('overview shows the panel egress row', result.text.includes('面板出口'));
+		check('overview shows the egress device', result.text.includes('pppoe-wan'));
+		check('overview explains a skipped tunnel', result.text.includes('已跳过隧道接口'));
+		check('overview says the proxy is ignored', result.text.includes('忽略代理'));
+
+		const invalid = JSON.parse(JSON.stringify(STATUS));
+		Object.assign(invalid.data, {
+			panel_egress_device: 'eth0', panel_egress_reason: 'override_invalid:default_route',
+			panel_egress_override: 'eth9', panel_egress_error: 'operation not permitted'
+		});
+		const warned = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: invalid }));
+		check('overview flags an invalid override', warned.text.includes('手动指定的接口无效'));
+		check('overview shows a bind error', warned.text.includes('operation not permitted'));
+
+		const unbound = JSON.parse(JSON.stringify(STATUS));
+		Object.assign(unbound.data, { panel_egress_device: '', panel_egress_reason: 'no_physical_route' });
+		const plain = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: unbound }));
+		check('overview shows an unbound egress', plain.text.includes('未绑定') && plain.text.includes('未找到物理 WAN'));
+	}
+	catch (err) {
+		bad('overview renders the panel egress row', String(err && err.stack || err));
+	}
+
+	const advanced = fs.readFileSync(path.join(VIEW_DIR, 'advanced.js'), 'utf8');
+	check('advanced settings expose panel_egress_interface', advanced.includes("'panel_egress_interface'"));
+
+	const rpcd = fs.readFileSync(RPCD, 'utf8');
+	check('rpcd whitelists panel_egress_interface with default auto',
+		/panel_egress_interface:\s*\{[^}]*default:\s*'auto'/.test(rpcd));
+
+	// The router edition removed the transparent gateway and multi-WAN HA; a
+	// leftover option name would let a stale form resurrect them.
+	for (const legacy of ['mode:', 'gateway_enabled:', 'gateway_tun_address:', 'gateway_dns_mode:',
+		'gateway_split_forward_id:', 'gateway_capture:', 'uplink_enabled:', 'uplink_interfaces:']) {
+		check('rpcd whitelist drops "' + legacy.slice(0, -1) + '"', !rpcd.includes(legacy));
+	}
+
+	// The leikwand package sits next to this one in the source tree; the
+	// mutation harness runs on a copy of this package alone, without it.
+	const defaultsPath = path.join(ROOT, '../leikwand/files/leikwan.config');
+	if (fs.existsSync(defaultsPath))
+		check('package UCI defaults set panel_egress_interface to auto',
+			fs.readFileSync(defaultsPath, 'utf8').includes("option panel_egress_interface 'auto'"));
+	const luciDefaults = fs.readFileSync(path.join(ROOT, 'root/etc/uci-defaults/90-luci-leikwan'), 'utf8');
+	check('LuCI UCI defaults set panel_egress_interface to auto', luciDefaults.includes("panel_egress_interface='auto'"));
+}
+
 (async function main() {
 	await suiteViews();
+	await suiteOnlineLimit();
+	await suitePanelEgress();
 	suiteContracts();
+	suiteRpcdInvocation();
 	suiteMenu();
 	step('result');
 	console.log(passed + ' passed, ' + failed + ' failed');

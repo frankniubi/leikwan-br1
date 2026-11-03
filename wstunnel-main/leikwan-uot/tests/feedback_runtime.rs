@@ -29,12 +29,16 @@ fn unused_udp_port() -> u16 {
 }
 
 fn temp_stats(name: &str) -> PathBuf {
+    // The round-trip tests run in parallel and macOS clocks are coarser than a
+    // nanosecond, so the timestamp alone let two tests share one stats file.
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "leikwan-uot-{name}-{}-{nonce}.json",
+        "leikwan-uot-{name}-{}-{sequence}-{nonce}.json",
         std::process::id()
     ))
 }

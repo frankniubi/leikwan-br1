@@ -12,10 +12,18 @@ final class WhmcsIdentityService
 {
     private const CHALLENGE_TTL_MINUTES = 10;
 
+    /**
+     * Wrong codes a binding challenge accepts before it is burned. Six digits
+     * leave a 5 in 1,000,000 guess, and creating new challenges is limited by
+     * AuthRateLimiter::BINDING_REQUEST_* per user and per target email.
+     */
+    public const MAX_CHALLENGE_ATTEMPTS = 5;
+
     public function __construct(
         private Config $config,
         private Database $db,
         private ?WhmcsClient $whmcs = null,
+        private ?AuthRateLimiter $rateLimiter = null,
     ) {
         $this->whmcs ??= new WhmcsClient($config);
     }
@@ -28,12 +36,14 @@ final class WhmcsIdentityService
     }
 
     /**
+     * @param array<string, mixed> $authenticatedIdentity
      * @return array<string, mixed>|null
      */
-    public function tryDirectBindForUser(int $userId): ?array
+    public function tryDirectBindForUser(int $userId, array $authenticatedIdentity = []): ?array
     {
         $user = $this->bindingUser($userId);
-        $profile = $this->profileByEmail((string) ($user['email'] ?? ''));
+        $profile = $this->profileFromAuthenticatedIdentity($authenticatedIdentity, $user);
+        $profile ??= $this->profileByEmail((string) ($user['email'] ?? ''));
         if ($profile === null) {
             return null;
         }
@@ -47,25 +57,61 @@ final class WhmcsIdentityService
     public function requestBinding(int $userId, string $whmcsEmail = ''): array
     {
         $user = $this->bindingUser($userId);
+        $ownEmail = strtolower((string) ($user['email'] ?? ''));
         $targetEmail = strtolower(trim($whmcsEmail));
         if ($targetEmail === '') {
-            $targetEmail = strtolower((string) ($user['email'] ?? ''));
+            $targetEmail = $ownEmail;
+        }
+        if (!filter_var($targetEmail, FILTER_VALIDATE_EMAIL)) {
+            throw new ApiException('whmcs_binding_email_invalid', 422, ['message' => 'Please enter a valid Buy station email address.']);
         }
 
-        $profile = $this->profileByEmail($targetEmail);
-        if ($profile === null) {
-            if ($targetEmail === strtolower((string) ($user['email'] ?? ''))) {
+        // Every request is counted before the Buy station lookup, so a tenant
+        // can neither enumerate Buy station emails nor flood someone else's
+        // Buy station account with verification tickets.
+        try {
+            $this->rateLimiter()->hit([
+                AuthRateLimiter::bucket('whmcs-binding-request:user', (string) (int) $user['id'], AuthRateLimiter::BINDING_REQUEST_USER_LIMIT, AuthRateLimiter::BINDING_REQUEST_WINDOW_SECONDS),
+                AuthRateLimiter::bucket('whmcs-binding-request:email', $targetEmail, AuthRateLimiter::BINDING_REQUEST_EMAIL_LIMIT, AuthRateLimiter::BINDING_REQUEST_WINDOW_SECONDS),
+            ]);
+        } catch (ApiException $exception) {
+            $retryAfter = (int) ($exception->details()['retry_after'] ?? 60);
+            throw new ApiException('rate_limited', 429, [
+                'retry_after' => $retryAfter,
+                'message' => 'Too many Buy station verification requests. Please wait about ' . max(1, (int) ceil($retryAfter / 60)) . ' minute(s) and try again.',
+            ]);
+        }
+
+        if ($targetEmail === $ownEmail) {
+            // The tenant's own, already verified email: being explicit here
+            // reveals nothing about anyone else.
+            $profile = $this->profileByEmail($targetEmail);
+            if ($profile === null) {
                 throw new ApiException('whmcs_client_not_found', 404, ['message' => 'No Buy station account with the same email was found. If your Buy station uses another email, enter that email below and we will send a verification ticket.']);
             }
-
-            throw new ApiException('whmcs_client_not_found', 404, ['message' => 'No Buy station account was found for that email address.']);
-        }
-
-        if (strcasecmp((string) ($profile['email'] ?? ''), (string) ($user['email'] ?? '')) === 0) {
-            return [
-                'mode' => 'direct',
-                'user' => $this->bindUserToProfile($user, $profile),
-            ];
+            if (strcasecmp((string) ($profile['email'] ?? ''), $ownEmail) === 0) {
+                return [
+                    'mode' => 'direct',
+                    'user' => $this->bindUserToProfile($user, $profile),
+                ];
+            }
+        } else {
+            if (!empty($user['whmcs_client_id'])) {
+                throw new ApiException('whmcs_binding_conflict', 409, ['message' => 'Your panel account is already linked to a Buy station account.']);
+            }
+            $profile = $this->profileByEmail($targetEmail);
+            // Another email with no Buy station account, or whose account is
+            // already linked to a different panel account, gets the same
+            // answer as a real one: a challenge no code can satisfy. Otherwise
+            // this form would tell any tenant which emails exist at the Buy
+            // station.
+            if ($profile === null) {
+                return $this->decoyChallenge($user, $targetEmail);
+            }
+            $linkedUser = $this->boundUserForClient((int) ($profile['whmcs_client_id'] ?? 0));
+            if ($linkedUser !== null && (int) $linkedUser['id'] !== (int) $user['id']) {
+                return $this->decoyChallenge($user, $targetEmail);
+            }
         }
 
         if (
@@ -232,8 +278,37 @@ final class WhmcsIdentityService
     public function verifyLoginChallenge(string $publicToken, string $code): array
     {
         $challenge = $this->challengeByPublicToken($publicToken);
-        if (!hash_equals((string) $challenge['verification_code_hash'], hash('sha256', trim($code)))) {
-            throw new ApiException('whmcs_verification_code_invalid', 422, ['message' => 'The verification code is incorrect. Please open the Buy station ticket and try again.']);
+
+        // Claim one attempt atomically before comparing, so parallel guesses
+        // cannot get more than MAX_CHALLENGE_ATTEMPTS tries at one code.
+        $claimed = $this->db->execute(
+            'UPDATE whmcs_login_challenges
+             SET failed_attempts = failed_attempts + 1,
+                 updated_at = :updated_at
+             WHERE id = :id
+               AND verified_at IS NULL
+               AND failed_attempts < :max_attempts',
+            [
+                'id' => $challenge['id'],
+                'updated_at' => $this->now(),
+                'max_attempts' => self::MAX_CHALLENGE_ATTEMPTS,
+            ]
+        );
+        if ($claimed < 1) {
+            throw $this->burnedChallengeException();
+        }
+
+        $submitted = preg_replace('/\s+/', '', $code) ?? '';
+        $codeMatches = hash_equals((string) $challenge['verification_code_hash'], hash('sha256', $submitted));
+        if (!$codeMatches || (int) ($challenge['whmcs_client_id'] ?? 0) <= 0) {
+            $remaining = self::MAX_CHALLENGE_ATTEMPTS - ((int) ($challenge['failed_attempts'] ?? 0) + 1);
+            if ($remaining <= 0) {
+                throw $this->burnedChallengeException();
+            }
+            throw new ApiException('whmcs_verification_code_invalid', 422, [
+                'message' => 'The verification code is incorrect. ' . $remaining . ' attempt(s) left before this code is cancelled.',
+                'attempts_remaining' => $remaining,
+            ]);
         }
 
         $user = $this->db->fetchOne('SELECT * FROM users WHERE id = :id LIMIT 1', ['id' => $challenge['user_id']]);
@@ -247,6 +322,7 @@ final class WhmcsIdentityService
         $this->db->execute(
             'UPDATE whmcs_login_challenges
              SET verified_at = :verified_at,
+                 failed_attempts = CASE WHEN failed_attempts > 0 THEN failed_attempts - 1 ELSE 0 END,
                  updated_at = :updated_at
              WHERE id = :id',
             [
@@ -403,12 +479,47 @@ final class WhmcsIdentityService
         $remoteBefore = $this->parseMoney($remote['credit'] ?? 0);
         $currency = strtoupper(trim((string) ($remote['currency_code'] ?? $user['wallet_currency'] ?? 'CNY')));
 
+        $whmcsClientId = (int) $remote['whmcs_client_id'];
+        $now = $this->now();
+
         if ($direction === 'panel_to_whmcs') {
-            if ($localBefore < $amount) {
+            // Security: debit the panel wallet ATOMICALLY and BEFORE crediting
+            // the remote Buy-station account. The previous order (unlocked check
+            // -> remote credit -> absolute panel write) let N concurrent requests
+            // from separate sessions each pass the check and each credit WHMCS
+            // while the panel balance was written down only once — minting remote
+            // credit that pays real invoices. The conditional decrement commits
+            // exactly once per request; a 0 row-count means the funds are gone.
+            $affected = $this->db->execute(
+                'UPDATE users
+                 SET wallet_balance = wallet_balance - :amount,
+                     wallet_currency = :wallet_currency,
+                     whmcs_last_synced_at = :synced_at,
+                     updated_at = :updated_at
+                 WHERE id = :id
+                   AND wallet_balance >= :amount_guard',
+                [
+                    'id' => $userId,
+                    'amount' => $this->money($amount),
+                    'amount_guard' => $this->money($amount),
+                    'wallet_currency' => $currency,
+                    'synced_at' => $now,
+                    'updated_at' => $now,
+                ]
+            );
+            if ((int) $affected < 1) {
                 throw new ApiException('wallet_balance_insufficient', 422, ['message' => 'Your panel balance is not enough for this transfer.']);
             }
-
-            $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan panel balance transfer', $amount, 'add');
+            try {
+                $this->whmcs->addCredit($whmcsClientId, 'LeiKwan panel balance transfer', $amount, 'add');
+            } catch (\Throwable $throwable) {
+                // Remote credit failed: refund the panel debit so money is conserved.
+                $this->db->execute(
+                    'UPDATE users SET wallet_balance = wallet_balance + :amount, updated_at = :updated_at WHERE id = :id',
+                    ['id' => $userId, 'amount' => $this->money($amount), 'updated_at' => $this->now()]
+                );
+                throw $throwable;
+            }
             $localAfter = $localBefore - $amount;
             $remoteAfter = $remoteBefore + $amount;
         } elseif ($direction === 'whmcs_to_panel') {
@@ -416,56 +527,58 @@ final class WhmcsIdentityService
                 throw new ApiException('whmcs_balance_insufficient', 422, ['message' => 'Your Buy station credit is not enough for this transfer.']);
             }
 
-            $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan panel balance transfer', $amount, 'remove');
+            // Remove from the remote account first; credit the panel only on success.
+            $this->whmcs->addCredit($whmcsClientId, 'LeiKwan panel balance transfer', $amount, 'remove');
+            try {
+                $this->db->execute(
+                    'UPDATE users
+                     SET wallet_balance = wallet_balance + :amount,
+                         wallet_currency = :wallet_currency,
+                         whmcs_last_synced_at = :synced_at,
+                         updated_at = :updated_at
+                     WHERE id = :id',
+                    [
+                        'id' => $userId,
+                        'amount' => $this->money($amount),
+                        'wallet_currency' => $currency,
+                        'synced_at' => $now,
+                        'updated_at' => $now,
+                    ]
+                );
+            } catch (\Throwable $throwable) {
+                // Panel credit failed: give the removed remote credit back.
+                try {
+                    $this->whmcs->addCredit($whmcsClientId, 'LeiKwan transfer rollback', $amount, 'add');
+                } catch (\Throwable) {
+                }
+                throw $throwable;
+            }
             $localAfter = $localBefore + $amount;
             $remoteAfter = $remoteBefore - $amount;
         } else {
             throw new ApiException('wallet_transfer_invalid_direction', 422, ['message' => 'Unsupported transfer direction.']);
         }
 
+        // Ledger row (best-effort; the balance movement above is authoritative).
+        $freshLocal = $this->db->fetchOne('SELECT wallet_balance FROM users WHERE id = :id LIMIT 1', ['id' => $userId]);
+        $localAfterActual = $freshLocal !== null ? $this->parseMoney($freshLocal['wallet_balance'] ?? $localAfter) : $localAfter;
         try {
-            $this->db->transaction(function () use ($userId, $direction, $amount, $currency, $localBefore, $localAfter, $remoteBefore, $remoteAfter, $remote): void {
-                $now = $this->now();
-                $this->db->execute(
-                    'UPDATE users
-                     SET wallet_balance = :wallet_balance,
-                         wallet_currency = :wallet_currency,
-                         whmcs_last_synced_at = :whmcs_last_synced_at,
-                         updated_at = :updated_at
-                     WHERE id = :id',
-                    [
-                        'id' => $userId,
-                        'wallet_balance' => $this->money($localAfter),
-                        'wallet_currency' => $currency,
-                        'whmcs_last_synced_at' => $now,
-                        'updated_at' => $now,
-                    ]
-                );
-
-                $this->db->insert('wallet_transactions', [
-                    'user_id' => $userId,
-                    'direction' => $direction,
-                    'amount' => $this->money($amount),
-                    'currency' => $currency,
-                    'panel_balance_before' => $this->money($localBefore),
-                    'panel_balance_after' => $this->money($localAfter),
-                    'whmcs_balance_before' => $this->money($remoteBefore),
-                    'whmcs_balance_after' => $this->money($remoteAfter),
-                    'context_json' => json_encode([
-                        'whmcs_client_id' => (int) $remote['whmcs_client_id'],
-                        'source' => 'whmcs',
-                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                    'created_at' => $now,
-                ]);
-            });
-        } catch (\Throwable $throwable) {
-            $compensationType = $direction === 'panel_to_whmcs' ? 'remove' : 'add';
-            try {
-                $this->whmcs->addCredit((int) $remote['whmcs_client_id'], 'LeiKwan transfer rollback', $amount, $compensationType);
-            } catch (\Throwable) {
-            }
-
-            throw $throwable;
+            $this->db->insert('wallet_transactions', [
+                'user_id' => $userId,
+                'direction' => $direction,
+                'amount' => $this->money($amount),
+                'currency' => $currency,
+                'panel_balance_before' => $this->money($localBefore),
+                'panel_balance_after' => $this->money($localAfterActual),
+                'whmcs_balance_before' => $this->money($remoteBefore),
+                'whmcs_balance_after' => $this->money($remoteAfter),
+                'context_json' => json_encode([
+                    'whmcs_client_id' => $whmcsClientId,
+                    'source' => 'whmcs',
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'created_at' => $this->now(),
+            ]);
+        } catch (\Throwable) {
         }
 
         return $this->accountSnapshot($userId);
@@ -552,7 +665,49 @@ final class WhmcsIdentityService
             'credit_formatted' => (string) ($client['formattedcredit'] ?? ''),
             'stats' => is_array($client['stats'] ?? null) ? $client['stats'] : [],
             'client' => $client,
-            'products' => $this->whmcs->fetchClientProducts(100, 0, $clientId),
+            // Product inventory is fetched when the billing snapshot is opened. It is
+            // not part of resolving or binding an identity.
+            'products' => [],
+        ];
+    }
+
+    /**
+     * UserInfo from the first-party WHMCS adapter can carry the already verified
+     * client/owner relationship. Use it before the management API lookup, which may
+     * be blocked by WHMCS source-IP allowlisting even when OIDC succeeded.
+     *
+     * @param array<string, mixed> $identity
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>|null
+     */
+    private function profileFromAuthenticatedIdentity(array $identity, array $user): ?array
+    {
+        $clientId = max(0, (int) ($identity['whmcs_client_id'] ?? 0));
+        $ownerId = max(0, (int) ($identity['whmcs_user_id'] ?? 0));
+        $identityEmail = strtolower(trim((string) ($identity['email'] ?? '')));
+        $userEmail = strtolower(trim((string) ($user['email'] ?? '')));
+        if (
+            ($identity['email_verified'] ?? null) !== true
+            || $clientId <= 0
+            || $ownerId <= 0
+            || $identityEmail === ''
+            || $identityEmail !== $userEmail
+        ) {
+            return null;
+        }
+
+        return [
+            'whmcs_user_id' => $ownerId,
+            'whmcs_client_id' => $clientId,
+            'email' => $identityEmail,
+            'full_name' => trim((string) ($identity['name'] ?? '')),
+            'company_name' => '',
+            'currency_code' => 'CNY',
+            'credit' => 0.0,
+            'credit_formatted' => '',
+            'stats' => [],
+            'client' => [],
+            'products' => [],
         ];
     }
 
@@ -796,6 +951,9 @@ final class WhmcsIdentityService
         if (!empty($challenge['verified_at'])) {
             throw new ApiException('whmcs_challenge_used', 410, ['message' => 'This Buy station verification code has already been used.']);
         }
+        if ((int) ($challenge['failed_attempts'] ?? 0) >= self::MAX_CHALLENGE_ATTEMPTS) {
+            throw $this->burnedChallengeException();
+        }
 
         $expiresAt = strtotime((string) ($challenge['expires_at'] ?? ''));
         if ($expiresAt === false || $expiresAt < time()) {
@@ -885,6 +1043,59 @@ final class WhmcsIdentityService
         }
 
         return trim((string) (($client['firstname'] ?? '') . ' ' . ($client['lastname'] ?? '')));
+    }
+
+    private function burnedChallengeException(): ApiException
+    {
+        return new ApiException('whmcs_challenge_locked', 410, ['message' => 'Too many incorrect verification codes. This code has been cancelled; please request a new one.']);
+    }
+
+    /**
+     * A challenge row that looks like a real one to the requester but has no
+     * ticket and no usable code (whmcs_client_id 0, hash of random bytes).
+     *
+     * @param array<string, mixed> $user
+     * @return array<string, mixed>
+     */
+    private function decoyChallenge(array $user, string $targetEmail): array
+    {
+        $now = $this->now();
+        $publicToken = bin2hex(random_bytes(18));
+        $expiresAt = $this->future('+' . self::CHALLENGE_TTL_MINUTES . ' minutes');
+        $challengeId = $this->db->insert('whmcs_login_challenges', [
+            'public_token' => $publicToken,
+            'user_id' => $user['id'],
+            'whmcs_client_id' => 0,
+            'whmcs_user_id' => null,
+            'whmcs_email' => $targetEmail,
+            'verification_code_hash' => hash('sha256', random_bytes(32)),
+            'ticket_id' => null,
+            'ticket_tid' => null,
+            'ticket_access_code' => null,
+            'expires_at' => $expiresAt,
+            'verified_at' => null,
+            'closed_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return [
+            'mode' => 'challenge',
+            'id' => $challengeId,
+            'public_token' => $publicToken,
+            'user' => $user,
+            'ticket_id' => 0,
+            'ticket_tid' => '',
+            'ticket_access_code' => '',
+            'expires_at' => $expiresAt,
+            'email' => $targetEmail,
+            'display_name' => '',
+        ];
+    }
+
+    private function rateLimiter(): AuthRateLimiter
+    {
+        return $this->rateLimiter ??= new AuthRateLimiter($this->db);
     }
 
     private function generateChallengeCode(): string

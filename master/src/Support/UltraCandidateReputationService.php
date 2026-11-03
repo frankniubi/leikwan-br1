@@ -83,6 +83,9 @@ final class UltraCandidateReputationService
     /** @var array<string, array<string, true>> */
     private array $memoryObservers = [];
 
+    /** @var array<string, array<string, true>> */
+    private array $memorySuccessObservers = [];
+
     /** @var array<string, int> */
     private array $memoryLastFailure = [];
 
@@ -396,14 +399,46 @@ final class UltraCandidateReputationService
             $row['last_reason'] = 'canary_probe_ok';
             $row['last_good_at'] = $now;
             $row['last_observed_at'] = $now;
-            if ((string) ($row['state'] ?? self::STATE_HEALTHY) !== self::STATE_QUARANTINED
-                && (int) $row['consecutive_successes'] >= $this->recoverySuccesses) {
+            // Counted on EVERY success, not only once the threshold is crossed.
+            // successObserverCount() is what accumulates the in-memory observer
+            // set, exactly as observerCount() does on the failure side, so
+            // calling it lazily inside the release branch would always see a
+            // single device and the floor could never be met.
+            $successObservers = $this->successObserverCount($candidateHash, $observerHash);
+            $successes = (int) $row['consecutive_successes'];
+            $quarantined = (string) ($row['state'] ?? self::STATE_HEALTHY) === self::STATE_QUARANTINED;
+            if (!$quarantined && $successes >= $this->recoverySuccesses) {
                 $row['state'] = self::STATE_HEALTHY;
                 // backoff_level is deliberately NOT reset: the ladder is the
                 // record of how often this candidate has been quarantined, and
                 // a fixed line still works normally - the level only decides how
                 // long the next quarantine lasts and whether the ramp is skipped.
                 $row['quarantine_until'] = 0;
+            } elseif ($quarantined && $successes >= $this->recoverySuccesses
+                && $successObservers >= $this->minimumObservers) {
+                // A quarantine used to be escapable only by its own timer. The
+                // review path that was meant to disprove the reports cannot
+                // discriminate (a source-host probe is not a client path), and
+                // the failure path needs two independent witnesses to quarantine
+                // in the first place - so the fleet's own successes are the only
+                // honest signal left that a candidate works again.
+                //
+                // The asymmetry is deliberate and is the whole safety argument.
+                // Releasing wrongly costs one serving window: the candidate
+                // lands on PROBATION - the same state the timer expiry uses -
+                // with its backoff rung intact, so the next corroborated failure
+                // puts it straight back into quarantine, and that path still
+                // demands the same independent witnesses. Never releasing costs
+                // the candidate for the entire backoff, up to max_backoff_seconds.
+                //
+                // The floor is the same one a quarantine needs, so no single
+                // device can manufacture a release any more than it can
+                // manufacture a quarantine. Deliberately NOT HEALTHY: probation
+                // restores serving identically (isQuarantined() is false once
+                // quarantine_until is cleared) while keeping the ladder honest.
+                $row['state'] = self::STATE_PROBATION;
+                $row['quarantine_until'] = 0;
+                $row['last_reason'] = 'quarantine_lifted_by_independent_successes';
             }
             $this->persistRow($row);
             $this->persistEvent($row, 'success', 'canary_probe_ok', $observerHash, $evidenceHash);
@@ -734,6 +769,21 @@ final class UltraCandidateReputationService
         return (int) (strtotime(trim($value) . ' UTC') ?: 0);
     }
 
+    /**
+     * How many devices currently qualify as independent witnesses for this
+     * candidate: distinct failure reporters, minus any whose reports the source
+     * host has disproved.
+     *
+     * The count is honest, including zero. It used to be clamped with
+     * max(1, ...), which made "no witnesses" unrepresentable: boundedOption
+     * allows minimum_observers = 1, and a reader that turned 0 into 1 would let a
+     * candidate with no independent reporters satisfy a floor of one. The gate
+     * itself is deliberately left as ">= minimum_observers" - an honest 0 still
+     * fails at the default floor of 2, so gating behaviour is unchanged and only
+     * the stored number (shown in the admin console) becomes truthful. A caller
+     * that genuinely needs "at least one" must say so at the call site instead of
+     * having it baked in here.
+     */
     private function observerCount(string $candidateHash, string $observerHash): int
     {
         $this->memoryObservers[$candidateHash][$observerHash] = true;
@@ -764,7 +814,46 @@ final class UltraCandidateReputationService
         if ((int) ($row['observer_seen'] ?? 0) === 0) {
             $count++;
         }
-        return max(1, $count);
+        // No max(1, ...) clamp: zero is a real and reportable answer.
+        return $count;
+    }
+
+    /**
+     * Distinct devices that have reported this candidate WORKING, excluding any
+     * whose reports the source host has disproved.
+     *
+     * Structurally identical to observerCount() with the event type flipped,
+     * except that it returns the honest count instead of max(1, ...): this
+     * number gates a RELEASE, and inflating "nobody" into "one device" is the
+     * same unrepresentable-zero defect that lets a single witness read as a
+     * quorum on the failure side. observerCount()'s own max(1, ...) is left
+     * alone here - it is load-bearing for the quarantine path and changing it is
+     * a separate decision, not a side effect of this one.
+     */
+    private function successObserverCount(string $candidateHash, string $observerHash): int
+    {
+        $this->memorySuccessObservers[$candidateHash][$observerHash] = true;
+        if ($this->db === null || $this->usesFakeTables()) {
+            return count($this->memorySuccessObservers[$candidateHash] ?? []);
+        }
+        $row = $this->db->fetchOne(
+            'SELECT COUNT(DISTINCT e.observer_hash) AS observer_count,
+                    SUM(CASE WHEN e.observer_hash = :observer_hash THEN 1 ELSE 0 END) AS observer_seen
+               FROM ultra_candidate_reputation_events e
+               LEFT JOIN ultra_observer_devices d ON d.observer_hash = e.observer_hash
+              WHERE e.candidate_key_hash = :candidate_key_hash
+                AND e.event_type = \'success\'
+                AND d.demoted_at IS NULL',
+            ['candidate_key_hash' => $candidateHash, 'observer_hash' => $observerHash]
+        );
+        $count = (int) ($row['observer_count'] ?? 0);
+        // This runs before the current success is persisted, so the reporting
+        // observer is not in the table yet; count it here to stay in step with
+        // the in-memory path.
+        if ((int) ($row['observer_seen'] ?? 0) === 0) {
+            $count++;
+        }
+        return $count;
     }
 
     private function backoffSeconds(int $level): int

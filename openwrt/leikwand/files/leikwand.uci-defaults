@@ -10,6 +10,62 @@ uci -q get leikwan.main >/dev/null 2>&1 || {
 	uci -q commit leikwan
 }
 
+# Panel traffic is pinned to the physical WAN by default, so a TUN proxy or VPN
+# on the router cannot capture it. Existing installs get the default once.
+uci -q get leikwan.main.panel_egress_interface >/dev/null 2>&1 || {
+	uci -q set leikwan.main.panel_egress_interface='auto'
+	uci -q commit leikwan
+}
+
+# Router edition schema 3: the transparent gateway (sing-box TUN), the split
+# carrier and the multi-WAN manager are gone. The native outbound relay is
+# started by the daemon whenever the Panel grants it; only the scope and the
+# policy remain operator-configurable. Old keys are dropped so a leftover
+# mode=gateway cannot suggest a feature this edition does not have.
+if [ "$(uci -q get leikwan.main.schema)" != "3" ]; then
+	uci -q set leikwan.main.gateway_forward_id='0'
+	uci -q set leikwan.main.gateway_route_scope='auto'
+	uci -q set leikwan.main.gateway_route_policy='auto'
+	uci -q delete leikwan.main.mode
+	uci -q delete leikwan.main.gateway_enabled
+	uci -q delete leikwan.main.gateway_tun_address
+	uci -q delete leikwan.main.gateway_tun_address6
+	uci -q delete leikwan.main.gateway_tun_mtu
+	uci -q delete leikwan.main.gateway_dns_mode
+	uci -q delete leikwan.main.gateway_dns_servers
+	uci -q delete leikwan.main.gateway_bypass_cn
+	uci -q delete leikwan.main.gateway_singbox_bin
+	uci -q delete leikwan.main.gateway_rule_set_dir
+	uci -q delete leikwan.main.gateway_split_forward_id
+	uci -q delete leikwan.main.gateway_split_route_policy
+	uci -q delete leikwan.main.gateway_split_cidr_file
+	uci -q delete leikwan.main.gateway_capture
+	uci -q delete leikwan.main.gateway_schema
+	uci -q delete leikwan.main.uplink_enabled
+	uci -q delete leikwan.main.uplink_scope
+	uci -q delete leikwan.main.uplink_interfaces
+	uci -q delete leikwan.main.uplink_probe
+	uci -q delete leikwan.main.uplink_interval
+	uci -q delete leikwan.main.uplink_timeout_ms
+	uci -q delete leikwan.main.uplink_fail_threshold
+	uci -q delete leikwan.main.uplink_recover_threshold
+	uci -q delete leikwan.main.uplink_min_improve_pct
+	uci -q delete leikwan.main.uplink_route_table
+	uci -q delete leikwan.main.uplink_fwmark
+	uci -q set leikwan.main.schema='3'
+	uci -q commit leikwan
+fi
+
+# The transparent gateway's firewall zone is inert without sing-box and is
+# removed like the rest of that feature. lan->leikwan forwarding disappears
+# with it; ordinary routing is untouched.
+if uci -q get firewall.leikwan >/dev/null 2>&1; then
+	uci -q delete firewall.leikwan
+	uci -q delete firewall.leikwan_lan
+	uci -q commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+fi
+
 # The runtime directory carries the control socket and its per-boot token.
 mkdir -p /var/run/leikwand
 chmod 700 /var/run/leikwand

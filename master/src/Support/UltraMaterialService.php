@@ -141,17 +141,27 @@ final class UltraMaterialService
             throw new ApiException('ultra_source_ticket_invalid', 401);
         }
         $ticketNonce = trim((string) ($ticketPayload['nonce'] ?? ''));
-        if ($ticketNonce === '' || !$this->consumeReplayValue(self::TICKET_NONCE_PREFIX . hash('sha256', $sourceId), $ticketNonce, 300)) {
+        if ($ticketNonce === '') {
             throw new ApiException('ultra_source_ticket_replayed', 409);
         }
+        // Acquiring a line invalidates the credential clients currently hold
+        // for it, so the source uploads each line the moment it has it rather
+        // than batching the cycle. A ticket therefore admits several uploads,
+        // but each of its lines at most once.
+        $replayScope = self::TICKET_NONCE_PREFIX . hash('sha256', $sourceId);
         $allowed = array_fill_keys($this->normalizeLineIds((array) ($ticketPayload['line_ids'] ?? [])), true);
         $accepted = [];
+        $replayed = 0;
         foreach (array_slice($materials, 0, 8) as $raw) {
             if (!is_array($raw)) {
                 continue;
             }
             $material = $this->normalizeMaterial($raw, $now);
             if ($material === null || !isset($allowed[$material['line_id']])) {
+                continue;
+            }
+            if (!$this->consumeReplayValue($replayScope, $ticketNonce . ':' . $material['line_id'], 300)) {
+                $replayed++;
                 continue;
             }
             $existing = $this->loadMaterial($sourceId, $material['line_id'], false);
@@ -182,6 +192,9 @@ final class UltraMaterialService
                 }
             }
             $accepted[$material['line_id']] = $material['line_id'];
+        }
+        if ($accepted === [] && $replayed > 0) {
+            throw new ApiException('ultra_source_ticket_replayed', 409);
         }
         ksort($accepted, SORT_NUMERIC);
         return array_values($accepted);
@@ -485,10 +498,83 @@ final class UltraMaterialService
         return $this->candidateReputation->snapshotFingerprint($scopes);
     }
 
-    /** @return array<string, array<string, mixed>> */
-    public function loadGrantCache(int $clientId, string $deviceId): array
+    /**
+     * Revocation bookkeeping for the policy-generation derivation.
+     *
+     * A policy generation is a pure function of the request, so a generation the
+     * lease plane has already refused would be re-minted on every pull for ever:
+     * the forward stays enabled with no lease, the agent retries the same dead
+     * generation, and no client-side change can break the loop. The broker needs
+     * to know which generations are dead and how far the forward's revocation
+     * history has advanced so it can hand out one the lease plane will honour.
+     *
+     * @param array<int, int|string> $forwardIds
+     * @return array{epochs: array<int, int>, revoked: array<string, true>}
+     */
+    public function revocationIndex(array $forwardIds): array
     {
-        $decoded = $this->open((string) $this->settingGet($this->grantCacheKey($clientId, $deviceId), ''));
+        $empty = ['epochs' => [], 'revoked' => []];
+        if ($this->db === null) {
+            return $empty;
+        }
+
+        $ids = [];
+        foreach ($forwardIds as $forwardId) {
+            $id = (int) $forwardId;
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
+        }
+        if ($ids === []) {
+            return $empty;
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach (array_values($ids) as $index => $id) {
+            $placeholders[] = ':forward_' . $index;
+            $params['forward_' . $index] = $id;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT forward_id, policy_generation, MAX(id) AS epoch
+             FROM ultra_client_leases
+             WHERE revoked_at IS NOT NULL AND forward_id IN (' . implode(', ', $placeholders) . ')
+             GROUP BY forward_id, policy_generation',
+            $params
+        );
+
+        $epochs = [];
+        $revoked = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            if ($forwardId <= 0) {
+                continue;
+            }
+            $epoch = (int) ($row['epoch'] ?? 0);
+            if ($epoch > ($epochs[$forwardId] ?? 0)) {
+                $epochs[$forwardId] = $epoch;
+            }
+            $generation = strtolower(trim((string) ($row['policy_generation'] ?? '')));
+            if ($generation !== '') {
+                $revoked[$forwardId . ':' . $generation] = true;
+            }
+        }
+
+        return ['epochs' => $epochs, 'revoked' => $revoked];
+    }
+
+    /**
+     * $validityClass keeps long (offline-capable) grants apart from the short
+     * legacy ones: '' is the legacy cache key, unchanged; any other class gets
+     * its own key, so a short grant is never handed to a capable client and a
+     * long grant never reaches a client that did not ask for one.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    public function loadGrantCache(int $clientId, string $deviceId, string $validityClass = ''): array
+    {
+        $decoded = $this->open((string) $this->settingGet($this->grantCacheKey($clientId, $deviceId, $validityClass), ''));
         $grants = is_array($decoded['grants'] ?? null) ? $decoded['grants'] : [];
         $result = [];
         foreach ($grants as $forwardId => $grant) {
@@ -500,11 +586,11 @@ final class UltraMaterialService
     }
 
     /** @param array<string, array<string, mixed>> $grants */
-    public function saveGrantCache(int $clientId, string $deviceId, array $grants): void
+    public function saveGrantCache(int $clientId, string $deviceId, array $grants, string $validityClass = ''): void
     {
         $encoded = $this->seal(['kind' => 'grant-cache', 'grants' => $grants]);
         if ($encoded !== null) {
-            $this->settingSet($this->grantCacheKey($clientId, $deviceId), $encoded);
+            $this->settingSet($this->grantCacheKey($clientId, $deviceId, $validityClass), $encoded);
         }
     }
 
@@ -786,7 +872,7 @@ final class UltraMaterialService
             }
         }
         ksort($result, SORT_NUMERIC);
-        return array_slice(array_values($result), 0, 8);
+        return array_slice(array_values($result), 0, 16);
     }
 
     private function materialKey(string $sourceId, int $lineId): string
@@ -857,9 +943,14 @@ final class UltraMaterialService
         return true;
     }
 
-    private function grantCacheKey(int $clientId, string $deviceId): string
+    private function grantCacheKey(int $clientId, string $deviceId, string $validityClass = ''): string
     {
-        return self::GRANT_CACHE_PREFIX . $clientId . '.device.' . hash('sha256', $deviceId !== '' ? $deviceId : 'none');
+        $key = self::GRANT_CACHE_PREFIX . $clientId . '.device.' . hash('sha256', $deviceId !== '' ? $deviceId : 'none');
+        $validityClass = strtolower(trim($validityClass));
+        if ($validityClass !== '' && preg_match('/^[a-z0-9]{1,16}$/', $validityClass) === 1) {
+            $key .= '.' . $validityClass;
+        }
+        return $key;
     }
 
     private function candidateDynamicQuarantineEnabled(): bool
@@ -1123,6 +1214,22 @@ final class UltraMaterialService
             return [];
         }
         return is_array($decoded) && !array_is_list($decoded) ? $decoded : [];
+    }
+
+    /**
+     * How far ahead of material expiry a line is handed back to the source
+     * agent for re-acquisition. Default 600 (the historical value). It must
+     * stay below the source agent's material_lifetime_seconds minus its poll
+     * interval, or every poll re-acquires every line; so it is capped at the
+     * panel's material TTL ceiling minus 300 s.
+     */
+    public function materialRefreshWindowSeconds(): int
+    {
+        $raw = trim((string) $this->config->get(UltraMode::MATERIAL_REFRESH_WINDOW_KEY, ''));
+        if ($raw === '' || preg_match('/^[0-9]+$/', $raw) !== 1) {
+            return UltraMode::DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS;
+        }
+        return max(60, min($this->materialMaxTtlSeconds() - 300, (int) $raw));
     }
 
     private function materialMaxTtlSeconds(): int

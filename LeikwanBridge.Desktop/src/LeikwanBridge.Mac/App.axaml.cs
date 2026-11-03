@@ -4,6 +4,7 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using LeikwanBridge.Mac.Localization;
 using LeikwanBridge.Mac.Services;
 using LeikwanBridge.Mac.ViewModels;
 using LeikwanBridge.Mac.Views;
@@ -48,13 +49,40 @@ public sealed partial class App : Application
     private static void InitializeUiFixture(IClassicDesktopStyleApplicationLifetime desktop)
     {
         desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        // Screenshot-only knobs, honoured only behind LEIKWAN_TEST_UI=1 (see Program).
+        var theme = MacAppearance.Normalize(Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_THEME"));
+        MacAppearance.Apply(theme);
+        var language = L.Normalize(Environment.GetEnvironmentVariable("LEIKWAN_TEST_UI_LANG"));
+        L.Apply(language);
         var controller = new MacUiFixtureController(UiFixtureState);
+        var traffic = new MacUiFixtureTraffic();
         var viewModel = new MainWindowViewModel(
             controller,
             closeToTray: false,
-            dispatch: action => action());
-        if (string.Equals(UiFixtureState, "settings", StringComparison.Ordinal))
-            viewModel.ShowSettingsCommand.Execute(null);
+            dispatch: action => action(),
+            language: language,
+            themeMode: theme,
+            trafficCounters: string.Equals(UiFixtureState, "login", StringComparison.Ordinal) ? null : traffic.Next,
+            nodeLibrary: new MacUiFixtureNodeLibrary());
+        switch (UiFixtureState)
+        {
+            case "settings":
+                viewModel.ShowSettingsCommand.Execute(null);
+                break;
+            case "services":
+                viewModel.ShowConnectionsCommand.Execute(null);
+                break;
+            case "nodes":
+                viewModel.ShowNodesCommand.Execute(null);
+                break;
+            case "pairing":
+                viewModel.ShowPairingCommand.Execute(null);
+                break;
+        }
+        // Warm the speed chart and running timer so a capture shows live-looking data.
+        var start = DateTimeOffset.UtcNow.AddSeconds(-TrafficMonitor.HistoryLength - 1);
+        for (var second = 0; second <= TrafficMonitor.HistoryLength; second++)
+            viewModel.Tick(start.AddSeconds(second));
         var window = new MainWindow
         {
             DataContext = viewModel,
@@ -112,6 +140,10 @@ public sealed partial class App : Application
         MacAppServices services)
     {
         _services = services;
+        L.Apply(services.Config.Language);
+        var uiPreferences = new MacUiPreferencesStore(PlatformPaths.Root.TrimEnd('/', '\\') + "/ui-preferences.json");
+        var themeMode = uiPreferences.LoadThemeMode();
+        MacAppearance.Apply(themeMode);
         var config = services.Config;
         var viewModel = new MainWindowViewModel(
             services.Controller,
@@ -134,7 +166,28 @@ public sealed partial class App : Application
             savedAgentToken: config.AgentToken,
             rememberLoginInfoChanged: value => config.RememberLoginInfo = value,
             checkForUpdatesWithProgress: (progress, ct) => CheckForUpdatesAsync(ct, notifyWhenCurrent: true, progress),
-            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress));
+            installUpdateWithProgress: (progress, ct) => InstallUpdateAsync(desktop, ct, progress),
+            logLevel: config.LogLevel,
+            saveLogLevel: async (level, ct) =>
+            {
+                config.LogLevel = DesktopLogLevel.Normalize(level);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+                MacAppBootstrap.ReconfigureLogging(PlatformPaths, config.LogLevel);
+            },
+            preferredEgressInterface: config.PreferredEgressInterface,
+            saveEgressInterface: async (interfaceName, ct) =>
+            {
+                config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+                PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
+                services.Connections.SetPreferredEgressInterface(config.PreferredEgressInterface);
+                await services.ConfigStore.SaveAsync(config, ct).ConfigureAwait(false);
+            },
+            trafficCounters: new MacTrafficCounterReader(
+                () => config.GetEffectiveStateDir(),
+                PlatformPaths.RuntimeDirectory).Read,
+            nodeLibrary: services.NodeLibrary,
+            themeMode: themeMode,
+            saveThemeMode: (mode, ct) => uiPreferences.SaveThemeModeAsync(mode, ct));
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         desktop.MainWindow = _window;
@@ -160,11 +213,11 @@ public sealed partial class App : Application
         try
         {
             using var stream = AssetLoader.Open(new Uri("avares://LeikwanBridge.Mac/Assets/app-icon.png"));
-            var show = new NativeMenuItem("Show LeiKwan Bridge");
+            var show = new NativeMenuItem(L.T("TrayShow", "Show LeiKwan Bridge"));
             show.Click += (_, _) => RestoreWindow();
-            var startAll = new NativeMenuItem("Start All") { Command = viewModel.StartAllCommand };
-            var stopAll = new NativeMenuItem("Stop All") { Command = viewModel.StopAllCommand };
-            var quit = new NativeMenuItem("Quit");
+            var startAll = new NativeMenuItem(L.T("StartAllLabel", "Start all")) { Command = viewModel.StartAllCommand };
+            var stopAll = new NativeMenuItem(L.T("StopAllLabel", "Stop all")) { Command = viewModel.StopAllCommand };
+            var quit = new NativeMenuItem(L.T("TrayQuit", "Quit"));
             quit.Click += (_, _) => _ = QuitAsync(desktop);
             var menu = new NativeMenu();
             menu.Items.Add(show);
@@ -217,30 +270,47 @@ public sealed partial class App : Application
         {
             // Prefer the live view-model selection so an endpoint change made
             // moments ago applies even before the config write settles.
-            var panelUrl = string.IsNullOrWhiteSpace(UpdateViewModel?.PanelUrl)
-                ? _services.Config.MasterUrl
-                : UpdateViewModel!.PanelUrl;
+            // Avalonia controls are thread-affine. Startup calls this method
+            // after the bootstrap continuation has deliberately left the UI
+            // thread, so reading DataContext here used to throw
+            // `Call from invalid thread` and abort every automatic update check.
+            var panelUrl = await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                var selected = UpdateViewModel?.PanelUrl;
+                return string.IsNullOrWhiteSpace(selected)
+                    ? _services.Config.MasterUrl
+                    : selected!;
+            });
             var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
             _availableUpdate = await _services.Updater.CheckAsync(
                 panelUrl,
                 currentVersion,
                 progress,
                 ct);
-            if (_availableUpdate is null)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (notifyWhenCurrent)
-                    _services.Controller.PublishNotice("LeiKwan Bridge is up to date.");
+                if (_availableUpdate is null)
+                {
+                    // While the panel's minimum is unmet the required overlay
+                    // already says no installable update is known yet.
+                    if (notifyWhenCurrent && UpdateViewModel?.IsUpdateRequired != true)
+                        _services.Controller.PublishNotice(L.T("NoticeUpToDate", "LeiKwan Bridge is up to date."));
+                    UpdateViewModel?.ReportUpdateFinished();
+                    return;
+                }
+
+                _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
                 UpdateViewModel?.ReportUpdateFinished();
-                return;
-            }
-            _services.Controller.PublishUpdateAvailable(_availableUpdate.Version);
-            UpdateViewModel?.ReportUpdateFinished();
+            });
         }
         catch (Exception exception)
         {
             Log.Warning(exception, "update_check_failed");
-            _services.Controller.PublishNotice("The update check could not be completed.");
-            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice(L.T("NoticeUpdateCheckFailed", "The update check could not be completed."));
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "check");
+            });
         }
     }
 
@@ -265,8 +335,11 @@ public sealed partial class App : Application
             var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, progress, ct);
             if (result.RequiresManualInstall)
             {
-                _services.Controller.PublishNotice("A verified disk image was opened for manual replacement.");
-                UpdateViewModel?.ReportUpdateFinished();
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    _services.Controller.PublishNotice(L.T("NoticeManualInstall", "A verified disk image was opened for manual replacement."));
+                    UpdateViewModel?.ReportUpdateFinished();
+                });
                 return;
             }
             if (result.Started)
@@ -275,8 +348,11 @@ public sealed partial class App : Application
         catch (Exception exception)
         {
             Log.Warning(exception, "update_install_failed");
-            _services.Controller.PublishNotice("The update could not be installed.");
-            UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _services.Controller.PublishNotice(L.T("NoticeUpdateInstallFailed", "The update could not be installed."));
+                UpdateViewModel?.ReportUpdateFailure(BoundErrorCode(exception), "install");
+            });
         }
     }
 

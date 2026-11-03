@@ -1,0 +1,4 @@
+module LeikwanRuntime {
+    header "leikwan_runtime.h"
+    export *
+}

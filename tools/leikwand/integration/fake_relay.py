@@ -12,6 +12,7 @@ deterministic and offline.
 Usage: fake_relay.py <listen-port> <echo-port> [--reject-auth]
 """
 
+import os
 import socket
 import sys
 import threading
@@ -19,6 +20,12 @@ import threading
 LISTEN = int(sys.argv[1])
 ECHO = int(sys.argv[2])
 REJECT_AUTH = "--reject-auth" in sys.argv
+# Loopback is the right default for the host-only integration suite. The
+# router VM test sets FAKE_RELAY_HOST=0.0.0.0: the router is a separate
+# machine (QEMU guest) and reaches the relay over the user network, so a
+# loopback-only listener would make every candidate probe fail.
+HOST = os.environ.get("FAKE_RELAY_HOST", "127.0.0.1")
+RELAY_LOG = os.environ.get("FAKE_RELAY_LOG", "")
 
 
 def read_exactly(conn, count):
@@ -85,9 +92,26 @@ def splice(left, right):
     second.join()
 
 
+def note_connection(user):
+    """Record the authenticated identity, when the harness asked for it.
+
+    Each candidate lease carries its own credential, so the user name is how a
+    test tells which relay actually carried a stream — the only honest way to
+    prove a failover happened (a counter can lag the event by a poll cycle).
+    """
+    if not RELAY_LOG:
+        return
+    try:
+        with open(RELAY_LOG, "a") as handle:
+            handle.write(user.decode(errors="replace") + "\n")
+    except OSError:
+        pass
+
+
 def handle(conn):
     try:
         user, _password = read_handshake(conn)
+        note_connection(user)
         if REJECT_AUTH:
             conn.sendall(b"\x05\x02\x01\x01")   # authentication rejected
             return
@@ -116,7 +140,7 @@ def handle(conn):
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(("127.0.0.1", LISTEN))
+    server.bind((HOST, LISTEN))
     server.listen(64)
     while True:
         try:

@@ -39,6 +39,8 @@ fun AddUriDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
                 value = text,
                 onValueChange = { text = it },
                 label = { Text(stringResource(R.string.add_proxy_uri_label)) },
+                // The add flow is the one place that names the supported protocols.
+                supportingText = { Text(stringResource(R.string.own_node_supported_protocols)) },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3,
                 maxLines = 6,
@@ -104,7 +106,7 @@ fun EditProxyDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.edit_proxy_title_format, node.type.uppercase())) },
+        title = { Text(stringResource(R.string.edit_node_title)) },
         text = {
             Column(
                 modifier = Modifier

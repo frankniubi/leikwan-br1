@@ -9,7 +9,7 @@ use Leikwan\Master\Config;
 use Throwable;
 
 /** Compatibility class name; all behavior and persisted state are Ultra-only. */
-final class LeigodTokenBroker implements LeigodTokenProvider
+final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
 {
     /** @var callable(): int */
     private $clock;
@@ -32,10 +32,44 @@ final class LeigodTokenBroker implements LeigodTokenProvider
      */
     public function grantsForClientForwards(int $clientId, string $deviceId, array $forwards, bool $policyV2 = false): array
     {
+        return $this->grantsForClientForwardsWithOfflineValidity($clientId, $deviceId, $forwards, $policyV2, 0);
+    }
+
+    /**
+     * Same as grantsForClientForwards(), plus the client's announced offline
+     * validity (UltraMode::OFFLINE_VALIDITY_HEADER, already parsed; 0 = absent).
+     *
+     * Header absent (or long grants switched off): exactly the short path.
+     * Header present on policy v2: expires_at = now + V where
+     * V = min(header, ULTRA_OFFLINE_VALIDITY_SECONDS, material expiry - now,
+     * service expiry - now); renew_after = now + ULTRA_RENEW_INTERVAL_SECONDS;
+     * quota_remaining_bytes = min(remaining, slice). The capability-v1 path
+     * ignores the header.
+     *
+     * policy_generation is deliberately the same for both paths: it describes
+     * the scope (target, transport, rate, remaining quota, material), not the
+     * lifetime. A runtime refuses a generation it has seen before once it has
+     * moved on (ErrPolicyRollback), so a client that alternates between a long
+     * and a short grant must never see the generation flip back and forth.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<string, array<string, mixed>>
+     */
+    public function grantsForClientForwardsWithOfflineValidity(
+        int $clientId,
+        string $deviceId,
+        array $forwards,
+        bool $policyV2,
+        int $offlineValiditySeconds,
+    ): array {
         if ($clientId <= 0) {
             return [];
         }
-        $requested = $this->eligibleForwards($forwards);
+        $requested = $this->eligibleForwards($this->assignExternalUoT(
+            $clientId,
+            $deviceId,
+            ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId)
+        ));
         if ($requested === []) {
             return [];
         }
@@ -43,7 +77,14 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             return $this->legacyGrantsForClientForwards($clientId, $deviceId, $requested);
         }
         $now = $this->now();
-        $cached = $this->materials->loadGrantCache($clientId, $deviceId);
+        // 0 = short legacy grants. Otherwise the ceiling for this request; it
+        // also names the grant cache, so short and long grants never mix.
+        $validityCap = UltraMode::offlineValidityCapSeconds($this->config, $offlineValiditySeconds);
+        $validityClass = $validityCap > 0 ? 'ov' . $validityCap : '';
+        $cached = $this->materials->loadGrantCache($clientId, $deviceId, $validityClass);
+        // One query for the whole batch: which generations the lease plane has
+        // already refused, and how far each forward's revocation history has run.
+        $revocations = $this->materials->revocationIndex(array_keys($requested));
         $result = [];
         foreach ($requested as $forwardId => $request) {
             $grant = $cached[$forwardId] ?? null;
@@ -54,11 +95,12 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
                 $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
                 if ($this->grantUsable($grant, $now)
+                    && !isset($revocations['revoked'][((int) $forwardId) . ':' . strtolower(trim((string) ($grant['policy_generation'] ?? '')))])
                     && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
                     && (int) ($grant['quota_remaining_bytes'] ?? 0) > 0
                     && $currentQuota >= (int) ($grant['quota_remaining_bytes'] ?? 0)
                     && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
-                    $result[$forwardId] = $grant;
+                    $result[$forwardId] = $this->attachExternalUoT($grant, $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
                 }
                 continue;
             }
@@ -66,7 +108,15 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             $serviceExpiresAt = $this->parseServiceExpiry((string) ($request['service_expire_at'] ?? ''));
             $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
             $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
-            $policyGeneration = $this->policyGeneration($request, (string) $snapshot['fingerprint'], $quotaBytes);
+            $policyGeneration = $this->policyGeneration(
+                $request,
+                (string) $snapshot['fingerprint'],
+                $quotaBytes,
+                [
+                    'epoch' => (int) ($revocations['epochs'][(int) $forwardId] ?? 0),
+                    'revoked' => $revocations['revoked'],
+                ]
+            );
             if ($this->grantUsable($grant, $now)
                 && hash_equals($policyGeneration, (string) ($grant['policy_generation'] ?? ''))
                 && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now
@@ -74,13 +124,20 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 && $quotaBytes >= (int) ($grant['quota_remaining_bytes'] ?? 0)
                 && ($serviceExpiresAt === null || $serviceExpiresAt > $now)
                 && ($currentRate <= 0 || $grantRate <= 0 || $currentRate >= $grantRate)) {
-                $result[$forwardId] = $grant;
+                $result[$forwardId] = $this->attachExternalUoT(
+                    $grant,
+                    $request['external_uot'] ?? null,
+                    (string) ($request['target'] ?? '')
+                );
                 continue;
             }
             if ($quotaBytes <= 0 || ($serviceExpiresAt !== null && $serviceExpiresAt <= $now)) {
                 continue;
             }
-            $expiryCandidates = [$now + $this->maxTtlSeconds(), (int) $snapshot['expires_at']];
+            $expiryCandidates = [
+                $now + ($validityCap > 0 ? $validityCap : $this->maxTtlSeconds()),
+                (int) $snapshot['expires_at'],
+            ];
             if ($serviceExpiresAt !== null) {
                 $expiryCandidates[] = $serviceExpiresAt;
             }
@@ -88,7 +145,21 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             if ($expiresAt <= $now + 30) {
                 continue;
             }
-            $renewAfter = max($now + 30, $expiresAt - $this->refreshSkewSeconds());
+            $grantQuotaBytes = $quotaBytes;
+            if ($validityCap > 0) {
+                // Long grant: renew on the same cadence as the short path so
+                // revocation, suspension and quota changes still land on the
+                // next pull, while an unreachable panel leaves the client
+                // serving until expires_at.
+                $renewAfter = $now + $this->renewIntervalSeconds($expiresAt - $now);
+                $grantQuotaBytes = $this->grantQuotaSliceBytes(
+                    $quotaBytes,
+                    (int) $request['speed_limit_mbps'],
+                    $expiresAt - $now
+                );
+            } else {
+                $renewAfter = max($now + 30, $expiresAt - $this->refreshSkewSeconds());
+            }
             if ($renewAfter >= $expiresAt) {
                 $renewAfter = max($now, $expiresAt - 1);
             }
@@ -124,12 +195,13 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'service_state' => 'active',
                 'transport' => $request['transport'],
                 'rate_limit_mbps' => $request['speed_limit_mbps'],
-                'quota_remaining_bytes' => $quotaBytes,
+                'quota_remaining_bytes' => $grantQuotaBytes,
                 'target_digest' => hash('sha256', (string) $request['target']),
             ];
+            $result[$forwardId] = $this->attachExternalUoT($result[$forwardId], $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
         }
         try {
-            $this->materials->saveGrantCache($clientId, $deviceId, $result);
+            $this->materials->saveGrantCache($clientId, $deviceId, $result, $validityClass);
         } catch (Throwable) {
             // A cache write failure must not invalidate a freshly minted grant.
         }
@@ -152,13 +224,17 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             $grant = $cached[$forwardId] ?? null;
             if ($this->legacyGrantUsable($grant, $now)
                 && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now) {
-                $result[$forwardId] = $grant;
+                $result[$forwardId] = $this->attachExternalUoT(
+                    $grant,
+                    $request['external_uot'] ?? null,
+                    (string) ($request['target'] ?? '')
+                );
                 continue;
             }
             $snapshot = $this->materials->lineSnapshot($request['lines']);
             if ($snapshot === null) {
                 if ($this->legacyGrantUsable($grant, $now)) {
-                    $result[$forwardId] = $grant;
+                    $result[$forwardId] = $this->attachExternalUoT($grant, $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
                 }
                 continue;
             }
@@ -204,6 +280,7 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $request['allowed_ingress_zones'],
                 'fallback_policy' => $request['fallback_policy'],
             ];
+            $result[$forwardId] = $this->attachExternalUoT($result[$forwardId], $request['external_uot'] ?? null, (string) ($request['target'] ?? ''));
         }
         try {
             $this->materials->saveGrantCache($clientId, $deviceId, $result);
@@ -211,6 +288,36 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             // A cache write failure must not invalidate a fresh grant.
         }
         return $result;
+    }
+
+    /**
+     * Route each forward's external UoT sidecar through the pool one forward
+     * at a time. The pool fails closed when a forward's managed origin has no
+     * healthy node, and that must cost only that forward its grant. Assigned
+     * as one batch, a single late pool heartbeat withdrew every grant on the
+     * device, forwards that do not use the pool included, and a router whose
+     * carrier lost its grant in the middle of a renewal crashed on it.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<int, array<string, mixed>>
+     */
+    private function assignExternalUoT(int $clientId, string $deviceId, array $forwards): array
+    {
+        $pool = new ExternalUoTPool($this->config);
+        $assigned = [];
+        foreach ($forwards as $forward) {
+            try {
+                $assigned[] = $pool->assign($clientId, $deviceId, [$forward])[0];
+            } catch (ApiException $exception) {
+                error_log(sprintf(
+                    'ultra_grant_withheld client=%d forward=%d reason=%s',
+                    $clientId,
+                    is_array($forward) ? (int) ($forward['forward_id'] ?? $forward['id'] ?? 0) : 0,
+                    $exception->getMessage()
+                ));
+            }
+        }
+        return $assigned;
     }
 
     /** @param array<int, array<string, mixed>> $forwards @return array<string, array<string, mixed>> */
@@ -286,6 +393,10 @@ final class LeigodTokenBroker implements LeigodTokenProvider
                 'allowed_ingress_zones' => $this->zones((array) ($forward['_ultra_allowed_ingress_zones'] ?? [])),
                 'fallback_policy' => $this->fallbackPolicy((string) ($forward['_ultra_fallback_policy'] ?? 'detected_then_any')),
             ];
+            $externalUoT = $this->normalizeExternalUoT($forward['external_uot'] ?? null, $target);
+            if ($externalUoT !== null) {
+                $result[(string) $forwardId]['external_uot'] = $externalUoT;
+            }
             foreach (['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'] as $quotaKey) {
                 if (array_key_exists($quotaKey, $forward) && $forward[$quotaKey] !== null && $forward[$quotaKey] !== '') {
                     $result[(string) $forwardId][$quotaKey] = max(0, min(UltraMode::MAX_QUOTA_LEASE_BYTES, (int) $forward[$quotaKey]));
@@ -353,6 +464,54 @@ final class LeigodTokenBroker implements LeigodTokenProvider
             : 'detected_then_any';
     }
 
+    /** @param mixed $value @return array<string,mixed>|null */
+    private function normalizeExternalUoT(mixed $value, string $target): ?array
+    {
+        if (!is_array($value) || ($value['enabled'] ?? false) !== true) {
+            return null;
+        }
+        $sidecar = trim((string) ($value['sidecar_target'] ?? ''));
+        $token = trim((string) ($value['token'] ?? ''));
+        if (preg_match('/^\[[0-9A-Fa-f:]+\]:[0-9]{1,5}$|^[A-Za-z0-9._-]+:[0-9]{1,5}$/', $sidecar) !== 1
+            || $token === '' || strlen($token) > 8192 || preg_match('/\s/', $token) === 1) {
+            return null;
+        }
+        $port = (int) substr($sidecar, strrpos($sidecar, ':') + 1);
+        if ($port < 1 || $port > 65535) {
+            return null;
+        }
+        $normalized = [
+            'enabled' => true,
+            'sidecar_target' => $sidecar,
+            'token' => $token,
+            'queue_packets' => max(1, min(4096, (int) ($value['queue_packets'] ?? 256))),
+            'keepalive_seconds' => max(5, min(30, (int) ($value['keepalive_seconds'] ?? 10))),
+            'reconnect_grace_seconds' => max(5, min(300, (int) ($value['reconnect_grace_seconds'] ?? 30))),
+            'frame_payload_max' => max(256, min(65507, (int) ($value['frame_payload_max'] ?? 65507))),
+            'target_digest' => hash('sha256', trim($target)),
+        ];
+        $deliveryMode = strtolower(trim((string) ($value['delivery_mode'] ?? 'raw')));
+        if ($deliveryMode !== '' && $deliveryMode !== 'raw') {
+            // Preserve unsupported modes so upgraded clients fail closed.
+            $normalized['delivery_mode'] = $deliveryMode;
+        }
+        return $normalized;
+    }
+
+    /** @param mixed $value @return array<string,mixed> */
+    private function attachExternalUoT(array $grant, mixed $value, string $target = ''): array
+    {
+        if (is_array($value) && ($value['enabled'] ?? false) === true) {
+            $normalized = $this->normalizeExternalUoT($value, $target !== '' ? $target : (string) ($grant['target'] ?? ''));
+            if ($normalized !== null) {
+                $grant['external_uot'] = $normalized;
+                return $grant;
+            }
+        }
+        unset($grant['external_uot']);
+        return $grant;
+    }
+
     private function classification(mixed $value): string
     {
         $normalized = strtolower(trim((string) $value));
@@ -388,6 +547,63 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         return max(30, min($this->maxTtlSeconds() - 1, $this->config->getInt(UltraMode::REFRESH_SKEW_KEY, 60)));
     }
 
+    /**
+     * Renewal cadence of a long grant: ULTRA_RENEW_INTERVAL_SECONDS (default
+     * 240, the short path's effective cadence), clamped to [30, V - 60] so a
+     * renewal always has a minute of slack before the grant lapses.
+     */
+    private function renewIntervalSeconds(int $validitySeconds): int
+    {
+        $raw = trim((string) $this->config->get(UltraMode::RENEW_INTERVAL_KEY, ''));
+        $configured = ($raw !== '' && preg_match('/^[0-9]+$/', $raw) === 1)
+            ? (int) $raw
+            : UltraMode::DEFAULT_RENEW_INTERVAL_SECONDS;
+        $ceiling = $validitySeconds - UltraMode::RENEW_EXPIRY_MARGIN_SECONDS;
+        return max(UltraMode::MIN_RENEW_INTERVAL_SECONDS, min($configured, $ceiling));
+    }
+
+    /**
+     * Quota carried by a long grant: min(remaining, slice), so a device that
+     * loses the panel can overspend by at most one slice. Online, every lease
+     * the runtime receives resets its local limiter to this value and every
+     * renewal re-slices from the reconciled remaining quota, so the slice only
+     * has to outlast one renewal interval at the forward's top speed: it is
+     * never smaller than three renewal intervals at that speed (an unlimited
+     * forward is assumed to run at ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS,
+     * default 2500). Default slice: max(1 GiB, rate * V) with a rate limit,
+     * 10 GiB without one (raised to the floor: ~140 GiB at 2500 Mbps).
+     * ULTRA_GRANT_QUOTA_SLICE_ENABLED=0 hands out the full remaining quota.
+     */
+    private function grantQuotaSliceBytes(int $quotaBytes, int $rateLimitMbps, int $validitySeconds): int
+    {
+        if ($quotaBytes <= 0 || !$this->config->getBool(UltraMode::GRANT_QUOTA_SLICE_ENABLED_KEY, true)) {
+            return $quotaBytes;
+        }
+        $validitySeconds = max(1, $validitySeconds);
+        $rateLimitMbps = max(0, $rateLimitMbps);
+        $assumedMbps = $rateLimitMbps;
+        if ($assumedMbps <= 0) {
+            $rawRate = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_UNLIMITED_RATE_KEY, ''));
+            $assumedMbps = ($rawRate !== '' && preg_match('/^[0-9]+$/', $rawRate) === 1)
+                ? max(100, min(100000, (int) $rawRate))
+                : UltraMode::DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS;
+        }
+        $bytesPerSecond = $assumedMbps * 125000;
+        $floor = $bytesPerSecond * 3 * $this->renewIntervalSeconds($validitySeconds);
+
+        $rawSlice = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_SLICE_KEY, ''));
+        if ($rawSlice !== '' && preg_match('/^[0-9]+$/', $rawSlice) === 1 && (int) $rawSlice > 0) {
+            $slice = (int) $rawSlice;
+        } elseif ($rateLimitMbps > 0) {
+            $slice = $bytesPerSecond * $validitySeconds;
+        } else {
+            $slice = UltraMode::DEFAULT_UNLIMITED_RATE_QUOTA_SLICE_BYTES;
+        }
+        $slice = max(UltraMode::MIN_GRANT_QUOTA_SLICE_BYTES, $floor, $slice);
+        $slice = min(UltraMode::MAX_QUOTA_LEASE_BYTES, $slice);
+        return min($quotaBytes, $slice);
+    }
+
     private function legacyMaxTtlSeconds(): int
     {
         return max(60, min(3600, $this->config->getInt(UltraMode::MAX_TTL_KEY, 1800)));
@@ -399,6 +615,26 @@ final class LeigodTokenBroker implements LeigodTokenProvider
     }
 
     /** @param array<string, mixed> $request */
+    /**
+     * The quota as the policy generation sees it: exhausted, or the power of
+     * two it falls in. The exact remaining bytes move with every usage report;
+     * hashing them rotated the generation, and revoked every active device's
+     * leases, every few seconds under load. Grant reuse still requires the
+     * remaining quota to cover the cached grant's slice, and an exhausted quota
+     * still ends the grant, so only the churn goes away.
+     */
+    private function quotaGenerationBucket(int $quotaBytes): string
+    {
+        if ($quotaBytes <= 0) {
+            return '0';
+        }
+        $bits = 0;
+        for ($value = $quotaBytes; $value > 1; $value >>= 1) {
+            $bits++;
+        }
+        return 'q' . $bits;
+    }
+
     private function quotaBytes(array $request): int
     {
         $keys = ['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'];
@@ -423,16 +659,23 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         return min(UltraMode::MAX_QUOTA_LEASE_BYTES, $value);
     }
 
-    /** @param array<string, mixed> $request */
-    private function policyGeneration(array $request, string $materialFingerprint, int $quotaBytes): string
-    {
+    /**
+     * @param array<string, mixed> $request
+     * @param array{epoch?: int, revoked?: array<string, true>} $revocation
+     */
+    private function policyGeneration(
+        array $request,
+        string $materialFingerprint,
+        int $quotaBytes,
+        array $revocation = []
+    ): string {
         $parts = [
             (string) ($request['forward_id'] ?? 0),
             'active',
             hash('sha256', (string) ($request['target'] ?? '')),
             (string) ($request['transport'] ?? ''),
             (string) ($request['speed_limit_mbps'] ?? 0),
-            (string) $quotaBytes,
+            $this->quotaGenerationBucket($quotaBytes),
             (string) ($request['service_expire_at'] ?? ''),
             $materialFingerprint,
         ];
@@ -443,7 +686,32 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         if ($reputationFingerprint !== '') {
             $parts[] = $reputationFingerprint;
         }
-        return hash('sha256', implode("\n", $parts));
+
+        $generation = hash('sha256', implode("\n", $parts));
+        $epoch = (int) ($revocation['epoch'] ?? 0);
+        $revoked = $revocation['revoked'] ?? [];
+        if ($epoch <= 0 || $revoked === []) {
+            // No revocation history for this forward: the plain hash is the
+            // generation every client already holds, so nothing rotates.
+            return $generation;
+        }
+
+        // A revoked generation must never be handed out again, and this hash is
+        // a pure function of the request, so it would be re-minted on every pull
+        // while the lease plane kept refusing it - an enabled forward with no
+        // lease and no way back. Fold the forward's revocation epoch in so the
+        // client always receives a generation the lease plane will honour. The
+        // epoch is the highest revoked row id, so every further revocation
+        // raises it again and can never reproduce an earlier value.
+        $forwardKey = (int) ($request['forward_id'] ?? 0);
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            if (!isset($revoked[$forwardKey . ':' . strtolower($generation)])) {
+                break;
+            }
+            $generation = hash('sha256', implode("\n", [...$parts, 'revocation-epoch:' . $epoch . ':' . $attempt]));
+        }
+
+        return $generation;
     }
 
     private function parseTimestamp(string $value): ?int
@@ -459,14 +727,22 @@ final class LeigodTokenBroker implements LeigodTokenProvider
         }
     }
 
+    /**
+     * services.expire_at is written in UTC. strtotime() would read it in
+     * date.timezone, which is PRC for the panel's CLI workers, and refuse a
+     * service eight hours before it expires.
+     */
     private function parseServiceExpiry(string $value): ?int
     {
         $value = trim($value);
         if ($value === '') {
             return null;
         }
-        $timestamp = strtotime($value);
-        return $timestamp === false ? null : (int) $timestamp;
+        try {
+            return (new DateTimeImmutable($value, new DateTimeZone('UTC')))->getTimestamp();
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private function formatTimestamp(int $timestamp): string

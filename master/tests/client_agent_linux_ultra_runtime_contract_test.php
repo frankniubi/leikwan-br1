@@ -11,6 +11,8 @@ $source = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController
 if ($source === false) {
     failLinuxUltraRuntime('failed to read ClientAgentController');
 }
+// Line-ending agnostic: the adjacency check below spans a newline.
+$source = str_replace("\r\n", "\n", $source);
 
 foreach ([
     "\$ultraClientRuntime = \$this->artifactMetadata('ultra_client_runtime');",

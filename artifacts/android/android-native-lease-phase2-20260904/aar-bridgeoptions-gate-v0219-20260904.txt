@@ -1,9 +1,0 @@
-﻿aar_path=C:\Users\frankniubi\Downloads\leikwan-br1\leikwan-android\app\libs\libbox.aar
-aar_size_bytes=28757787
-aar_sha256=706c139fc1c5f0366494135fcf1d857f899d62965d19734ebc56af4ff532ccb0
-BridgeOptions_class_count=0
-Libbox_class_count=1
-SetupOptions_class_count=1
-jni/arm64-v8a/libbox.so size_bytes=42140160 sha256=fa958bad539ba5c1cb32465447d4dcdfdd7ca40d4fa77d8db72305ea0ecd7a3d
-jni/x86_64/libbox.so size_bytes=44846912 sha256=22e87ee85b20f22d64c2896984c939552432a411e96e7784ec5d062e95ecb175
-verdict=FAIL: Java classes.jar has no io/nekohasekai/libbox/BridgeOptions.class; native full acceptance remains blocked

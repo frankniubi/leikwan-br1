@@ -9,8 +9,15 @@ import com.leikwan.bridge.R
 import com.leikwan.bridge.api.PanelRepository
 import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.net.PanelNetwork
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitNotice
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.session.SessionGate
+import com.leikwan.bridge.ui.shared.deviceLimitEnrollMessage
+import com.leikwan.bridge.ui.shared.thirdPartyVpnHintOrNull
+import com.leikwan.bridge.ui.shared.withThirdPartyVpnHint
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -30,17 +37,23 @@ internal fun enrollmentErrorMessage(
     exception: Throwable,
     generic: String,
     hardwareAttestationMessage: String,
+    deviceLimitMessage: (DeviceLimitNotice) -> String,
+    thirdPartyVpnHint: String? = null,
 ): String {
     val causes = generateSequence(exception) { it.cause }.take(4).toList()
+    // Never show the raw `client_online_limit_reached` code: explain the limit and the way out.
+    causes.firstNotNullOfOrNull { it as? DeviceLimitReachedException }?.let { return deviceLimitMessage(it.notice) }
     if (causes.any { cause ->
             cause is ProviderException || cause.message?.contains("ATTESTATION_KEYS_NOT_PROVISIONED", ignoreCase = true) == true
         }) {
         return hardwareAttestationMessage
     }
-    return causes.asSequence()
+    val message = causes.asSequence()
         .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
         .firstOrNull()
         ?: generic
+    // Only here: the branches above are answers from the panel or the device, not network trouble.
+    return withThirdPartyVpnHint(message, thirdPartyVpnHint) ?: message
 }
 
 class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
@@ -120,6 +133,7 @@ class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.clearSavedLoginInfo()
                 }
                 SessionGate.clear()
+                DeviceLimitGate.clear()
                 _state.value = _state.value.copy(
                     isLoading = false,
                     isEnrolled = true,
@@ -143,6 +157,8 @@ class EnrollmentViewModel(app: Application) : AndroidViewModel(app) {
                     exception,
                     generic = s(R.string.login_error_generic),
                     hardwareAttestationMessage = s(R.string.login_error_hardware_attestation),
+                    deviceLimitMessage = appContext::deviceLimitEnrollMessage,
+                    thirdPartyVpnHint = appContext.thirdPartyVpnHintOrNull(PanelNetwork.shouldHintThirdPartyVpn()),
                 )
                 _state.value = _state.value.copy(isLoading = false, error = message)
             }

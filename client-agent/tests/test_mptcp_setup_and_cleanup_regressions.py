@@ -27,6 +27,10 @@ leikwan_mptcp_client = load_module(
 )
 
 
+@unittest.skipUnless(
+    sys.platform.startswith("linux"),
+    "MPTCP/WireGuard transit setup is Linux-only (wg-quick, systemd, /etc/wireguard paths)",
+)
 class MptcpSetupAndCleanupRegressions(unittest.TestCase):
     def test_load_json_normalizes_nonpositive_endpoint_id_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -136,7 +140,9 @@ class MptcpSetupAndCleanupRegressions(unittest.TestCase):
                 with mock.patch.object(leikwan_mptcp_client, "run_command", side_effect=fake_run_command):
                     with mock.patch.object(leikwan_mptcp_client, "build_wireguard_interface_config", return_value="[Interface]\n"):
                         with mock.patch.object(leikwan_mptcp_client, "write_text_if_changed", return_value=False):
-                            with mock.patch.object(leikwan_mptcp_client.time, "sleep"):
+                            # The config write is mocked, so pretend it landed rather than
+                            # stat the host's /etc/wireguard (root-only, or absent on CI).
+                            with mock.patch.object(leikwan_mptcp_client.time, "sleep"), mock.patch.object(leikwan_mptcp_client.pathlib.Path, "is_file", return_value=True):
                                 result = leikwan_mptcp_client.apply_wireguard_transit_underlay_single(
                                     {
                                         "interface_name": "lw-mptcp-24-0",

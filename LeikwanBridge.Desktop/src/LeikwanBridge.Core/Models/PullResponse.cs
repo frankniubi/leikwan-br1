@@ -33,4 +33,10 @@ public sealed class PullResponse
     // default contract for older servers and clients.
     [JsonPropertyName("native_outbound")]
     public NativeOutboundCapability? NativeOutbound { get; set; }
+
+    // Minimum desktop client version (windows-desktop / macos-desktop only).
+    // Absent when the panel configures no minimum; malformed shapes read as
+    // absent (see ClientUpdatePolicyJsonConverter).
+    [JsonPropertyName("client_update")]
+    public ClientUpdatePolicy? ClientUpdate { get; set; }
 }

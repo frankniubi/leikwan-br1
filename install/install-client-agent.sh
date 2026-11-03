@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-INSTALLER_VERSION="2026.09.13.1"
+INSTALLER_VERSION="2026.10.02.1"
 MASTER_URL=""
 ARTIFACT_BASE=""
 DOWNLOAD_BASE=""
@@ -14,9 +14,16 @@ SERVICE_NAME="leikwan-client-agent"
 AUTO_INSTALL_MPTCP_KERNEL=0
 REBOOT_AFTER_MPTCP_KERNEL_INSTALL=0
 REQUIRE_MPTCP=0
+# Restart/reload the agent even when every artifact, config.json and the unit
+# file are already current (--force-restart or LEIKWAN_INSTALL_FORCE_RESTART=1).
+FORCE_RESTART="${LEIKWAN_INSTALL_FORCE_RESTART:-0}"
 TIME_SYNC_TIMEOUT_SECONDS="${LEIKWAN_TIME_SYNC_TIMEOUT_SECONDS:-60}"
 STATE_DIR="/var/lib/leikwan-client-agent"
 RUNTIME_ARCH="amd64"
+AGENT_RUNTIME_MODE="python"
+AGENT_BINARY_KEY=""
+AGENT_BINARY_PATH=""
+AGENT_BINARY_URL=""
 ULTRA_RUNTIME_KEY="ultra_client_runtime"
 ULTRA_RUNTIME_PATH="artifacts/ultra/ultra-client_linux_amd64"
 UOT_BOND_RUNTIME_KEY="leikwan_uot_bond_linux_amd64"
@@ -201,7 +208,7 @@ install_wireguard_tools() {
   command -v apt-get >/dev/null 2>&1 || die "wireguard-tools is missing and apt-get is unavailable"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y wireguard-tools
+  apt-get install -y --no-install-recommends wireguard-tools
 }
 
 time_sync_ready() {
@@ -310,6 +317,19 @@ while [[ $# -gt 0 ]]; do
     --require-mptcp) REQUIRE_MPTCP=1; shift ;;
     --auto-install-mptcp-kernel) AUTO_INSTALL_MPTCP_KERNEL=1; shift ;;
     --reboot-after-mptcp-kernel-install) REBOOT_AFTER_MPTCP_KERNEL_INSTALL=1; shift ;;
+    --force-restart) FORCE_RESTART=1; shift ;;
+    # Retired installer proxy (2026-07-28 .. 2026-09-27). The panel is
+    # reachable directly through its Cloudflare and Aliyun CDNs, so the agent
+    # never uses a proxy for panel traffic. Both flags stay accepted so old
+    # scripted invocations do not fail; --proxy still consumes its value.
+    --proxy)
+      echo "--proxy is no longer supported; the agent reaches the panel directly"
+      if [[ $# -ge 2 ]]; then shift 2; else shift; fi
+      ;;
+    --clear-proxy)
+      echo "--proxy is no longer supported; the agent reaches the panel directly"
+      shift
+      ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -382,6 +402,39 @@ install -d -m 0700 "$ROLLBACK_DIR"
 declare -a BACKUP_PATHS=()
 declare -A BACKUP_EXISTS=()
 INSTALL_COMMITTED=0
+# Change tracking: an update run whose artifacts, config and unit are all
+# current must not restart the agent (a no-op update used to restart it every
+# retry window). Anything that changes what the service runs marks it here.
+INSTALL_CHANGED=0
+UNIT_CHANGED=0
+declare -a INSTALL_CHANGE_REASONS=()
+
+mark_install_changed() {
+  INSTALL_CHANGED=1
+  INSTALL_CHANGE_REASONS+=("$1")
+}
+
+files_identical() {
+  local left="$1" right="$2" left_sum right_sum
+  [[ -f "$left" && -f "$right" ]] || return 1
+  left_sum="$(sha256sum "$left" | awk '{print $1}')"
+  right_sum="$(sha256sum "$right" | awk '{print $1}')"
+  [[ -n "$left_sum" && "$left_sum" == "$right_sum" ]]
+}
+
+# Replace target with staged only when the bytes differ; records the change.
+install_file_if_changed() {
+  local staged="$1" target="$2" mode="$3" reason="$4"
+  if files_identical "$staged" "$target"; then
+    rm -f "$staged"
+    chmod "$mode" "$target"
+    return 0
+  fi
+  backup_existing "$target"
+  chmod "$mode" "$staged"
+  mv "$staged" "$target"
+  mark_install_changed "$reason"
+}
 
 backup_existing() {
   local path="$1" rel backup
@@ -445,29 +498,34 @@ finish_install() {
 }
 trap finish_install EXIT
 
-PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
-backup_existing "$PROXY_ENV_FILE"
-: > "$PROXY_ENV_FILE"
-for proxy_name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy; do
-  proxy_value="${!proxy_name:-}"
-  if [[ -n "$proxy_value" ]]; then
-    if [[ "$proxy_value" == *$'\n'* || "$proxy_value" == *$'\r'* ]]; then
-      echo "invalid newline in $proxy_name" >&2
-      exit 1
-    fi
-    printf '%s=%s\n' "$proxy_name" "$proxy_value" >> "$PROXY_ENV_FILE"
-  fi
-done
-chmod 0600 "$PROXY_ENV_FILE"
+# A retired installer feature persisted a proxy here and fed it to the agent
+# service as an EnvironmentFile. The agent never proxies panel traffic now:
+# drop the file and any staged copy. Removing it counts as an install change;
+# the unit loses its EnvironmentFile line in the same run, so the service is
+# reloaded and restarted exactly once and later runs are no-ops.
+LEGACY_PROXY_ENV_FILE="$CONFIG_DIR/proxy.env"
 
+remove_legacy_proxy_env() {
+  local staged
+  for staged in "$LEGACY_PROXY_ENV_FILE".new.*; do
+    [[ -e "$staged" || -L "$staged" ]] || continue
+    rm -f "$staged"
+  done
+  if [[ -e "$LEGACY_PROXY_ENV_FILE" || -L "$LEGACY_PROXY_ENV_FILE" ]]; then
+    backup_existing "$LEGACY_PROXY_ENV_FILE"
+    rm -f "$LEGACY_PROXY_ENV_FILE"
+    mark_install_changed "proxy.env removed"
+    echo "  removed retired proxy.env; the agent reaches the panel directly"
+  fi
+}
+
+remove_legacy_proxy_env
+
+# Panel/CDN downloads always go direct: http.client never reads proxy
+# variables and the curl fallback passes --noproxy '*'.
 leikwan_protected_download() {
   local url="$1"
   local path="$2"
-  local proxy_url="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
-  if [[ -n "$proxy_url" ]]; then
-    curl -fsSL --proxy "$proxy_url" "$url" -o "$path"
-    return 0
-  fi
   python3 - "$url" "$path" <<'PY'
 import http.client
 import ipaddress
@@ -488,6 +546,21 @@ STRICT_DOH_PROVIDERS = [
 LEIKWAN_PROTECTED_APEX = "leikwanhost.com"
 LEIKWAN_PROTECTED_SUFFIX = ".leikwanhost.com"
 USER_AGENT = "Leikwan-Client-Agent-Installer/strict-doh"
+# A panel host that is blackholed (Cloudflare seen from a mainland-only network)
+# must fail fast so the installer can move on to the other artifact source.
+CONNECT_TIMEOUT_SECONDS = float(os.environ.get("LEIKWAN_CONNECT_TIMEOUT_SECONDS", "8"))
+# Source probing only needs to know whether the panel can be reached at all.
+PROBE_FIRST_ADDRESS_ONLY = os.environ.get("LEIKWAN_SOURCE_PROBE") == "1"
+
+
+def open_resolved_socket(address, timeout, source_address):
+    connect_timeout = CONNECT_TIMEOUT_SECONDS
+    if isinstance(timeout, (int, float)):
+        connect_timeout = min(float(timeout), CONNECT_TIMEOUT_SECONDS)
+    sock = socket.create_connection(address, connect_timeout, source_address)
+    if isinstance(timeout, (int, float)):
+        sock.settimeout(timeout)
+    return sock
 
 
 class StrictDoHError(RuntimeError):
@@ -598,7 +671,7 @@ class ResolvedHTTPConnection(http.client.HTTPConnection):
         self.resolved_ip = resolved_ip
 
     def connect(self):
-        self.sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        self.sock = open_resolved_socket((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self._tunnel()
 
@@ -609,7 +682,7 @@ class ResolvedHTTPSConnection(http.client.HTTPSConnection):
         self.resolved_ip = resolved_ip
 
     def connect(self):
-        sock = socket.create_connection((self.resolved_ip, self.port), self.timeout, self.source_address)
+        sock = open_resolved_socket((self.resolved_ip, self.port), self.timeout, self.source_address)
         if self._tunnel_host:
             self.sock = sock
             self._tunnel()
@@ -675,7 +748,10 @@ def fetch_protected(url, redirects=5):
     host_header = host if parsed.port is None else f"{host}:{parsed.port}"
     headers = {"Host": host_header, "Accept": "*/*", "User-Agent": USER_AGENT, "Connection": "close"}
     errors = []
-    for resolved_ip in strict_resolve_a(host):
+    addresses = strict_resolve_a(host)
+    if PROBE_FIRST_ADDRESS_ONLY:
+        addresses = addresses[:1]
+    for resolved_ip in addresses:
         conn_cls = ResolvedHTTPSConnection if parsed.scheme == "https" else ResolvedHTTPConnection
         conn = conn_cls(host, port=port, timeout=30.0, resolved_ip=resolved_ip)
         try:
@@ -701,8 +777,8 @@ def fetch_protected(url, redirects=5):
 
 
 def curl_download(url, path):
-    # Non-protected URL fallback intentionally stays equivalent to curl -fsSL.
-    cmd = ["curl", "-fsSL", url]
+    # Non-protected URL fallback: curl -fsSL, never through a proxy.
+    cmd = ["curl", "--noproxy", "*", "--connect-timeout", str(int(CONNECT_TIMEOUT_SECONDS)), "-fsSL", url]
     if path is None:
         completed = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
         return completed.stdout
@@ -710,7 +786,19 @@ def curl_download(url, path):
     return b""
 
 
+def resolve_pin(url):
+    # host:port:ip for curl --resolve, from the same strict DoH lookup.
+    parsed = urllib.parse.urlparse(url)
+    if not is_protected_leikwan_url(url):
+        return
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    print(f"{parsed.hostname}:{port}:{strict_resolve_a(parsed.hostname)[0]}")
+
+
 def main():
+    if sys.argv[1] == "--resolve-pin":
+        resolve_pin(sys.argv[2])
+        return
     url = sys.argv[1]
     path = sys.argv[2]
     if is_protected_leikwan_url(url):
@@ -775,6 +863,18 @@ except Exception:
 " "$_VERSIONS_JSON" "$1" "$2" 2>/dev/null || echo ''
 }
 
+manifest_artifact_url() {
+  local key="$1" fallback="$2" configured
+  configured="$(_vers_value "$key" artifact_url)"
+  if [[ "$configured" =~ ^https?:// ]]; then
+    printf '%s\n' "$configured"
+  elif [[ -n "$configured" ]]; then
+    printf '%s/%s\n' "${DOWNLOAD_BASE%/}" "${configured#/}"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
 download_manifest_artifact() {
   local key="$1" url="$2" path="$3" expected_sha256
   # Historical contract: expected_sha256="$(_vers_sha256 ... )" is retained
@@ -802,10 +902,119 @@ download_manifest_artifact() {
   chmod 0755 "$staged"
   backup_existing "$path"
   mv "$staged" "$path"
+  mark_install_changed "$key"
+}
+
+# The panel publishes the same artifacts through Cloudflare (international)
+# and the Aliyun CDN (mainland). Some hosts can reach only one of them, so an
+# official source that does not answer falls back to the other one. Every
+# artifact is still checked against the manifest hash.
+PANEL_ARTIFACT_SOURCES=("https://v3.leikwanhost.com" "https://api-leikwanbridge.nbwly.com")
+
+artifact_source_candidates() {
+  local base="${1%/}" source official=0
+  printf '%s\n' "$base"
+  case "$base" in
+    https://v3.leikwanhost.com|https://v3-mirror.leikwanhost.com|https://api-leikwanbridge.nbwly.com) official=1 ;;
+  esac
+  ((official)) || return 0
+  for source in "${PANEL_ARTIFACT_SOURCES[@]}"; do
+    [[ "$source" == "$base" ]] || printf '%s\n' "$source"
+  done
+}
+
+# Every source is asked at once. A reachable panel connects in well under a
+# second (about 0.3 s from mainland hosts to Cloudflare), so a probe that cannot
+# connect within ARTIFACT_SOURCE_CONNECT_SECONDS counts as unreachable. The given
+# source wins whenever it connects, however long the transfer then takes;
+# another one is used once it failed, or after ARTIFACT_SOURCE_GRACE_SECONDS
+# as a last resort (for example a stalled transfer).
+ARTIFACT_SOURCE_CONNECT_SECONDS=3
+ARTIFACT_SOURCE_GRACE_SECONDS=10
+
+stop_source_probe() {
+  local pid="$1"
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -P "$pid" 2>/dev/null || true
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+select_artifact_source() {
+  local -a sources=() pids=()
+  local index ticks=0 grace_ticks=$((ARTIFACT_SOURCE_GRACE_SECONDS * 5)) chosen="" finished
+  mapfile -t sources < <(artifact_source_candidates "$DOWNLOAD_BASE")
+  for index in "${!sources[@]}"; do
+    rm -f "$_VERSIONS_PATH.$index" "$_VERSIONS_PATH.$index.ok" "$_VERSIONS_PATH.$index.fail"
+    (
+      export LEIKWAN_SOURCE_PROBE=1 LEIKWAN_CONNECT_TIMEOUT_SECONDS="$ARTIFACT_SOURCE_CONNECT_SECONDS"
+      if leikwan_protected_download "${sources[$index]}/artifacts/versions.json" "$_VERSIONS_PATH.$index" 2>"$_VERSIONS_PATH.$index.err"; then
+        : > "$_VERSIONS_PATH.$index.ok"
+      else
+        : > "$_VERSIONS_PATH.$index.fail"
+      fi
+    ) &
+    pids+=("$!")
+  done
+  while [[ -z "$chosen" ]]; do
+    if [[ -e "$_VERSIONS_PATH.0.ok" ]]; then
+      chosen=0
+      break
+    fi
+    if [[ -e "$_VERSIONS_PATH.0.fail" ]] || ((ticks >= grace_ticks)); then
+      for index in "${!sources[@]}"; do
+        if [[ -e "$_VERSIONS_PATH.$index.ok" ]]; then
+          chosen="$index"
+          break
+        fi
+      done
+      [[ -n "$chosen" ]] && break
+    fi
+    finished=0
+    for index in "${!sources[@]}"; do
+      [[ -e "$_VERSIONS_PATH.$index.ok" || -e "$_VERSIONS_PATH.$index.fail" ]] && finished=$((finished + 1))
+    done
+    ((finished < ${#sources[@]})) || break
+    sleep 0.2
+    ticks=$((ticks + 1))
+  done
+  # Report from the state at decision time: stopping a probe can make it fail.
+  local -a notes=()
+  for index in "${!sources[@]}"; do
+    [[ "$index" == "$chosen" ]] && continue
+    if [[ -e "$_VERSIONS_PATH.$index.fail" ]]; then
+      notes+=("artifact source ${sources[$index]} is unreachable: $(tail -n 1 "$_VERSIONS_PATH.$index.err" 2>/dev/null)")
+    elif [[ -n "$chosen" && "$index" -lt "$chosen" ]]; then
+      notes+=("artifact source ${sources[$index]} did not answer within ${ARTIFACT_SOURCE_GRACE_SECONDS}s")
+    fi
+  done
+  for index in "${!sources[@]}"; do
+    [[ "$index" == "$chosen" ]] || stop_source_probe "${pids[$index]}"
+  done
+  [[ -z "$chosen" ]] || wait "${pids[$chosen]}" 2>/dev/null || true
+  ((${#notes[@]} == 0)) || printf '%s\n' "${notes[@]}" >&2
+  if [[ -n "$chosen" ]]; then
+    mv -f "$_VERSIONS_PATH.$chosen" "$_VERSIONS_PATH"
+    _SELECTED_DOWNLOAD_BASE="${sources[$chosen]}"
+  fi
+  for index in "${!sources[@]}"; do
+    rm -f "$_VERSIONS_PATH.$index" "$_VERSIONS_PATH.$index.ok" "$_VERSIONS_PATH.$index.fail" "$_VERSIONS_PATH.$index.err"
+  done
 }
 
 _VERSIONS_PATH="$STATE_DIR/versions.json.new"
-leikwan_protected_download "$DOWNLOAD_BASE/artifacts/versions.json" "$_VERSIONS_PATH"
+_SELECTED_DOWNLOAD_BASE=""
+select_artifact_source
+[[ -n "$_SELECTED_DOWNLOAD_BASE" ]] || die "no artifact source answered (tried: $(artifact_source_candidates "$DOWNLOAD_BASE" | tr '\n' ' '))"
+if [[ "$_SELECTED_DOWNLOAD_BASE" != "${DOWNLOAD_BASE%/}" ]]; then
+  echo "using artifact source $_SELECTED_DOWNLOAD_BASE"
+  # Persist the reachable source too, so later self-updates start from it.
+  if [[ "${ARTIFACT_BASE%/}" == "${DOWNLOAD_BASE%/}" ]]; then
+    ARTIFACT_BASE="$_SELECTED_DOWNLOAD_BASE"
+  fi
+  DOWNLOAD_BASE="$_SELECTED_DOWNLOAD_BASE"
+fi
 _VERSIONS_JSON="$(cat "$_VERSIONS_PATH")"
 rm -f "$_VERSIONS_PATH"
 if [[ -z "$INSTALLER_SHA256" ]]; then
@@ -816,10 +1025,33 @@ if [[ -z "$INSTALLER_SHA256" ]]; then
   exit 1
 fi
 
-# download_atomic "$ARTIFACT_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
-# download_atomic "$ARTIFACT_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
-download_manifest_artifact client_agent "$DOWNLOAD_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+# Prefer a verified, single-file agent on architectures for which the panel
+# publishes one.  A missing architecture-specific entry deliberately falls
+# back to the historical Python distribution so arm64 and older mirrors remain
+# installable while the binary rollout is staged.
+AGENT_BINARY_KEY="client_agent_linux_${RUNTIME_ARCH}"
+AGENT_BINARY_PATH="$BIN_DIR/leikwan-client-agent"
+AGENT_BINARY_URL="$(manifest_artifact_url "$AGENT_BINARY_KEY" "")"
+AGENT_BINARY_SHA256="$(_vers_sha256 "$AGENT_BINARY_KEY")"
+if [[ "$AGENT_BINARY_SHA256" =~ ^[0-9a-fA-F]{64}$ && -n "$AGENT_BINARY_URL" ]]; then
+  download_manifest_artifact "$AGENT_BINARY_KEY" "$AGENT_BINARY_URL" "$AGENT_BINARY_PATH" \
+    || die "published client-agent binary failed verification for ${RUNTIME_ARCH}"
+  AGENT_RUNTIME_MODE="frozen"
+  echo "using frozen client-agent binary: $AGENT_BINARY_PATH"
+else
+  download_manifest_artifact client_agent "$DOWNLOAD_BASE/artifacts/client-agent.py" "$BIN_DIR/leikwan-client-agent.py"
+  AGENT_BINARY_PATH="$BIN_DIR/leikwan-client-agent.py"
+  echo "using Python client-agent fallback: $AGENT_BINARY_PATH"
+fi
 download_manifest_artifact cfwg_latency_watchdog "$DOWNLOAD_BASE/artifacts/cfwg-latency-watchdog.py" "$BIN_DIR/cfwg_latency_watchdog.py"
+# Sealed-lease helper imported by the Python agent (the frozen binary embeds
+# it). A manifest without the entry predates sealing: the agent then keeps
+# requesting clear leases, so its absence must not abort the install.
+if [[ "$(_vers_sha256 client_lease_seal)" =~ ^[0-9a-fA-F]{64}$ ]]; then
+  download_manifest_artifact client_lease_seal "$(manifest_artifact_url client_lease_seal "$DOWNLOAD_BASE/artifacts/leikwan-lease-seal.py")" "$BIN_DIR/leikwan_lease_seal.py"
+else
+  echo "  client_lease_seal not in manifest; sealed Ultra leases stay disabled"
+fi
 if [[ "${LEIKWAN_SKIP_UPDATE_HELPER:-0}" != "1" ]]; then
   # Keep the legacy artifact route visible for older operator tooling while
   # enforcing the manifest hash through download_manifest_artifact.
@@ -832,7 +1064,13 @@ fi
 download_manifest_artifact leikwan_cli_linux "$DOWNLOAD_BASE/artifacts/leikwan-linux.sh" "$BIN_DIR/leikwan"
 chmod 0755 "$BIN_DIR/leikwan"
 download_manifest_artifact tcp_accel_installer "$DOWNLOAD_BASE/artifacts/install-tcp-accel.sh" "$BIN_DIR/install-tcp-accel.sh"
-"$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
+# install-tcp-accel.sh downloads with plain curl. Hand it the panel address
+# from strict DoH so polluted system DNS cannot break it; no proxy carries
+# these downloads any more.
+TCP_ACCEL_RESOLVE="$(leikwan_protected_download --resolve-pin "$DOWNLOAD_BASE" 2>/dev/null || true)"
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy \
+  LEIKWAN_CURL_RESOLVE="$TCP_ACCEL_RESOLVE" \
+  "$BIN_DIR/install-tcp-accel.sh" client --artifact-base "$DOWNLOAD_BASE" --bin-dir "$BIN_DIR"
 download_manifest_artifact install_forward_runtime "$DOWNLOAD_BASE/artifacts/install-forward-runtime.py" "$BIN_DIR/install_forward_runtime.py"
 download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_PATH" "$BIN_DIR/ultra-client"
 # Legacy amd64 route contract retained for older static tooling:
@@ -840,12 +1078,11 @@ download_manifest_artifact "$ULTRA_RUNTIME_KEY" "$DOWNLOAD_BASE/$ULTRA_RUNTIME_P
 download_manifest_artifact forward_strategy "$DOWNLOAD_BASE/artifacts/forward-strategy.py" "$BIN_DIR/forward_strategy.py"
 download_manifest_artifact tcp_race_runtime "$DOWNLOAD_BASE/artifacts/leikwan-tcp-race.py" "$BIN_DIR/leikwan-tcp-race.py"
 download_manifest_artifact udp_fanout_runtime "$DOWNLOAD_BASE/artifacts/leikwan-udp-fanout.py" "$BIN_DIR/leikwan-udp-fanout.py"
-backup_existing "$BIN_DIR/leikwan-client-strategy"
-cat > "$BIN_DIR/leikwan-client-strategy" <<WRAPPER
+cat > "$BIN_DIR/leikwan-client-strategy.new.$$" <<WRAPPER
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$BIN_DIR/forward_strategy.py" "\$@"
 WRAPPER
-chmod 0755 "$BIN_DIR/leikwan-client-strategy"
+install_file_if_changed "$BIN_DIR/leikwan-client-strategy.new.$$" "$BIN_DIR/leikwan-client-strategy" 0755 leikwan-client-strategy
 download_manifest_artifact client_rate_limit "$DOWNLOAD_BASE/artifacts/leikwan-rate-limit.py" "$BIN_DIR/leikwan-rate-limit.py"
 download_manifest_artifact uot_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot.py" "$BIN_DIR/leikwan-uot.py"
 download_manifest_artifact uot_bond_runtime "$DOWNLOAD_BASE/artifacts/leikwan-uot-bond.py" "$BIN_DIR/leikwan-uot-bond.py"
@@ -870,9 +1107,9 @@ download_manifest_artifact "$BOND_RUNTIME_KEY" "$DOWNLOAD_BASE/$BOND_RUNTIME_PAT
 # download_manifest_artifact leikwan_bond_linux_amd64 "$ARTIFACT_BASE/artifacts/wstunnel/leikwan-bond_linux_amd64" "$BIN_DIR/leikwan-bond"
 WSTUNNEL_VERSION="$(_vers_value "$WSTUNNEL_RUNTIME_KEY" version)"
 
-CONFIG_TMP="$CONFIG_DIR/config.json.new"
-backup_existing "$CONFIG_DIR/config.json"
-MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" python3 - "$CONFIG_TMP" <<'PY'
+render_agent_config() {
+  local target="$1"
+  MASTER_URL="$MASTER_URL" ARTIFACT_BASE="$ARTIFACT_BASE" CLIENT_ID="$CLIENT_ID" AGENT_TOKEN="$AGENT_TOKEN" STATE_DIR="$STATE_DIR" BIN_DIR="$BIN_DIR" INSTALLER_VERSION="$INSTALLER_VERSION" INSTALLER_SHA256="$INSTALLER_SHA256" WSTUNNEL_VERSION="$WSTUNNEL_VERSION" AGENT_RUNTIME_MODE="$AGENT_RUNTIME_MODE" AGENT_BINARY_PATH="$AGENT_BINARY_PATH" python3 - "$target" <<'PY'
 import json
 import os
 import pathlib
@@ -896,16 +1133,112 @@ payload = {
     "log_level": "INFO",
     "installer_version": os.environ["INSTALLER_VERSION"],
     "installer_sha256": os.environ["INSTALLER_SHA256"],
+    "runtime_binary_mode": os.environ.get("AGENT_RUNTIME_MODE", "python"),
+    "client_agent_bin": os.environ.get("AGENT_BINARY_PATH", ""),
 }
 path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
-mv "$CONFIG_TMP" "$CONFIG_DIR/config.json"
-chmod 0600 "$CONFIG_DIR/config.json"
+}
 
-SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
-backup_existing "$SERVICE_UNIT_PATH"
-cat > "$SERVICE_UNIT_PATH" <<UNIT
+validate_agent_config() {
+  local staged="$1"
+  if [[ ! -s "$staged" ]]; then
+    die "generated client-agent config is empty; refusing to replace the current config"
+  fi
+  if ! python3 - "$staged" <<'PYCONFIG'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+document = json.loads(path.read_text(encoding="utf-8"))
+if not isinstance(document, dict):
+    raise SystemExit("generated client-agent config is not an object")
+for key in ("master_url", "artifact_base_url", "client_id", "agent_token", "state_dir"):
+    if document.get(key) in (None, ""):
+        raise SystemExit(f"generated client-agent config missing {key}")
+PYCONFIG
+  then
+    die "generated client-agent config failed validation; refusing to replace the current config"
+  fi
+}
+
+# Exit 0 when the installed config already carries every installer-owned value
+# of the staged config. AGENT_MANAGED_KEYS are owned by the control plane once
+# the agent is enrolled: the agent rewrites them from agent_config_json
+# (apply_config_patch), so their on-disk values legitimately differ from what
+# this installer renders. Counting them as a change would restart the agent on
+# every no-op update. --force-restart still rewrites the whole file.
+agent_config_current() {
+  local staged="$1" current="$2"
+  [[ -f "$current" ]] || return 1
+  python3 - "$staged" "$current" <<'PYCURRENT'
+import json
+import pathlib
+import sys
+
+AGENT_MANAGED_KEYS = {
+    "master_url",
+    "artifact_base_url",
+    "panel_mirror_urls",
+    "disable_auto_update",
+    "poll_interval_seconds",
+    "health_check_interval_seconds",
+    "log_level",
+    "state_dir",
+    "udp_uot_sidepath",
+    "cfwg_latency_watchdog",
+    "runtime_refresh",
+    "cfwg_edge_pins",
+    "ultra_selection_mode",
+}
+try:
+    staged = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    current = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(staged, dict) or not isinstance(current, dict):
+    raise SystemExit(1)
+for key in ("master_url", "artifact_base_url", "client_id", "agent_token", "state_dir"):
+    if current.get(key) in (None, ""):
+        raise SystemExit(1)
+for key, value in staged.items():
+    if key in AGENT_MANAGED_KEYS:
+        continue
+    if current.get(key) != value:
+        raise SystemExit(1)
+raise SystemExit(0)
+PYCURRENT
+}
+
+install_agent_config() {
+  local staged="$1" target="$CONFIG_DIR/config.json"
+  validate_agent_config "$staged"
+  if [[ "$FORCE_RESTART" != "1" ]] && agent_config_current "$staged" "$target"; then
+    rm -f "$staged"
+    chmod 0600 "$target"
+    echo "  client-agent config.json up to date, keeping current file"
+    return 0
+  fi
+  backup_existing "$target"
+  mv "$staged" "$target"
+  chmod 0600 "$target"
+  mark_install_changed config.json
+}
+
+render_agent_unit() {
+  if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+    AGENT_EXEC_START="$AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+    # PyInstaller one-file uses a bootloader process and sends sd_notify from
+    # the extracted Python child.  NotifyAccess=main rejects that heartbeat and
+    # makes an otherwise healthy frozen agent hit WatchdogSec after 180 seconds.
+    AGENT_NOTIFY_ACCESS="all"
+  else
+    AGENT_EXEC_START="/usr/bin/python3 $AGENT_BINARY_PATH --config $CONFIG_DIR/config.json run"
+    AGENT_NOTIFY_ACCESS="main"
+  fi
+  cat <<UNIT
 [Unit]
 Description=Leikwan Client Agent
 After=network.target
@@ -913,44 +1246,61 @@ After=network.target
 [Service]
 Type=simple
 Environment=PYTHONUNBUFFERED=1
-EnvironmentFile=-$PROXY_ENV_FILE
-ExecStart=/usr/bin/python3 $BIN_DIR/leikwan-client-agent.py --config $CONFIG_DIR/config.json run
+ExecStart=$AGENT_EXEC_START
 Restart=always
 RestartSec=5
 WatchdogSec=180
-NotifyAccess=main
+NotifyAccess=$AGENT_NOTIFY_ACCESS
 
 [Install]
 WantedBy=multi-user.target
 UNIT
+}
 
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME.service"
-systemctl restart "$SERVICE_NAME.service"
-
-SERVICE_READY=0
-for _ in $(seq 1 30); do
-  if systemctl is-active --quiet "$SERVICE_NAME.service"; then
-    SERVICE_READY=1
-    break
+install_agent_unit() {
+  local unit_path="$1" staged
+  staged="$(mktemp "$STATE_DIR/.agent-unit.XXXXXX")"
+  render_agent_unit > "$staged"
+  if files_identical "$staged" "$unit_path"; then
+    rm -f "$staged"
+    return 0
   fi
-  sleep 1
-done
-if [[ "$SERVICE_READY" != "1" ]]; then
-  systemctl status "$SERVICE_NAME.service" --no-pager >&2 || true
-  journalctl -u "$SERVICE_NAME.service" -n 40 --no-pager >&2 || true
-  die "client-agent service did not become active"
-fi
+  backup_existing "$unit_path"
+  chmod 0644 "$staged"
+  mv "$staged" "$unit_path"
+  UNIT_CHANGED=1
+  mark_install_changed "$(basename "$unit_path")"
+}
 
-HEALTH_PATH="$STATE_DIR/install-health.json"
-backup_existing "$HEALTH_PATH"
-if ! "$BIN_DIR/leikwan-client-agent.py" --config "$CONFIG_DIR/config.json" check --live > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
-  cat "$STATE_DIR/install-health.stderr" >&2 || true
-  cat "$HEALTH_PATH" >&2 || true
-  die "client-agent live health check failed"
-fi
-chmod 0600 "$HEALTH_PATH" "$STATE_DIR/install-health.stderr"
-python3 - "$HEALTH_PATH" <<'PY'
+verify_agent_service() {
+  local service_ready=0
+  for _ in $(seq 1 30); do
+    if systemctl is-active --quiet "$SERVICE_NAME.service"; then
+      service_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$service_ready" != "1" ]]; then
+    systemctl status "$SERVICE_NAME.service" --no-pager >&2 || true
+    journalctl -u "$SERVICE_NAME.service" -n 40 --no-pager >&2 || true
+    die "client-agent service did not become active"
+  fi
+
+  HEALTH_PATH="$STATE_DIR/install-health.json"
+  backup_existing "$HEALTH_PATH"
+  if [[ "$AGENT_RUNTIME_MODE" == "frozen" ]]; then
+    AGENT_HEALTH_CMD=("$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+  else
+    AGENT_HEALTH_CMD=(/usr/bin/python3 "$AGENT_BINARY_PATH" --config "$CONFIG_DIR/config.json" check --live)
+  fi
+  if ! "${AGENT_HEALTH_CMD[@]}" > "$HEALTH_PATH" 2>"$STATE_DIR/install-health.stderr"; then
+    cat "$STATE_DIR/install-health.stderr" >&2 || true
+    cat "$HEALTH_PATH" >&2 || true
+    die "client-agent live health check failed"
+  fi
+  chmod 0600 "$HEALTH_PATH" "$STATE_DIR/install-health.stderr"
+  python3 - "$HEALTH_PATH" <<'PY'
 import json
 import pathlib
 import sys
@@ -965,6 +1315,44 @@ runtime = payload.get("runtime", {})
 if runtime.get("wstunnel_bin_present") is not True:
     raise SystemExit("wstunnel binary is not present")
 PY
+}
+
+# Restart, reload and health-check only when something the service runs
+# actually changed (an artifact, config.json, the unit file or removal of the
+# retired proxy.env), the service is not running, or --force-restart was given.
+finalize_agent_service() {
+  local restart_reason=""
+  if [[ "$FORCE_RESTART" == "1" ]]; then
+    restart_reason="forced"
+  elif [[ "$INSTALL_CHANGED" == "1" ]]; then
+    restart_reason="changed: ${INSTALL_CHANGE_REASONS[*]}"
+  elif ! systemctl is-active --quiet "$SERVICE_NAME.service"; then
+    restart_reason="service inactive"
+  fi
+  if [[ "$UNIT_CHANGED" == "1" || "$FORCE_RESTART" == "1" ]]; then
+    systemctl daemon-reload
+  fi
+  if [[ "$UNIT_CHANGED" == "1" || "$FORCE_RESTART" == "1" ]] || ! systemctl is-enabled --quiet "$SERVICE_NAME.service"; then
+    systemctl enable "$SERVICE_NAME.service"
+  fi
+  if [[ -z "$restart_reason" ]]; then
+    AGENT_SERVICE_RESTARTED=0
+    echo "$SERVICE_NAME already current and active; skipping restart and live health check"
+    return 0
+  fi
+  echo "restarting $SERVICE_NAME ($restart_reason)"
+  systemctl restart "$SERVICE_NAME.service"
+  AGENT_SERVICE_RESTARTED=1
+  verify_agent_service
+}
+
+CONFIG_TMP="$CONFIG_DIR/config.json.new"
+render_agent_config "$CONFIG_TMP"
+install_agent_config "$CONFIG_TMP"
+
+SERVICE_UNIT_PATH="/etc/systemd/system/$SERVICE_NAME.service"
+install_agent_unit "$SERVICE_UNIT_PATH"
+finalize_agent_service
 
 INSTALL_COMMITTED=1
 

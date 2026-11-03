@@ -72,7 +72,7 @@ public sealed class NativeOutboundLease : IDisposable
         => ForwardId > 0
             && !string.IsNullOrWhiteSpace(LeaseId)
             && ExpiresAt > now
-            && ExpiresAt <= now.AddMinutes(5).AddSeconds(30)
+            && UltraGrantValidity.IsWithinAcceptedWindow(ExpiresAt, now)
             && string.Equals(Transport, "tcp+udp", StringComparison.OrdinalIgnoreCase)
             && RouteScope is "cn_only" or "intl_only" or "global"
             && RoutePolicy is "restricted" or "unrestricted"

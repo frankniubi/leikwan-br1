@@ -3,6 +3,7 @@ using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
@@ -21,6 +22,7 @@ public sealed class MacConnectionService : IMacConnectionService
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly TimeSpan _nativeTunMtuApplyInterval;
+    private string _preferredEgressInterface;
     private MacConnectionSnapshot _snapshot = MacConnectionSnapshot.Disconnected;
     private string? _configPath;
     private string? _activeProcessConfigPath;
@@ -53,7 +55,8 @@ public sealed class MacConnectionService : IMacConnectionService
         INativeOutboundRelayHost? nativeRelayHost = null,
         int tunMtu = MacConnectionConfigBuilder.DefaultTunMtu,
         Func<DateTimeOffset>? utcNow = null,
-        TimeSpan? nativeTunMtuApplyInterval = null)
+        TimeSpan? nativeTunMtuApplyInterval = null,
+        string? preferredEgressInterface = null)
     {
         _paths = paths;
         _store = store;
@@ -64,10 +67,14 @@ public sealed class MacConnectionService : IMacConnectionService
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost(windows: false);
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _nativeTunMtuApplyInterval = nativeTunMtuApplyInterval ?? NativeTunMtuApplyInterval;
+        _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         _processHost.UnexpectedExit += OnProcessExited;
     }
 
     public event Action<MacConnectionSnapshot>? SnapshotChanged;
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+        => _preferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
 
     public IReadOnlyList<MacConnectionProfile> Profiles
     {
@@ -91,6 +98,58 @@ public sealed class MacConnectionService : IMacConnectionService
     public bool IsNativeOutboundActive
         => _activeNativeLease is not null
             && _snapshot.State == MacConnectionState.Connected;
+
+    /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained, so the caller renews the lease before active downloads pause
+    /// on the runtime's bounded refill wait. A snapshot without the field
+    /// (older runtime) reads as false, keeping the expiry-only cadence.
+    /// </summary>
+    public bool IsNativeQuotaLow()
+    {
+        if (_activeNativeLease is not { } lease
+            || _snapshot.State != MacConnectionState.Connected)
+            return false;
+        return MacUltraRuntimeStatusReader.FindNativeRelayStatusPath(_paths.RuntimeDirectory, lease.ForwardId)
+            is { } statusPath
+            && ReadQuotaRemaining(statusPath) is long remaining
+            && remaining < NativeQuotaRenewalRemainingBytes;
+    }
+
+    /// <summary>
+    /// Local slice remainder below which a native lease is renewed early; see
+    /// <see cref="IsNativeQuotaLow"/>. Matches the Windows value: ~7 s of drain
+    /// time at the observed fleet ceiling, plus the refresh round trip.
+    /// </summary>
+    public const long NativeQuotaRenewalRemainingBytes = 2L * 1024 * 1024 * 1024;
+
+    /// <summary>Reads "quota_remaining_bytes" from one status snapshot; null when absent or malformed.</summary>
+    private static long? ReadQuotaRemaining(string statusPath)
+    {
+        try
+        {
+            var info = new FileInfo(statusPath);
+            if (!info.Exists || info.Length is <= 0 or > 64 * 1024)
+                return null;
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(statusPath));
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("quota_remaining_bytes", out var element)
+                || element.ValueKind != System.Text.Json.JsonValueKind.Number
+                || !element.TryGetInt64(out var value)
+                || value < 0)
+                return null;
+            return value;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Text.Json.JsonException
+            or InvalidOperationException
+            or FormatException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// Payload ceiling the native relay published for the live association, or 0 while no
@@ -380,13 +439,15 @@ public sealed class MacConnectionService : IMacConnectionService
             var ultraExecutable = _paths.BinDirectory.TrimEnd('/', '\\') + "/ultra-client";
             if (!File.Exists(ultraExecutable))
                 throw new FileNotFoundException("ultra-client helper is missing", ultraExecutable);
-            await _nativeRelayHost.StartAsync(
+            var egressInterface = EgressInterfaceConfig.ResolveOrThrow(_preferredEgressInterface);
+            await _nativeRelayHost.StartWithEgressAsync(
                 lease.ForwardId,
                 ultraExecutable,
                 nativeRelayPort,
                 lease,
                 _paths.RuntimeDirectory,
-                ct).ConfigureAwait(false);
+                ct,
+                egressInterface).ConfigureAwait(false);
             relayStarted = true;
             var configPath = Path.Combine(
                 _paths.RuntimeDirectory,

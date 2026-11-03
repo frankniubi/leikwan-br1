@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS users (
     whmcs_bound_at DATETIME NULL,
     whmcs_last_synced_at DATETIME NULL,
     wallet_low_balance_threshold DECIMAL(10,2) NOT NULL DEFAULT 5.00,
-    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0
+    wallet_warning_sent TINYINT(1) NOT NULL DEFAULT 0,
+    apple_id VARCHAR(191) NULL,
+    apple_id_submitted_at DATETIME NULL
 );
 
 CREATE TABLE IF NOT EXISTS oidc_identities (
@@ -92,11 +94,24 @@ CREATE TABLE IF NOT EXISTS whmcs_login_challenges (
     expires_at DATETIME NOT NULL,
     verified_at DATETIME NULL,
     closed_at DATETIME NULL,
+    failed_attempts INT UNSIGNED NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_whmcs_login_challenges_user FOREIGN KEY (user_id) REFERENCES users(id),
     INDEX idx_whmcs_login_challenges_user (user_id, created_at),
     INDEX idx_whmcs_login_challenges_expiry (expires_at, verified_at)
+);
+
+CREATE TABLE IF NOT EXISTS whmcs_sso_tokens (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    user_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    redirect_path VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_whmcs_sso_tokens_expiry (expires_at)
 );
 
 CREATE TABLE IF NOT EXISTS wallet_transactions (
@@ -167,6 +182,14 @@ CREATE TABLE IF NOT EXISTS forward_combinations (
     ultra_destination_zone VARCHAR(32) NULL,
     ultra_allowed_ingress_zones_json JSON NULL,
     ultra_fallback_policy VARCHAR(32) NOT NULL DEFAULT 'detected_then_any',
+    external_uot_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    external_uot_sidecar_target VARCHAR(255) NULL,
+    external_uot_token VARCHAR(8192) NULL,
+    external_uot_hmac_secret VARCHAR(128) NULL,
+    external_uot_queue_packets INT NOT NULL DEFAULT 256,
+    external_uot_keepalive_seconds INT NOT NULL DEFAULT 10,
+    external_uot_reconnect_grace_seconds INT NOT NULL DEFAULT 30,
+    external_uot_frame_payload_max INT NOT NULL DEFAULT 65507,
     node_group_key VARCHAR(191) NOT NULL,
     -- Forward Mode: 'current_mode' (direct ingress) | 'cf_mode' (Cloudflare ingress) |
     -- 'leigod_mode' (direct ingress + LeiGod self-leg; derives self_leg_outer_transport=leigod) |
@@ -585,6 +608,8 @@ CREATE TABLE IF NOT EXISTS client_device_sessions (
     ultra_runtime_debugger TINYINT(1) NULL,
     ultra_runtime_instrumented TINYINT(1) NULL,
     ultra_runtime_attested_at DATETIME NULL,
+    ultra_lease_key_sha256 CHAR(64) NULL,
+    ultra_lease_key_seen_at DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_client_device_sessions_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE,
@@ -1328,6 +1353,8 @@ CREATE TABLE IF NOT EXISTS ultra_lines (
     isp VARCHAR(32) NOT NULL DEFAULT 'unknown',
     provider VARCHAR(64) NULL,
     dispatch_class VARCHAR(16) NOT NULL DEFAULT 'normal',
+    admin_dispatch_class VARCHAR(16) NULL DEFAULT NULL,
+    admin_dispatch_note VARCHAR(255) NULL DEFAULT NULL,
     discovery_ip VARCHAR(64) NULL,
     catalog_ingress_label VARCHAR(191) NULL,
     catalog_destination_label VARCHAR(191) NULL,
@@ -1458,6 +1485,28 @@ CREATE TABLE IF NOT EXISTS ultra_lease_refusals (
     created_at DATETIME NOT NULL,
     INDEX idx_ultra_lease_refusal_created (created_at),
     INDEX idx_ultra_lease_refusal_client (client_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Panel-observed Ultra connected time (20261003_add_ultra_lease_time.sql):
+-- union of lease windows per client + device + forward + UTC day.
+CREATE TABLE IF NOT EXISTS ultra_lease_time (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    service_id BIGINT UNSIGNED NULL,
+    device_hash CHAR(64) NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    period_day DATE NOT NULL,
+    leased_seconds BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    lease_count INT UNSIGNED NOT NULL DEFAULT 0,
+    covered_until BIGINT NOT NULL DEFAULT 0,
+    first_issued_at DATETIME NOT NULL,
+    last_issued_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_ultra_lease_time_day (client_id, device_hash, forward_id, period_day),
+    INDEX idx_ultra_lease_time_client_day (client_id, period_day),
+    INDEX idx_ultra_lease_time_service_day (service_id, period_day),
+    INDEX idx_ultra_lease_time_forward_day (forward_id, period_day)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS forward_combination_leigod_lines (
@@ -1757,4 +1806,61 @@ CREATE TABLE IF NOT EXISTS access_reset_devices (
     UNIQUE KEY uniq_access_reset_device (reset_generation_id, client_id, device_uuid),
     INDEX idx_access_reset_device_user (user_id, device_uuid),
     CONSTRAINT fk_access_reset_device_generation FOREIGN KEY (reset_generation_id) REFERENCES access_reset_generations(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS client_hosted_nodes (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    client_id BIGINT UNSIGNED NOT NULL,
+    name VARCHAR(191) NOT NULL,
+    protocol VARCHAR(16) NOT NULL,
+    sealed_config TEXT NOT NULL,
+    fingerprint CHAR(64) NOT NULL,
+    version INT UNSIGNED NOT NULL DEFAULT 1,
+    source VARCHAR(16) NOT NULL DEFAULT 'console',
+    created_by_user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_client_hosted_node_fingerprint (client_id, fingerprint),
+    INDEX idx_client_hosted_nodes_client (client_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS client_hosted_node_pairings (
+    client_id BIGINT UNSIGNED NOT NULL,
+    forward_id BIGINT UNSIGNED NOT NULL,
+    node_id BIGINT UNSIGNED NOT NULL,
+    source VARCHAR(16) NOT NULL DEFAULT 'console',
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (client_id, forward_id),
+    INDEX idx_client_hosted_node_pairings_node (node_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS external_uot_usage_counters (
+    source VARCHAR(191) NOT NULL,
+    instance_id CHAR(32) NOT NULL,
+    forward_id BIGINT NOT NULL,
+    to_target_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    from_target_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (source, instance_id, forward_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS external_uot_usage_daily (
+    forward_id BIGINT NOT NULL,
+    usage_date DATE NOT NULL,
+    service_id BIGINT NULL,
+    sidecar_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    client_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    billed_extra_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    reconciled_at DATETIME NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (forward_id, usage_date),
+    INDEX idx_external_uot_usage_daily_pending (reconciled_at, usage_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+    bucket_key CHAR(64) NOT NULL PRIMARY KEY,
+    window_started_at BIGINT UNSIGNED NOT NULL,
+    hits INT UNSIGNED NOT NULL DEFAULT 0,
+    expires_at BIGINT UNSIGNED NOT NULL,
+    INDEX idx_auth_rate_limits_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

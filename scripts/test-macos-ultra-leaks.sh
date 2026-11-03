@@ -214,7 +214,12 @@ assert_clean_path "$mount_point" "mounted DMG"
 assert_clean_new_crashes
 
 touch "$release_file"
-wait "$fixture_pid" || fail "Ultra canary fixture exited with failure"
+if ! wait "$fixture_pid"; then
+  fixture_pid=""
+  # The control log sits in the state root the scans above found clean.
+  grep -E '^(READY|DONE|FAILED)' "$control_log" >&2 || true
+  fail "Ultra canary fixture exited with failure"
+fi
 fixture_pid=""
 kill -0 "$ultra_pid" 2>/dev/null && fail "Ultra child remained alive after stop"
 assert_clean_path "$state_root" "post-stop state"

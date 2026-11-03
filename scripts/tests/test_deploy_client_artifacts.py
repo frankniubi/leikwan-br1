@@ -13,6 +13,14 @@ deploy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy)
 
 
+class VersionTests(unittest.TestCase):
+    def test_runtime_source_suffix_is_not_a_release_component(self):
+        self.assertEqual(deploy.numeric_version('2026.09.19.1.1234567'), (2026, 9, 19, 1))
+        self.assertEqual(deploy.numeric_version('2026.09.19.1.abcdef0'), (2026, 9, 19, 1))
+        self.assertEqual(deploy.numeric_version('1.0.45'), (1, 0, 45))
+        self.assertEqual(deploy.numeric_version('0.1.20.52'), (0, 1, 20, 52))
+
+
 @unittest.skipUnless(os.name == 'posix', 'atomic fsync and ownership integration requires POSIX')
 class GuardedDeployTests(unittest.TestCase):
     def setUp(self):
@@ -73,10 +81,74 @@ class GuardedDeployTests(unittest.TestCase):
         self.plan['manifest']['after']=deploy.metadata(p)
         with self.assertRaisesRegex(ValueError,'unexpected manifest'):self.run_release()
 
+    def add_untouched_entry(self, content, manifest_bytes):
+        target=self.root/'artifacts/other.bin'; target.parent.mkdir(exist_ok=True); target.write_bytes(content)
+        info={'version':'1','path':'artifacts/other.bin','sha256':deploy.hashlib.sha256(manifest_bytes).hexdigest()}
+        for directory,name in ((self.root,deploy.MANIFEST),(self.stage,'versions.json')):
+            p=directory/name; m=json.loads(p.read_text()); m['other']=info; p.write_text(json.dumps(m))
+        self.plan['manifest']['before']=deploy.metadata(self.root/deploy.MANIFEST)
+        self.plan['manifest']['after']=deploy.metadata(self.stage/'versions.json')
+        return deploy.hashlib.sha256(content).hexdigest()
+
+    def test_untouched_entry_hash_mismatch_is_refused(self):
+        self.add_untouched_entry(b'served', b'something else')
+        with self.assertRaisesRegex(ValueError,'manifest integrity: other'):self.run_release()
+        self.assertEqual(b'old binary',(self.root/self.path).read_bytes())
+
+    def test_acknowledged_mismatch_must_name_the_disk_hash(self):
+        actual=self.add_untouched_entry(b'served', b'something else')
+        self.plan['acknowledged_mismatches']={'other':'0'*64}
+        with self.assertRaisesRegex(ValueError,'manifest integrity'):self.run_release()
+        self.plan['acknowledged_mismatches']={'other':actual}
+        self.assertEqual('committed',self.run_release()['status'])
+
+    def test_stale_acknowledgement_is_refused(self):
+        actual=self.add_untouched_entry(b'served', b'served')
+        self.plan['acknowledged_mismatches']={'other':actual}
+        with self.assertRaisesRegex(ValueError,'no longer exists'):self.run_release()
+
     def test_noncanonical_route_rejected(self):
         p=self.stage/'versions.json'; m=json.loads(p.read_text());m['windows_client_app']['artifact_url']='/wrong';p.write_text(json.dumps(m))
         self.plan['manifest']['after']=deploy.metadata(p)
         with self.assertRaisesRegex(ValueError,'noncanonical'):self.run_release()
+
+    def add_new_entry(self):
+        path, route = deploy.CANONICAL['client_lease_seal']
+        upload = self.stage/'lease-seal.py'; upload.write_bytes(b'seal module')
+        p = self.stage/'versions.json'; m = json.loads(p.read_text())
+        m['client_lease_seal'] = {'version':'2026.10.02.1','path':path,'artifact_url':route,
+            **{k:v for k,v in deploy.metadata(upload).items() if k in ('sha256','size_bytes')}}
+        p.write_text(json.dumps(m))
+        self.plan['versions']['client_lease_seal'] = '2026.10.02.1'
+        self.plan['new_entries'] = ['client_lease_seal']
+        (self.root/path).parent.mkdir(parents=True, exist_ok=True)
+        self.plan['payloads'].append({'path':path,'upload':'lease-seal.py','before':{'absent':True},'after':deploy.metadata(upload)})
+        self.plan['manifest']['after'] = deploy.metadata(p)
+        return path
+
+    def test_new_entry_is_created_and_removed_on_rollback(self):
+        path = self.add_new_entry()
+        self.assertEqual('committed', self.run_release()['status'])
+        self.assertEqual(b'seal module', (self.root/path).read_bytes())
+
+    def test_new_entry_rolls_back_by_removal(self):
+        path = self.add_new_entry()
+        calls = []
+        def health():
+            calls.append(True)
+            if len(calls) > 1: raise RuntimeError('health failed')
+            return {'ok': True}
+        with self.assertRaisesRegex(RuntimeError, 'health failed'): self.run_release(health)
+        self.assertFalse((self.root/path).exists())
+        deploy.verify(self.root/deploy.MANIFEST, self.plan['manifest']['before'])
+
+    def test_new_entry_refuses_an_existing_file_or_unlisted_absent(self):
+        path = self.add_new_entry()
+        (self.root/path).write_bytes(b'someone else')
+        with self.assertRaisesRegex(ValueError, 'already present'): self.run_release()
+        (self.root/path).unlink()
+        self.plan['new_entries'] = []
+        with self.assertRaisesRegex(ValueError, 'absent marker'): self.run_release()
 
     def add_mac_matrix(self):
         live_manifest = json.loads((self.root/deploy.MANIFEST).read_text())
@@ -85,7 +157,7 @@ class GuardedDeployTests(unittest.TestCase):
             if not key.startswith('macos_client_'): continue
             live = self.root/path; live.parent.mkdir(parents=True, exist_ok=True); live.write_bytes(b'old mac '+key.encode())
             upload = self.stage/Path(path).name; upload.write_bytes(b'new mac '+key.encode())
-            architecture = 'arm64' if key.endswith('arm64') else 'x86_64'
+            architecture = 'arm64'
             artifact_format = 'zip' if '_update_' in key else 'dmg'
             item = {'path':path,'artifact_url':route,'architecture':architecture,'format':artifact_format}
             live_manifest[key] = dict(item, version='1.0.7', **{k:deploy.metadata(live)[k] for k in ('sha256','size_bytes')})
@@ -103,8 +175,19 @@ class GuardedDeployTests(unittest.TestCase):
 
     def test_partial_mac_matrix_is_rejected(self):
         self.add_mac_matrix()
-        del self.plan['versions']['macos_client_update_x64']
+        del self.plan['versions']['macos_client_update_arm64']
         with self.assertRaises(ValueError): self.run_release()
+
+    def test_mac_matrix_is_apple_silicon_only(self):
+        self.assertEqual(
+            {'macos_client_app_arm64', 'macos_client_update_arm64'},
+            {key for key in deploy.CANONICAL if key.startswith('macos_client_')})
+        self.assertNotIn('ultra_client_runtime_macos_x64', deploy.CANONICAL)
+
+    def test_intel_mac_key_is_rejected(self):
+        self.add_mac_matrix()
+        self.plan['versions']['macos_client_update_x64']='1.0.8'
+        with self.assertRaisesRegex(ValueError,'not a releasable artifact'):self.run_release()
 
     def test_mac_architecture_mismatch_is_rejected(self):
         self.add_mac_matrix()
@@ -114,7 +197,7 @@ class GuardedDeployTests(unittest.TestCase):
 
     def test_mac_split_versions_are_rejected(self):
         self.add_mac_matrix()
-        self.plan['versions']['macos_client_update_x64']='1.0.9'
+        self.plan['versions']['macos_client_update_arm64']='1.0.9'
         with self.assertRaisesRegex(ValueError,'one version'):self.run_release()
 
     def test_symlink_upload_rejected(self):

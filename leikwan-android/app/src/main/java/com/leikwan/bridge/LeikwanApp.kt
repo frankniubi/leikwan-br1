@@ -3,6 +3,7 @@ package com.leikwan.bridge
 import android.app.Application
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
+import com.leikwan.bridge.net.PanelNetwork
 
 class LeikwanApp : Application() {
     override fun onCreate() {
@@ -12,5 +13,7 @@ class LeikwanApp : Application() {
             AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("zh-CN"))
             prefs.edit().putBoolean("default_locale_applied", true).apply()
         }
+        // Start tracking the physical network before the first sign-in; never fails startup.
+        PanelNetwork.ensureInstalled(this)
     }
 }

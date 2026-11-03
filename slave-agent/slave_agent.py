@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-AGENT_VERSION = "2026.08.13.2"
+AGENT_VERSION = "2026.09.15.1"
 MAX_HTTP_HEADER_BYTES = 65536
 HTTP_HEADER_TIMEOUT_SECONDS = 10
 IDENTITY_REFRESH_SECONDS = 300
@@ -2415,6 +2415,11 @@ class SlaveAgent:
                     "tcp_status": str(row.get("tcp_status", "unknown") or "unknown")[:16],
                     "tcp_connect_ms": row.get("tcp_connect_ms"),
                     "udp_status": str(row.get("udp_status", "unknown") or "unknown")[:16],
+                    "udp_probe_sent": max(0, int(row.get("udp_probe_sent", 0) or 0)),
+                    "udp_probe_received": max(0, int(row.get("udp_probe_received", 0) or 0)),
+                    "udp_loss_percent": max(0, min(100, int(row.get("udp_loss_percent", 0) or 0))),
+                    "udp_probe_latency_ms": row.get("udp_probe_latency_ms"),
+                    "udp_consecutive_failures": max(0, int(row.get("udp_consecutive_failures", 0) or 0)),
                     "consecutive_successes": max(0, int(row.get("consecutive_successes", 0) or 0)),
                     "consecutive_failures": max(0, int(row.get("consecutive_failures", 0) or 0)),
                     "last_error": str(row.get("last_error", "") or "")[:500],
@@ -2682,12 +2687,20 @@ class SlaveAgent:
         port = struct.unpack(">H", payload[offset : offset + 2])[0]
         return host, port, payload[offset + 2 :]
 
-    def _probe_leigod_udp(self, line: dict[str, Any], timeout: float) -> None:
+    def _probe_leigod_udp(self, line: dict[str, Any], timeout: float) -> dict[str, int | float]:
         method = str(line.get("udp_probe_method", "") or "").lower()
         host = str(line.get("udp_probe_host", "") or "")
         port = int(line.get("udp_probe_port", 0) or 0)
         if method not in {"dns", "echo"} or host == "" or port <= 0:
             raise RuntimeError("invalid UDP probe definition")
+        sample_count = max(
+            3,
+            min(10, int(self.config.get("leigod_udp_probe_samples", 5) or 5)),
+        )
+        sent = 0
+        received = 0
+        latency_ms: list[float] = []
+        last_error = ""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as datagram:
             datagram.bind(("127.0.0.1", 0))
             datagram.settimeout(timeout)
@@ -2699,26 +2712,61 @@ class SlaveAgent:
                 relay_host, relay_port = self._socks_read_reply(control)
                 if relay_host in {"0.0.0.0", "::"}:
                     relay_host = str(line["socks_host"])
-                if method == "dns":
-                    transaction = os.urandom(2)
-                    probe = transaction + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
-                else:
-                    probe = os.urandom(16)
-                datagram.sendto(
-                    b"\x00\x00\x00" + self._socks_address(host, port) + probe,
-                    (relay_host, relay_port),
-                )
-                response, source = datagram.recvfrom(65535)
-                if source[0] != relay_host or int(source[1]) != relay_port:
-                    raise RuntimeError("SOCKS UDP response came from unexpected relay")
-                _response_host, response_port, response_payload = self._decode_socks_udp_frame(response)
-                if response_port != port:
-                    raise RuntimeError("SOCKS UDP response port mismatch")
-                if method == "dns":
-                    if len(response_payload) < 4 or response_payload[:2] != transaction or not (response_payload[2] & 0x80):
-                        raise RuntimeError("DNS probe did not receive a matching response")
-                elif response_payload != probe:
-                    raise RuntimeError("UDP echo probe did not receive matching bytes")
+                for _ in range(sample_count):
+                    if method == "dns":
+                        transaction = os.urandom(2)
+                        probe = transaction + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
+                    else:
+                        transaction = b""
+                        probe = os.urandom(16)
+                    sent += 1
+                    started = time.monotonic()
+                    try:
+                        datagram.sendto(
+                            b"\x00\x00\x00" + self._socks_address(host, port) + probe,
+                            (relay_host, relay_port),
+                        )
+                        deadline = time.monotonic() + timeout
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise socket.timeout("UDP probe sample timed out")
+                            datagram.settimeout(remaining)
+                            response, source = datagram.recvfrom(65535)
+                            if source[0] != relay_host or int(source[1]) != relay_port:
+                                raise RuntimeError("SOCKS UDP response came from unexpected relay")
+                            _response_host, response_port, response_payload = self._decode_socks_udp_frame(response)
+                            if response_port != port:
+                                raise RuntimeError("SOCKS UDP response port mismatch")
+                            if method == "dns":
+                                valid = (
+                                    len(response_payload) >= 4
+                                    and response_payload[:2] == transaction
+                                    and bool(response_payload[2] & 0x80)
+                                )
+                            else:
+                                valid = response_payload == probe
+                            if not valid:
+                                raise RuntimeError(
+                                    "DNS probe did not receive a matching response"
+                                    if method == "dns"
+                                    else "UDP echo probe did not receive matching bytes"
+                                )
+                            received += 1
+                            latency_ms.append((time.monotonic() - started) * 1000.0)
+                            break
+                    except (socket.timeout, OSError, RuntimeError) as exc:
+                        last_error = str(exc)[:220]
+
+        if received <= 0:
+            raise RuntimeError(last_error or "UDP probe received no valid replies")
+        average_latency = sum(latency_ms) / len(latency_ms) if latency_ms else 0.0
+        return {
+            "sent": sent,
+            "received": received,
+            "loss_percent": int(round((sent - received) * 100 / max(sent, 1))),
+            "latency_ms": round(average_latency, 3),
+        }
 
     def probe_leigod_line(self, line: dict[str, Any]) -> dict[str, Any]:
         line_id = int(line.get("line_id", 0) or 0)
@@ -2748,6 +2796,11 @@ class SlaveAgent:
         tcp_status = "unhealthy"
         udp_status = "unknown"
         tcp_connect_ms: int | None = None
+        udp_probe_sent = 0
+        udp_probe_received = 0
+        udp_loss_percent = 0
+        udp_probe_latency_ms: float | None = None
+        udp_consecutive_failures = int(previous.get("udp_consecutive_failures", 0) or 0)
         errors: list[str] = []
         if error == "":
             try:
@@ -2757,15 +2810,46 @@ class SlaveAgent:
                 errors.append(f"tcp:{str(exc)[:220]}")
             if line.get("udp_probe_method"):
                 try:
-                    self._probe_leigod_udp(line, timeout)
-                    udp_status = "healthy"
+                    udp_probe = self._probe_leigod_udp(line, timeout)
+                    udp_probe_sent = int(udp_probe.get("sent", 0) or 0)
+                    udp_probe_received = int(udp_probe.get("received", 0) or 0)
+                    udp_loss_percent = max(0, min(100, int(udp_probe.get("loss_percent", 0) or 0)))
+                    udp_probe_latency_ms = float(udp_probe.get("latency_ms", 0.0) or 0.0)
+                    if udp_loss_percent <= 25:
+                        udp_status = "healthy"
+                        udp_consecutive_failures = 0
+                    else:
+                        udp_consecutive_failures += 1
+                        udp_status = (
+                            "healthy"
+                            if str(previous.get("udp_status", "")) == "healthy"
+                            and udp_consecutive_failures < 2
+                            else "unhealthy"
+                        )
                 except Exception as exc:  # noqa: BLE001
-                    udp_status = "unhealthy"
+                    udp_consecutive_failures += 1
+                    # One completely lost quality window is not enough to
+                    # remove a line that was carrying traffic. A second
+                    # consecutive all-loss window is a hard UDP failure.
+                    udp_status = (
+                        "healthy"
+                        if str(previous.get("udp_status", "")) == "healthy"
+                        and udp_consecutive_failures < 2
+                        else "unhealthy"
+                    )
+                    # A line with any valid sample remains usable for TCP+UDP
+                    # dispatch; the status field records whether the quality
+                    # window itself was complete. Only an all-loss window is
+                    # a hard UDP reachability failure.
+                    if udp_probe_received > 0 and udp_loss_percent <= 25:
+                        udp_status = "healthy"
                     errors.append(f"udp:{str(exc)[:220]}")
         else:
             errors.append(error)
 
-        success = tcp_status == "healthy" and udp_status in {"unknown", "healthy"}
+        udp_configured = bool(line.get("udp_probe_method"))
+        udp_reachable = not udp_configured or udp_status == "healthy"
+        success = tcp_status == "healthy" and udp_reachable
         return {
             "line_id": line_id,
             "config_sha256": expected_hash,
@@ -2773,6 +2857,11 @@ class SlaveAgent:
             "tcp_status": tcp_status,
             "tcp_connect_ms": tcp_connect_ms,
             "udp_status": udp_status,
+            "udp_probe_sent": udp_probe_sent,
+            "udp_probe_received": udp_probe_received,
+            "udp_loss_percent": udp_loss_percent,
+            "udp_probe_latency_ms": udp_probe_latency_ms,
+            "udp_consecutive_failures": udp_consecutive_failures,
             "consecutive_successes": int(previous.get("consecutive_successes", 0) or 0) + 1 if success else 0,
             "consecutive_failures": 0 if success else int(previous.get("consecutive_failures", 0) or 0) + 1,
             "last_error": "; ".join(errors)[:500],

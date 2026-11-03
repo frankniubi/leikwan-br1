@@ -300,7 +300,7 @@ namespace {
         }
         $db->seed('forwards', $rows);
         $provisioning = new ProvisioningService($db);
-        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64']), $db, $provisioning);
+        $controller = new ForwardLineApiController(new Config(['USER_FORWARD_LIMIT_PER_SERVICE' => '64', 'FORWARD_API_RATE_PER_MINUTE' => '0', 'FORWARD_API_MUTATION_RATE_PER_MINUTE' => '0']), $db, $provisioning);
         return ['controller' => $controller, 'db' => $db, 'provisioning' => $provisioning, 'headers' => ['Authorization' => 'Bearer user-token']];
     }
 
@@ -313,6 +313,12 @@ namespace {
     $response = $fixture['controller']->create(new Request('POST', '/api/v1/user/services/42/forwards', [], [], $fixture['headers'] + ['Content-Type' => 'text/plain'], '{}'), ['id' => '42']);
     if ($response->status() !== 415) {
         fail('non-JSON create must return 415');
+    }
+
+    $fixture = fixture(false);
+    $response = $fixture['controller']->create(new Request('POST', '/api/v1/user/services/42/forwards', [], [], $fixture['headers'] + ['Content-Type' => 'application/json', 'Idempotency-Key' => 'valid-key-1'], '[1,2]'), ['id' => '42']);
+    if ($response->status() !== 422 || (responseBody($response)['error']['fields'] ?? null) !== ['body' => 'json_object_required']) {
+        fail('a JSON array body must be rejected as json_object_required, got ' . $response->body());
     }
 
     $fixture = fixture(false);
@@ -459,7 +465,10 @@ namespace {
         fail('valid create must return 201 and call provisioning once');
     }
     $replay = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
-    if ($replay->status() !== 200 || ($replay->headers()['Location'] ?? '') !== '/api/v1/user/forwards/123' || count($fixture['provisioning']->calls) !== 1) {
+    if ($replay->status() !== 200
+        || array_key_exists('Location', $replay->headers())
+        || ($replay->headers()['Content-Location'] ?? '') !== '/api/v1/user/forwards/123'
+        || count($fixture['provisioning']->calls) !== 1) {
         fail('same idempotency key/request must replay without provisioning');
     }
     $changed = $payload;
@@ -483,6 +492,35 @@ namespace {
         if (str_contains($response->body(), $forbidden)) {
             fail('provider availability error leaked internal detail ' . $forbidden);
         }
+    }
+
+    foreach ([
+        'target_service_ip_missing' => ['target.service_id' => 'no_public_ip'],
+        'target_service_not_allowed' => ['target.service_id' => 'not_allowed'],
+        'invalid_forward_target_source' => ['target.source' => 'invalid'],
+    ] as $internalCode => $expectedFields) {
+        $fixture = fixture(false);
+        $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+            $internalCode,
+            422,
+            ['target_service_id' => 40]
+        );
+        $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+        $error = responseBody($response)['error'] ?? [];
+        if ($response->status() !== 422 || ($error['code'] ?? '') !== 'validation_failed' || ($error['fields'] ?? null) !== $expectedFields) {
+            fail($internalCode . ' must surface as validation_failed with fields, got ' . $response->body());
+        }
+    }
+
+    $fixture = fixture(false);
+    $fixture['provisioning']->nextException = new \Leikwan\Master\Support\ApiException(
+        'invalid_forward_payload',
+        422,
+        ['fields' => ['target.port' => 'out_of_range'], 'payload' => ['target_host' => 'SECRET_PAYLOAD']]
+    );
+    $response = $fixture['controller']->create(jsonRequest('POST', '/api/v1/user/services/42/forwards', $fixture['headers'] + ['Idempotency-Key' => 'valid-key-1'], $payload), ['id' => '42']);
+    if ((responseBody($response)['error']['fields'] ?? null) !== ['target.port' => 'out_of_range'] || str_contains($response->body(), 'SECRET_PAYLOAD')) {
+        fail('provisioning field reasons must pass through without the raw payload, got ' . $response->body());
     }
 
     $fixture = fixture(false);
@@ -512,6 +550,19 @@ namespace {
     $patchPolicy = $fixture['provisioning']->calls[0][5] ?? [];
     if (($patchPolicy['user_id'] ?? null) !== 7 || ($patchPolicy['feature'] ?? null) !== 'allow_manage_forwards') {
         fail('patch must recheck tenant ownership and manage feature inside the transaction');
+    }
+    $fixture = fixture(true);
+    $nativeRows = $fixture['db']->rows('forwards');
+    foreach ($nativeRows as &$nativeRow) {
+        if ((int) $nativeRow['id'] === 123) {
+            $nativeRow = array_merge($nativeRow, ['native_outbound_enabled' => 1, 'target_host' => '127.0.0.1', 'target_port' => 26254, 'transport_mode' => 'tcp+udp']);
+        }
+    }
+    unset($nativeRow);
+    $fixture['db']->seed('forwards', $nativeRows);
+    $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['listen_port' => 23456]), ['id' => '123']);
+    if ($response->status() !== 200 || ($fixture['provisioning']->calls[0][0] ?? '') !== 'update') {
+        fail('a native forward listen_port patch must use the structural update, got ' . $response->status() . ' ' . $response->body());
     }
     $fixture = fixture(true);
     $response = $fixture['controller']->patch(jsonRequest('PATCH', '/api/v1/user/forwards/123', $fixture['headers'] + ['If-Match' => '"forward-123-r3"'], ['transport' => 'udp']), ['id' => '123']);

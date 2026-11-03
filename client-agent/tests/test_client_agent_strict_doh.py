@@ -1,5 +1,6 @@
 import io
 import pathlib
+import ssl
 import struct
 import unittest
 from unittest import mock
@@ -38,12 +39,23 @@ class FakeSocket:
 
 
 class FakeTLSContext:
+    # Python <= 3.11 HTTPSConnection.__init__ reads these off the context.
+    verify_mode = ssl.CERT_REQUIRED
+    check_hostname = True
+
     def __init__(self) -> None:
         self.server_hostname = None
 
     def wrap_socket(self, sock, server_hostname=None):
         self.server_hostname = server_hostname
         return sock
+
+
+def unbound_panel_egress():
+    # On Linux PANEL_EGRESS picks the host's physical interface and dials with a
+    # bound raw socket instead of socket.create_connection; pin it to "unbound"
+    # so the dial goes through the mocked create_connection on every platform.
+    return mock.patch.object(client_agent_module.PANEL_EGRESS, "interface_for_socket", return_value="")
 
 
 class StrictDoHTests(unittest.TestCase):
@@ -109,7 +121,7 @@ class StrictDoHTests(unittest.TestCase):
             method="GET",
         )
 
-        with mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
+        with unbound_panel_egress(), mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
             with client_agent_module.urlopen_with_leikwan_doh(request, timeout=7, resolver=resolver) as response:
                 self.assertEqual(b'{"ok":true}', response.read())
 
@@ -135,7 +147,7 @@ class StrictDoHTests(unittest.TestCase):
             method="GET",
         )
 
-        with mock.patch.object(
+        with unbound_panel_egress(), mock.patch.object(
             client_agent_module.socket,
             "create_connection",
             side_effect=[OSError("first address blocked"), fake_socket],
@@ -159,7 +171,7 @@ class StrictDoHTests(unittest.TestCase):
             context=fake_context,
         )
 
-        with mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
+        with mock.patch.object(client_agent_module.PANEL_EGRESS, "interface_for_socket", return_value=""),              mock.patch.object(client_agent_module.socket, "create_connection", return_value=fake_socket) as create_connection:
             connection.connect()
 
         create_connection.assert_called_once_with(("203.0.113.7", 443), 5, None)
@@ -190,19 +202,38 @@ class StrictDoHTests(unittest.TestCase):
         self.assertEqual("https://panel.leikwanhost.com/api/health", request.full_url)
         self.assertEqual("Bearer token", request.headers["Authorization"])
 
-    def test_explicit_proxy_takes_precedence_over_strict_doh(self) -> None:
+    def test_proxy_env_is_ignored_for_protected_panel_urls(self) -> None:
         class FakeResponse:
             pass
 
         request = client_agent_module.urllib.request.Request("https://panel.leikwanhost.com/api/health")
-        with mock.patch.dict(client_agent_module.os.environ, {"HTTPS_PROXY": "http://127.0.0.1:2080"}, clear=True), \
-             mock.patch.object(client_agent_module.urllib.request, "urlopen", return_value=FakeResponse()) as urlopen_mock, \
-             mock.patch.object(client_agent_module, "urlopen_with_leikwan_doh") as doh_mock:
+        with mock.patch.dict(client_agent_module.os.environ, {"HTTPS_PROXY": "http://127.0.0.1:2080"}, clear=True),              mock.patch.object(client_agent_module.urllib.request, "urlopen") as urlopen_mock,              mock.patch.object(client_agent_module, "urlopen_with_leikwan_doh", return_value=FakeResponse()) as doh_mock:
             response = client_agent_module._urlopen_for_request(request, timeout=7)
 
         self.assertIsInstance(response, FakeResponse)
-        urlopen_mock.assert_called_once_with(request, timeout=7)
-        doh_mock.assert_not_called()
+        doh_mock.assert_called_once_with(request, timeout=7)
+        urlopen_mock.assert_not_called()
+
+    def test_proxy_env_is_ignored_for_panel_mirror_urls(self) -> None:
+        class FakeResponse:
+            pass
+
+        request = client_agent_module.urllib.request.Request("https://api-leikwanbridge.nbwly.com/api/health")
+        with mock.patch.dict(client_agent_module.os.environ, {"HTTPS_PROXY": "http://127.0.0.1:2080"}, clear=True),              mock.patch.object(client_agent_module.urllib.request, "urlopen") as urlopen_mock,              mock.patch.object(client_agent_module, "panel_urlopen", return_value=FakeResponse()) as panel_mock:
+            response = client_agent_module._urlopen_for_request(request, timeout=7)
+
+        self.assertIsInstance(response, FakeResponse)
+        panel_mock.assert_called_once_with(request, timeout=7)
+        urlopen_mock.assert_not_called()
+
+    def test_agent_has_no_installer_proxy_handling(self) -> None:
+        # The installer proxy.env (EnvironmentFile) is retired; the agent must
+        # not read it or pick a proxy out of the environment for panel calls.
+        source = (pathlib.Path(__file__).resolve().parents[1] / "client_agent.py").read_text(encoding="utf-8")
+        self.assertNotIn("proxy.env", source)
+        for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+            self.assertNotIn(f'environ.get("{name}"', source)
+            self.assertNotIn(f"environ.get('{name}'", source)
 
 
 if __name__ == "__main__":

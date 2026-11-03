@@ -18,19 +18,35 @@ internal static class Program
             ShowUnsupportedOsNotice();
             return 1;
         }
+        // Detached swap step of the daemon's self-update and of `leikwan update`.
+        // It runs as root from a copy of the new bundle, in its own session.
+        if (args.Length > 0 && string.Equals(args[0], Services.MacHeadlessUpdatePaths.ApplyCommand, StringComparison.Ordinal))
+            return Services.MacHeadlessUpdateApply.RunAsync(args[1..]).GetAwaiter().GetResult();
         // `leikwan <command>` — the operator surface for the windowless client.
         if (args.Length > 0 && string.Equals(args[0], "--cli", StringComparison.Ordinal))
         {
             var cliHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             var cliPaths = new Services.MacPlatformPaths(cliHome, ResolveBundleDirectory());
             var controller = new Services.MacServiceController(cliPaths);
+            // A root CLI (the wrapper runs "update" through sudo) stages into the
+            // daemon's root-only updates directory: what is staged there is what
+            // the daemon runs next.
+            var cliUpdatesRoot = OperatingSystem.IsMacOS() && Services.MacNative.geteuid() == 0
+                ? Services.MacHeadlessUpdatePaths.UpdatesRoot
+                : cliPaths.Root.TrimEnd('/', '\\') + "/updates";
             var updater = new Services.MacClientUpdateService(
                 new Services.MacAppUpdateService(
-                    cliPaths.Root.TrimEnd('/', '\\') + "/updates",
+                    cliUpdatesRoot,
                     cliPaths.BundleDirectory,
-                    RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "arm64" : "x64"),
+                    // Apple silicon only: the bundle carries no x64 build.
+                    "arm64",
+                    // This process is the one being replaced, but it outlives the helper
+                    // so it can verify the installed version. The helper must therefore
+                    // not wait for it to exit (current_process_id = 0).
+                    waitForCallerExit: false),
                 controller,
-                Services.MacHeadlessCli.PanelUrl(cliPaths));
+                Services.MacHeadlessCli.PanelUrl(cliPaths),
+                headless: Services.MacHeadlessCliUpdateInstaller.CreateDefault(cliPaths.BundleDirectory));
             using var cliCts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>
             {
@@ -58,9 +74,15 @@ internal static class Program
         var paths = new Services.MacPlatformPaths(home, ResolveBundleDirectory());
         if (args.Length == 2 && string.Equals(args[0], "--apply-update", StringComparison.Ordinal))
         {
-            return Services.MacAppUpdateApplier.ApplyFromRequestAsync(args[1]).GetAwaiter().GetResult()
-                ? 0
-                : 1;
+            // Report the reason on the console as well as in the apply log: a helper
+            // that rolls back silently is indistinguishable from one that never ran.
+            var outcome = Services.MacAppUpdateApplier
+                .ApplyFromRequestOutcomeAsync(args[1])
+                .GetAwaiter()
+                .GetResult();
+            if (!outcome.Success)
+                Console.Error.WriteLine($"update_apply_failed: {outcome.Code} ({outcome.Detail})");
+            return outcome.Success ? 0 : 1;
         }
         if (Services.MacAppUpdateService.TryLaunchPendingUpdate(
                 paths.Root.TrimEnd('/', '\\') + "/updates",
@@ -141,7 +163,7 @@ internal static class Program
             || args[4] != "--window-height"
             || width is < 900 or > 1600
             || height is < 620 or > 1000
-            || args[1] is not ("login" or "dashboard" or "forwards" or "settings"))
+            || args[1] is not ("login" or "dashboard" or "forwards" or "services" or "nodes" or "pairing" or "settings"))
             throw new InvalidOperationException("ui_fixture_invalid");
         App.UiFixtureState = args[1];
         App.UiFixtureWidth = width;

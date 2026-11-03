@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -81,9 +82,19 @@ func TestForwardRuntimeConfigEmitsOnlyAcceptedKeys(t *testing.T) {
 
 func TestNativeRuntimeConfigEmitsOnlyAcceptedKeys(t *testing.T) {
 	cfg := defaultConfig()
-	forward := ForwardConfig{ForwardID: 3, ListenPort: 2080, NativeDirection: "cn_to_intl", BackendMode: "ultra"}
-	policy := &UltraPolicy{PolicyGeneration: "gen", TargetDigest: "digest"}
-	assertKnownKeys(t, "native runtime config", buildNativeRuntimeConfig(cfg, forward, pathsForForward("/run", 3), policy, "global", "restricted"))
+	runtime := buildNativeRuntimeConfig(cfg, 3, gatewaySocksPort, gatewayRelayPaths("/run"), strings.Repeat("a", 64), strings.Repeat("b", 64), "restricted")
+	assertKnownKeys(t, "native runtime config", runtime)
+	// ultra-client exits with "runtime configuration invalid" on an empty
+	// target, native mode included.
+	if strings.TrimSpace(runtime.Target) == "" || !runtime.NativeSocks5 || runtime.ListenHost != "127.0.0.1" {
+		t.Fatalf("native relay config unusable: target=%q native=%v host=%s", runtime.Target, runtime.NativeSocks5, runtime.ListenHost)
+	}
+	if runtime.ListenPort != gatewaySocksPort || runtime.NativeFilterProfile != "opengfw_tcp" {
+		t.Fatalf("listen=%d filter=%s", runtime.ListenPort, runtime.NativeFilterProfile)
+	}
+	if unrestricted := buildNativeRuntimeConfig(cfg, 3, gatewaySocksPort, gatewayRelayPaths("/run"), "", "", "unrestricted"); unrestricted.NativeFilterProfile != "off" || unrestricted.NativeRoutePolicy != "unrestricted" {
+		t.Fatalf("unrestricted relay = %s/%s", unrestricted.NativeRoutePolicy, unrestricted.NativeFilterProfile)
+	}
 }
 
 // The default probe contract has to reach the runtime under the exact keys the

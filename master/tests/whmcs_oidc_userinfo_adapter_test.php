@@ -44,6 +44,9 @@ foreach ([
     "->isEmailAddressVerified()",
     "->emailVerified()",
     "\$userinfo['email_verified'] = true",
+    "\$userinfo['whmcs_client_id'] = (int) \$client->id",
+    "\$userinfo['whmcs_user_id'] = \$ownerId",
+    "\$userinfo['whmcs_email'] = \$clientEmail",
 ] as $needle) {
     assertContains($needle, $source, 'adapter security contract');
 }
@@ -53,6 +56,7 @@ assertContains('Retry the public HTTPS path after a loopback transport or TLS fa
 
 assertOrdered("->isEmailAddressVerified()", "\$userinfo['email_verified'] = true", $source, 'client verification must precede claim elevation');
 assertOrdered("->emailVerified()", "\$userinfo['email_verified'] = true", $source, 'owner verification must precede claim elevation');
+assertOrdered("->emailVerified()", "\$userinfo['whmcs_client_id'] = (int) \$client->id", $source, 'WHMCS client claim must follow owner verification');
 if (preg_match('/(?:secret|password|access_token)\s*=\s*[\'\"][^\'\"]+/i', $source) === 1) {
     fail('adapter must not contain credential literals');
 }

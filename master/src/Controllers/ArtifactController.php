@@ -95,6 +95,26 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('install/install-bond-sidecar.sh', 'text/plain; charset=utf-8', $request);
     }
 
+    /**
+     * Serve the operator-owned external UoT sidecar installer. Installs the Go uot-sidecar
+     * (uot_sidecar_linux_*) plus its systemd unit; the carrier config is supplied separately
+     * so a point can be enabled without rebuilding the installer.
+     */
+    public function installExternalUot(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-external-uot.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function uotSidecarLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function uotSidecarLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/uot-sidecar/uot-sidecar_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function wgWatchdog(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/leikwan-wg-watchdog.sh', 'text/plain; charset=utf-8', $request);
@@ -125,6 +145,9 @@ final class ArtifactController extends BaseController
         $forwardId = (int) $request->input('forward_id', 0);
         $token = trim((string) $request->input('token', ''));
         if ($forwardId > 0 && $token !== '') {
+            if (!self::isInstallerToken($token)) {
+                return self::invalidInstallerTokenResponse();
+            }
             $script = $this->renderForwardSpecificWindowsInstallerWrapper($forwardId, $token);
             return new Response(200, [
                 'Content-Type' => 'text/plain; charset=utf-8',
@@ -140,6 +163,9 @@ final class ArtifactController extends BaseController
         $clientId = (int) $request->input('client_id', 0);
         $agentToken = trim((string) $request->input('agent_token', ''));
         if ($clientId > 0 && $agentToken !== '') {
+            if (!self::isInstallerToken($agentToken)) {
+                return self::invalidInstallerTokenResponse();
+            }
             $script = $this->renderClientSpecificWindowsManagerWrapper($clientId, $agentToken);
             return new Response(200, [
                 'Content-Type' => 'text/plain; charset=utf-8',
@@ -205,9 +231,34 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/sidecar_agent.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function clientAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function clientAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-client-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxAmd64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_amd64', 'application/octet-stream', $request);
+    }
+
+    public function sidecarAgentLinuxArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/python-agent/leikwan-sidecar-agent_linux_arm64', 'application/octet-stream', $request);
+    }
+
     public function cfwgLatencyWatchdog(Request $request, array $params): Response
     {
         return $this->serveRepoFile('client-agent/cfwg_latency_watchdog.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function clientLeaseSeal(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('client-agent/leikwan_lease_seal.py', 'text/x-python; charset=utf-8', $request);
     }
 
     public function installForwardRuntime(Request $request, array $params): Response
@@ -238,6 +289,16 @@ final class ArtifactController extends BaseController
     public function ultraClientMacosArm64(Request $request, array $params): Response
     {
         return $this->serveRepoFile('artifacts/ultra/ultra-client_macos_arm64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientAndroidArm64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_arm64', 'application/octet-stream', $request);
+    }
+
+    public function ultraClientAndroidX64(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('artifacts/ultra/ultra-client_android_x86_64', 'application/octet-stream', $request);
     }
 
     public function forwardStrategyHelper(Request $request, array $params): Response
@@ -280,6 +341,11 @@ final class ArtifactController extends BaseController
         return $this->serveRepoFile('sidecar-agent/leikwan_udp_uot_merge.py', 'text/x-python; charset=utf-8', $request);
     }
 
+    public function externalUotRuntime(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('sidecar-agent/leikwan_external_uot.py', 'text/x-python; charset=utf-8', $request);
+    }
+
     public function wssMuxRuntime(Request $request, array $params): Response
     {
         return $this->serveRepoFile('sidecar-agent/leikwan_wss_mux.py', 'text/x-python; charset=utf-8', $request);
@@ -308,6 +374,62 @@ final class ArtifactController extends BaseController
     public function installClientAgent(Request $request, array $params): Response
     {
         return $this->serveRepoFile('install/install-client-agent.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function installDockerClient(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-docker-client.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    /**
+     * The OpenWrt installer and its package manifest change with every router
+     * release, so neither may be cached the way the versioned artifacts are:
+     * a stale manifest would pin routers to the previous packages.
+     */
+    public function installOpenwrt(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/install-openwrt.sh', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
+    public function openwrtPackages(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/openwrt-packages.txt', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
+    public function openwrtVersions(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/openwrt-versions.sh', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
+    public function dockerClientCompose(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-compose.yml', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientDockerfile(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/Dockerfile', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientFetchArtifacts(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/fetch-artifacts.py', 'text/x-python; charset=utf-8', $request);
+    }
+
+    public function dockerClientEntrypoint(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-entrypoint.sh', 'text/plain; charset=utf-8', $request);
+    }
+
+    public function dockerClientHealthcheck(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('deploy/docker-client/docker-healthcheck.sh', 'text/plain; charset=utf-8', $request);
     }
 
     public function installClientAgentLinuxArm64(Request $request, array $params): Response
@@ -485,11 +607,17 @@ final class ArtifactController extends BaseController
             'component' => 'sidecar',
             'manifest' => $this->manifestFor(
                 'sidecar_agent',
+                'sidecar_agent_linux_amd64',
+                'sidecar_agent_linux_arm64',
                 'mptcp_sidecar_runtime',
                 'udp_uot_merge_runtime',
                 'leikwan_udp_uot_merge_linux_amd64',
                 'bond_sidecar_installer',
                 'bond_sidecar_uninstaller',
+                'external_uot_installer',
+                'uot_sidecar_linux_amd64',
+                'uot_sidecar_linux_arm64',
+                'sidecar_agent_update',
                 'tcp_accel_runtime',
                 'tcp_accel_installer'
             ),
@@ -505,9 +633,12 @@ final class ArtifactController extends BaseController
             'bond_sidecar_installer',
             'bond_sidecar_uninstaller',
             'client_agent',
+            'client_agent_linux_amd64',
+            'client_agent_linux_arm64',
             'client_agent_update',
             'install_forward_runtime',
             'cfwg_latency_watchdog',
+            'client_lease_seal',
             'client_agent_installer',
             'client_agent_installer_linux_arm64',
             'client_rate_limit',
@@ -548,6 +679,12 @@ final class ArtifactController extends BaseController
             'leikwan_ingress_windows_amd64',
             'leikwan_mptcp_relay_linux_amd64'
         );
+        // Intel macOS is retired. The *_x64 entries stay pinned at the last
+        // x64 build (1.0.56) in versions.json and are never updated: a shipped
+        // Intel client throws update_manifest_architecture_missing (and shows an
+        // "update failed" banner on every launch) when its key is absent, while
+        // the pinned entry makes it report "up to date". Older Intel clients can
+        // still reach that final build. The download page offers Apple Silicon only.
         $macKeys = [
             'macos_client_app_arm64',
             'macos_client_app_x64',
@@ -721,9 +858,26 @@ final class ArtifactController extends BaseController
         ]);
     }
 
+    /**
+     * Tokens are interpolated into a generated PowerShell script, so only the
+     * shapes the panel actually issues are accepted (client/agent tokens are
+     * bin2hex(random_bytes(24)); admin-set agent tokens use [A-Za-z0-9_-]).
+     */
+    public static function isInstallerToken(string $token): bool
+    {
+        return preg_match('/^[A-Za-z0-9_-]{1,256}$/D', $token) === 1;
+    }
+
+    private static function invalidInstallerTokenResponse(): Response
+    {
+        return Response::json(400, ['error' => 'invalid_token'])->withHeaders([
+            'Cache-Control' => 'no-store',
+        ]);
+    }
+
     private function powerShellSingleQuoted(string $value): string
     {
-        return "'" . str_replace("'", "''", $value) . "'";
+        return $this->powershellSingleQuote($value);
     }
 
     /**

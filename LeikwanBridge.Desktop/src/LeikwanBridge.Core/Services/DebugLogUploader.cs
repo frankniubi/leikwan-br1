@@ -1,14 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using LeikwanBridge.Core.Models;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
 /// <summary>Background, resumable upload of redacted desktop logs.</summary>
-public sealed partial class DebugLogUploader
+public sealed class DebugLogUploader
 {
     public const int ChunkBytes = 256 * 1024;
     public const long ByteLimit = 100 * 1024 * 1024;
@@ -132,14 +131,7 @@ public sealed partial class DebugLogUploader
         return new("complete", chunks, bytes);
     }
 
-    public static string Redact(string value)
-    {
-        var text = (value ?? string.Empty).Replace("\0", string.Empty);
-        text = BearerPattern().Replace(text, "$1[REDACTED]");
-        text = SecretPattern().Replace(text, "$1[REDACTED]");
-        text = QuerySecretPattern().Replace(text, "$1[REDACTED]");
-        return string.Join('\n', text.Split('\n').Select(line => new string(line.Where(ch => ch == '\t' || ch == '\r' || ch >= ' ').ToArray())));
-    }
+    public static string Redact(string value) => LogPrivacy.Redact(value);
 
     private IEnumerable<string> EnumerateLogFiles()
     {
@@ -194,14 +186,6 @@ public sealed partial class DebugLogUploader
         public bool Completed { get; set; }
     }
 
-    [GeneratedRegex("(?i)(authorization\\s*:\\s*bearer\\s+)[^\\s,;]+", RegexOptions.CultureInvariant)]
-    private static partial Regex BearerPattern();
-
-    [GeneratedRegex("(?i)(\\b(?:password|passwd|secret|token|credential|session[_-]?ticket|private[_-]?key|api[_-]?key)\\b\\s*[:=]\\s*)(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;]+)", RegexOptions.CultureInvariant)]
-    private static partial Regex SecretPattern();
-
-    [GeneratedRegex("(?i)([?&](?:token|password|secret|credential|key)=)[^&\\s]+", RegexOptions.CultureInvariant)]
-    private static partial Regex QuerySecretPattern();
 }
 
 public readonly record struct DebugUploadResult(string Status, int Chunks, long Bytes);

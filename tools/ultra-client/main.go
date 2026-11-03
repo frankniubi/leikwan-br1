@@ -21,7 +21,12 @@ import (
 
 const keepPayloadHex = "\x00\x00\xa4\x64\x34\xc9\xb6\x2b\x82\xee\xd2\xa8\x7f\xaa\x6a\x5f\x45\xac"
 
+// UDP candidate probing uses Cloudflare DNS because it provides a bounded,
+// protocol-aware response. TCP probing is deliberately independent: a TCP
+// connect to the ubiquitous HTTPS listener is enough to establish reachability
+// and must not depend on an application response header.
 const defaultProbeTarget = "1.1.1.1:53"
+const defaultTCPProbeTarget = "1.1.1.1:443"
 
 var runtimeBuildVersion = "development"
 
@@ -34,10 +39,21 @@ const (
 )
 
 type Config struct {
-	ForwardID  int    `json:"forward_id"`
-	ListenHost string `json:"listen_host"`
-	ListenPort int    `json:"listen_port"`
-	Target     string `json:"target"`
+	ForwardID      int                  `json:"forward_id"`
+	ListenHost     string               `json:"listen_host"`
+	ListenPort     int                  `json:"listen_port"`
+	Target         string               `json:"target"`
+	TCPFirstFlight TCPFirstFlightConfig `json:"tcp_first_flight,omitempty"`
+	// Forward-local, bounded operator quarantine. It can only remove candidates
+	// from authenticated grants; it never creates or extends authorization.
+	CandidateQuarantineHashes   []string `json:"candidate_quarantine_hashes,omitempty"`
+	CandidateQuarantineUntil    string   `json:"candidate_quarantine_until,omitempty"`
+	CandidateQuarantineProtocol string   `json:"candidate_quarantine_protocol,omitempty"`
+	// EgressInterface* describe an optional user-selected underlay. When
+	// present, provider TCP/UDP sockets are bound before connect.
+	EgressInterface      string `json:"egress_interface"`
+	EgressInterfaceIndex int    `json:"egress_interface_index"`
+	EgressLocalAddress   string `json:"egress_local_address"`
 	// NativeSocks5 exposes a local standard SOCKS5 facade while retaining the
 	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
 	// forwards leave this disabled and keep their fixed-target behavior.
@@ -55,11 +71,13 @@ type Config struct {
 	UDPKeepaliveIntervalSecs int                 `json:"udp_keepalive_interval_seconds"`
 	UDPQueuePackets          int                 `json:"udp_queue_packets"`
 	UDPMaxAssociations       int                 `json:"udp_max_associations"`
+	UDPAssociationIdleSecs   int                 `json:"udp_association_idle_seconds"`
 	UDPSetupWorkers          int                 `json:"udp_setup_workers"`
 	ConnectTimeoutSecs       int                 `json:"connect_timeout_seconds"`
 	LocationCachePath        string              `json:"location_cache_path"`
 	LocationLockPath         string              `json:"location_lock_path"`
 	StatusPath               string              `json:"status_path"`
+	ParentPID                int                 `json:"parent_pid,omitempty"`
 	AutoSelect               bool                `json:"auto_select"`
 	ProbeDurationSecs        int                 `json:"probe_duration_seconds"`
 	ProbeTimeoutMillis       int                 `json:"probe_timeout_ms"`
@@ -67,6 +85,14 @@ type Config struct {
 	ProbeSamples             int                 `json:"probe_samples"`
 	ProbeIntervalMillis      int                 `json:"probe_interval_ms"`
 	ZoneAliases              map[string][]string `json:"zone_aliases"`
+	// TCPWriteStallSeconds bounds how long a write to the relay may make no
+	// progress before the stream is torn down and scored against its path.
+	// 0 = default (10 s), negative = disabled, otherwise clamped to [3, 300].
+	TCPWriteStallSeconds int `json:"tcp_write_stall_seconds,omitempty"`
+	// ExternalUoT is an explicit opt-in UDP-over-TCP path which terminates at
+	// an operator-owned sidecar over the existing Ultra command-1 carrier.
+	// Native command-3 UDP remains the default when this is disabled.
+	ExternalUoT ExternalUoTConfig `json:"external_uot"`
 }
 
 func probeDuration(config Config) time.Duration {
@@ -302,13 +328,40 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		if !(bytes.Equal(second, []byte{1, 0}) || bytes.Equal(second, []byte{5, 2})) {
 			return nil, errStreamAuthenticationRejected
 		}
+		if bytes.Equal(second, []byte{5, 2}) {
+			// A second method selection is the relay asking to authenticate
+			// again: it refused the credential (seen live when a line's
+			// credential was rotated before its material expired). The relay
+			// then closes about a second later without attaching a target.
+			// Accept the reply only when a complete success frame follows, as
+			// the first implementation required; otherwise this dead stream
+			// reached the application, which saw an empty reply and never
+			// moved to another candidate.
+			final := make([]byte, 10)
+			if _, err := io.ReadFull(reader, final); err != nil || !validLegacyStreamFinal(final) {
+				return nil, errStreamAuthenticationRejected
+			}
+			if final[2] == 0 {
+				return nil, errStreamCommandRejected
+			}
+		}
 		if bytes.Equal(second, []byte{1, 0}) {
 			optionalDeadline := time.Now().Add(100 * time.Millisecond)
 			if optionalDeadline.After(deadline) {
 				optionalDeadline = deadline
 			}
 			_ = conn.SetReadDeadline(optionalDeadline)
-			if optional, peekErr := reader.Peek(10); peekErr == nil && validLegacyStreamFinal(optional) {
+			optional, peekErr := reader.Peek(10)
+			if peekErr != nil && len(optional) == 0 {
+				// An auth ACK followed by FIN/reset is not a usable stream.
+				// Retry while no caller bytes have been consumed, rather than
+				// handing a known-dead connection to the application.
+				var timeout net.Error
+				if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+					return nil, peekErr
+				}
+			}
+			if peekErr == nil && validLegacyStreamFinal(optional) {
 				_, _ = reader.Discard(10)
 				if optional[2] == 0 {
 					return nil, errStreamCommandRejected
@@ -327,6 +380,22 @@ func readStreamAcksUntil(conn net.Conn, deadline time.Time) (*bufio.Reader, erro
 		}
 		if !validStreamPrelude(prelude) {
 			return nil, errStreamPreludeRejected
+		}
+		// This relay dialect has no optional SOCKS final frame, but the
+		// metadata ACK can still be immediately followed by FIN/reset.
+		// Keep that failure in the setup phase, before any caller bytes are
+		// consumed. Do not discard early server-first application payload.
+		checkDeadline := time.Now().Add(100 * time.Millisecond)
+		if checkDeadline.After(deadline) {
+			checkDeadline = deadline
+		}
+		_ = conn.SetReadDeadline(checkDeadline)
+		early, peekErr := reader.Peek(1)
+		if peekErr != nil && len(early) == 0 {
+			var timeout net.Error
+			if !errors.As(peekErr, &timeout) || !timeout.Timeout() {
+				return nil, peekErr
+			}
 		}
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
@@ -373,6 +442,107 @@ func writeXor(writer io.Writer, payload []byte) error {
 	return writeAll(writer, encoded)
 }
 
+// remoteWriteProgressTimeout is how long a write to the relay may make no
+// progress while the local side still has bytes to send. A provider that
+// accepted the connection and then stopped reading used to pin the stream in a
+// blocking write until the runtime stopped (452-673 s in the 2026-09-24
+// matrix), and every later stream kept choosing the same dead candidate. The
+// bound measures time without progress (acknowledged bytes where the send queue
+// is readable), never the duration of a slow write. Silence the other way (an
+// upload that gets no reply, or a stream with nothing to send) never blocks a
+// write and never trips it. Five seconds without a single acknowledgement is
+// well past normal retransmission gaps on the relay paths.
+const remoteWriteProgressTimeout = 5 * time.Second
+
+// Bounds for the operator-configurable tcp_write_stall_seconds.
+const (
+	remoteWriteStallMin = 3 * time.Second
+	remoteWriteStallMax = 300 * time.Second
+)
+
+// resolveTCPWriteStall turns tcp_write_stall_seconds into the per-stream bound:
+// 0 is the default, a negative value disables the timer, and anything else is
+// clamped to [remoteWriteStallMin, remoteWriteStallMax].
+func resolveTCPWriteStall(config Config) time.Duration {
+	switch seconds := config.TCPWriteStallSeconds; {
+	case seconds < 0:
+		return -1
+	case seconds == 0:
+		return remoteWriteProgressTimeout
+	default:
+		value := time.Duration(seconds) * time.Second
+		return min(max(value, remoteWriteStallMin), remoteWriteStallMax)
+	}
+}
+
+// progressWriteDeadline returns the deadline for the next attempt of a remote
+// write. nil keeps the socket's own deadline, which is what the handshake and
+// the callers that do not opt in rely on.
+type progressWriteDeadline func() time.Time
+
+// errRemoteWriteStall is a write to the relay that made no progress for the
+// stall bound while the local side still had bytes to send.
+var errRemoteWriteStall = errors.New("remote write stalled")
+
+// isWriteTimeout reports whether err is a deadline expiry rather than a
+// connection failure.
+func isWriteTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
+}
+
+// writeAllProgress writes payload, re-arming the deadline before every attempt.
+// Where the send queue is readable (Linux, Android, macOS) progress means bytes
+// the peer acknowledged, so a stall is declared one bound after the last ack
+// even while the kernel keeps accepting small writes. Elsewhere a deadline that
+// expires after the socket accepted at least one byte is progress, and only an
+// attempt that accepted nothing for the whole bound is a stall.
+func writeAllProgress(destination net.Conn, payload []byte, deadline progressWriteDeadline) error {
+	if deadline == nil {
+		return writeAll(destination, payload)
+	}
+	acks := newSendAckProgress(destination)
+	for len(payload) > 0 {
+		next := deadline()
+		if acks != nil {
+			next = acks.deadline(next)
+		}
+		if err := destination.SetWriteDeadline(next); err != nil {
+			return err
+		}
+		count, err := destination.Write(payload)
+		if count < 0 || count > len(payload) {
+			return errors.New("writer returned invalid count")
+		}
+		payload = payload[count:]
+		if acks != nil && !acks.observe(count) {
+			acks = nil
+		}
+		if err != nil {
+			if isWriteTimeout(err) {
+				if count > 0 && (acks == nil || !acks.expired()) {
+					continue
+				}
+				return fmt.Errorf("%w: %w", errRemoteWriteStall, err)
+			}
+			return err
+		}
+		if count == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func writeXorProgress(destination net.Conn, payload []byte, deadline progressWriteDeadline) error {
+	encoded := xorOne(payload)
+	defer clearBytes(encoded)
+	return writeAllProgress(destination, encoded, deadline)
+}
+
 var (
 	errStreamAuthenticationRejected   = errors.New("stream authentication rejected")
 	errStreamCommandRejected          = errors.New("stream command rejected")
@@ -389,9 +559,10 @@ var (
 // the in-process game-sim benchmark uses them to inspect the kernel buffer
 // sizes on the sockets the runtime itself configures (4MB datagram buffers).
 var (
-	testHookLocalUDPListening  func(local *net.UDPConn)
-	testHookDatagramArmed      func(remote *net.UDPConn)
-	testHookRuntimeQueueDepth  func(depth int)
+	testHookLocalUDPListening func(local *net.UDPConn)
+	testHookTCPListening      func(listener net.Listener)
+	testHookDatagramArmed     func(remote *net.UDPConn)
+	testHookRuntimeQueueDepth func(depth int)
 )
 
 type handshakePhaseError struct {
@@ -436,18 +607,26 @@ func isRetryableHandshakeError(err error) bool {
 }
 
 func dialStreamWithGreeting(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration, greeting []byte) (net.Conn, error) {
+	return dialStreamWithGreetingConfig(Config{}, lease, targetHost, targetPort, timeout, greeting)
+}
+
+func dialStreamWithGreetingConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration, greeting []byte) (net.Conn, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
-	return dialStreamWithGreetingUntil(lease, targetHost, targetPort, time.Now().Add(timeout), greeting)
+	return dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, time.Now().Add(timeout), greeting)
 }
 
 func dialStreamWithGreetingUntil(lease ProviderLease, targetHost string, targetPort int, deadline time.Time, greeting []byte) (net.Conn, error) {
+	return dialStreamWithGreetingUntilConfig(Config{}, lease, targetHost, targetPort, deadline, greeting)
+}
+
+func dialStreamWithGreetingUntilConfig(config Config, lease ProviderLease, targetHost string, targetPort int, deadline time.Time, greeting []byte) (net.Conn, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
+	conn, err := dialProviderTCP(config, net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port)), remaining)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
@@ -489,6 +668,17 @@ func dialStreamWithGreetingOrder(
 	timeout time.Duration,
 	order [][]byte,
 ) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(Config{}, lease, targetHost, targetPort, timeout, order)
+}
+
+func dialStreamWithGreetingOrderConfig(
+	config Config,
+	lease ProviderLease,
+	targetHost string,
+	targetPort int,
+	timeout time.Duration,
+	order [][]byte,
+) (net.Conn, error) {
 	if timeout <= 0 {
 		return nil, fmt.Errorf("stream handshake: %w", context.DeadlineExceeded)
 	}
@@ -496,7 +686,7 @@ func dialStreamWithGreetingOrder(
 		return nil, errors.New("stream handshake greeting order invalid")
 	}
 	deadline := time.Now().Add(timeout)
-	conn, err := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[0])
+	conn, err := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[0])
 	if err == nil {
 		return conn, nil
 	}
@@ -507,7 +697,7 @@ func dialStreamWithGreetingOrder(
 	if remaining <= 0 {
 		return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, context.DeadlineExceeded)
 	}
-	fallbackConn, fallbackErr := dialStreamWithGreetingUntil(lease, targetHost, targetPort, deadline, order[1])
+	fallbackConn, fallbackErr := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[1])
 	if fallbackErr == nil {
 		return fallbackConn, nil
 	}
@@ -515,7 +705,17 @@ func dialStreamWithGreetingOrder(
 }
 
 func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
+	return dialStreamConfig(Config{}, lease, targetHost, targetPort, timeout)
+}
+
+func dialStreamConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(config, lease, targetHost, targetPort, timeout, handshakeGreetingOrder(lease))
+}
+
+func dialStreamForConfig(config Config) candidateStreamDial {
+	return func(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+		return dialStreamConfig(config, lease, targetHost, targetPort, timeout)
+	}
 }
 
 type streamCandidateDial func(ProviderLease, string, int, time.Duration) (net.Conn, error)
@@ -559,6 +759,16 @@ func dialStreamWithCandidates(
 		if identity != "" {
 			attempted = append(attempted, identity)
 		}
+		if operatorQuarantines(store.config, current, "tcp", time.Now()) {
+			current.wipe()
+			lastErr = errOperatorQuarantine
+			next, ok := store.SnapshotNextCandidate(attempted...)
+			if !ok {
+				break
+			}
+			current = next.Lease
+			continue
+		}
 		attemptTimeout := timeout
 		if remaining := time.Until(current.ExpiresAt); remaining < attemptTimeout {
 			attemptTimeout = remaining
@@ -593,7 +803,11 @@ func dialStreamWithCandidates(
 }
 
 func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
-	return dialStreamWithGreetingOrder(lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
+	return dialNativeStreamConfig(Config{}, lease, targetHost, targetPort, timeout)
+}
+
+func dialNativeStreamConfig(config Config, lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	return dialStreamWithGreetingOrderConfig(config, lease, targetHost, targetPort, timeout, nativeHandshakeGreetingOrder(lease))
 }
 
 // copyOutbound and copyInbound report how many bytes they moved: the relay
@@ -601,43 +815,121 @@ func dialNativeStream(lease ProviderLease, targetHost string, targetPort int, ti
 // "the far end took the connection and returned nothing", and only the byte
 // count separates those two EOFs.
 func copyOutbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
+	total, err, _ := copyOutboundStaged(destination, source, limiter, status)
+	return total, err
+}
+
+// copyOutboundStaged also names the operation that ended the copy, so a stream
+// end can be attributed to the local application (local_read), the relay leg
+// (remote_write) or policy, instead of only an error class.
+func copyOutboundStaged(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error, string) {
+	return copyOutboundStagedWithDeadline(destination, source, limiter, status, nil)
+}
+
+// copyOutboundStagedWithDeadline is copyOutboundStaged with a progress deadline
+// on every write to the relay (see writeAllProgress). A nil deadline keeps the
+// previous behaviour exactly.
+func copyOutboundStagedWithDeadline(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter, deadline progressWriteDeadline) (int64, error, string) {
 	buffer := make([]byte, 32*1024)
 	var total int64
 	for {
 		count, readErr := source.Read(buffer)
 		if count > 0 {
-			if err := limiter.Consume(count); err != nil {
-				return total, err
+			// A drained quota slice pauses the copy instead of ending the
+			// stream: the host refills the slice on the next lease delivery,
+			// and killing a mid-flight download here read as "large downloads
+			// drop". Revocation/expiry still ends the copy immediately.
+			if err := limiter.WaitQuota(count, quotaExhaustedWaitBound); err != nil {
+				return total, err, "policy"
 			}
 			status.AddUsage(0, count)
-			if err := writeXor(destination, buffer[:count]); err != nil {
-				return total, err
+			if err := writeXorProgress(destination, buffer[:count], deadline); err != nil {
+				return total, err, "remote_write"
 			}
 			total += int64(count)
 		}
 		if readErr != nil {
-			return total, readErr
+			return total, readErr, "local_read"
 		}
 	}
 }
 
+// inboundCopyObservation keeps the peer's reads separate from delivery to the
+// local application. A local write failure must never look like a silent peer.
+type inboundCopyObservation struct {
+	ReadBytes    int64
+	WrittenBytes int64
+	ReadError    error
+	WriteError   error
+	PolicyError  error
+}
+
+// Stage names the operation that ended the inbound copy.
+func (o inboundCopyObservation) Stage() string {
+	switch {
+	case o.PolicyError != nil:
+		return "policy"
+	case o.WriteError != nil:
+		return "local_write"
+	default:
+		return "remote_read"
+	}
+}
+
+func (o inboundCopyObservation) Err() error {
+	if o.PolicyError != nil {
+		return o.PolicyError
+	}
+	if o.WriteError != nil {
+		return o.WriteError
+	}
+	return o.ReadError
+}
+
 func copyInbound(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) (int64, error) {
+	observation := copyInboundObserved(destination, source, limiter, status)
+	return observation.WrittenBytes, observation.Err()
+}
+
+func copyInboundObserved(destination net.Conn, source net.Conn, limiter *PolicyLimiter, status *StatusWriter) inboundCopyObservation {
 	buffer := make([]byte, 32*1024)
-	var total int64
+	var observation inboundCopyObservation
 	for {
 		count, readErr := source.Read(buffer)
+		observation.ReadError = readErr
 		if count > 0 {
-			if err := limiter.Consume(count); err != nil {
-				return total, err
+			observation.ReadBytes += int64(count)
+			// Mirrors copyOutboundStagedWithDeadline: a drained slice pauses
+			// the download instead of tearing down the stream; only an
+			// authorization stop (ErrPolicyStopped) or the wait bound ends it.
+			if err := limiter.WaitQuota(count, quotaExhaustedWaitBound); err != nil {
+				observation.PolicyError = err
+				return observation
 			}
+			// Usage remains the bytes read after policy admission, not the
+			// application's potentially partial acceptance of those bytes.
 			status.AddUsage(count, 0)
-			if _, err := destination.Write(buffer[:count]); err != nil {
-				return total, err
+			remaining := buffer[:count]
+			for len(remaining) > 0 {
+				written, writeErr := destination.Write(remaining)
+				if written < 0 || written > len(remaining) {
+					observation.WriteError = errors.New("writer returned invalid count")
+					return observation
+				}
+				observation.WrittenBytes += int64(written)
+				remaining = remaining[written:]
+				if writeErr != nil {
+					observation.WriteError = writeErr
+					return observation
+				}
+				if written == 0 {
+					observation.WriteError = io.ErrShortWrite
+					return observation
+				}
 			}
-			total += int64(count)
 		}
 		if readErr != nil {
-			return total, readErr
+			return observation
 		}
 	}
 }
@@ -652,10 +944,15 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 		return err
 	}
 	defer listener.Close()
+	if testHookTCPListening != nil {
+		testHookTCPListening(listener)
+	}
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
+	dial := dialStreamForConfig(config)
+	replay := tcpReplayDialerFor(config, store, status, targetHost, targetPort, dial)
 	limit := config.MaxTCPConnections
 	if limit < 1 || limit > 4096 {
 		limit = 512
@@ -675,7 +972,14 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				defer func() { <-semaphore }()
 				defer local.Close()
 				started := time.Now()
-				remote, snapshot, dialErr := dialCandidateStream(ctx, store, targetHost, targetPort, time.Duration(config.ConnectTimeoutSecs)*time.Second, dialStream)
+				remote, snapshot, dialErr := dialCandidateStream(
+					ctx,
+					store,
+					targetHost,
+					targetPort,
+					time.Duration(config.ConnectTimeoutSecs)*time.Second,
+					dial,
+				)
 				if dialErr != nil {
 					status.RecordHAEvent("tcp", haErrorClass(dialErr), "")
 					log.Printf("tcp stream setup failed forward_id=%d: %v", config.ForwardID, dialErr)
@@ -684,14 +988,9 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				}
 				defer snapshot.Lease.wipe()
 				status.UpdateTCPWithTierAndCandidate(snapshot.Lease.SelectionRef, snapshot.Lease.SelectionTier, snapshot.Lease.CandidateKeyHash, time.Since(started), snapshot.Lease.LeaseHash)
-				relayTCP(ctx, local, remote, store.Limiter(), status, store, relayIdentity{
-					forward:      config.ForwardID,
-					generation:   snapshot.Policy.PolicyGeneration,
-					selection:    snapshot.Lease.SelectionRef,
-					pathKey:      haPathKey(snapshot.Lease),
-					candidateKey: snapshot.Lease.CandidateKeyHash,
-					leaseHash:    snapshot.Lease.LeaseHash,
-				})
+				ident := tcpRelayIdentity(config, snapshot)
+				ident.replay = replay
+				relayTCP(ctx, local, remote, store.Limiter(), status, store, ident)
 
 			}()
 		default:
@@ -808,6 +1107,15 @@ var (
 // probeEcho sends payload to the relay keep-echo target (2.0.0.0:0), the only
 // destination guaranteed to answer on an armed association, and reports whether
 // the identical bytes came back.
+//
+// Socket ownership rule (2026-09-16 reader-race fix): while a receive loop
+// owns the socket, the probe never calls Read or SetReadDeadline here. A probe
+// deadline used to wake the runtime reader's pending Read and collapse a
+// healthy association into errUDPReceiveTimeout ("keepalive_timeout" in the
+// canary) long before its own tolerance. Instead the probe registers a waiter
+// and the receive loop dispatches the matching echo frame. Before any reader
+// starts (candidate arms, warm-up and availability checks) this call is the
+// socket's only reader and reads it directly.
 func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration) bool {
 	if session.remote == nil {
 		return false
@@ -815,6 +1123,25 @@ func (session *DatagramSession) probeEcho(payload []byte, timeout time.Duration)
 	packet, err := makeDatagramEnvelope(session.mode, session.sid, "2.0.0.0", 0, payload)
 	if err != nil {
 		return false
+	}
+	if waiter := session.registerProbeWaiter(payload); waiter != nil {
+		defer session.unregisterProbeWaiter(waiter)
+		if _, err := writeAllToUDP(session.remote, packet); err != nil {
+			return false
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-waiter.echo:
+			return true
+		case <-timer.C:
+			return false
+		case <-session.runtimeDone():
+			// The reader died on its own terms; the session is closed and this
+			// probe must not outlive it. (A nil done channel simply never fires,
+			// so the native path still relies on its own timer.)
+			return false
+		}
 	}
 	if _, err := writeAllToUDP(session.remote, packet); err != nil {
 		return false
@@ -1174,23 +1501,35 @@ func logLeaseSelectionStart(forwardID, candidateCount int) {
 }
 
 func openDatagramControl(lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
+	return openDatagramControlConfig(Config{}, lease, timeout, greeting)
+}
+
+func openDatagramControlConfig(config Config, lease ProviderLease, timeout time.Duration, greeting []byte) (*net.TCPConn, []byte, error) {
 	if timeout <= 0 {
 		return nil, nil, context.DeadlineExceeded
 	}
-	return openDatagramControlUntil(lease, time.Now().Add(timeout), greeting)
+	return openDatagramControlUntilConfig(config, lease, time.Now().Add(timeout), greeting)
 }
 
 func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting []byte) (*net.TCPConn, []byte, error) {
+	return openDatagramControlUntilConfig(Config{}, lease, deadline, greeting)
+}
+
+func openDatagramControlUntilConfig(config Config, lease ProviderLease, deadline time.Time, greeting []byte) (*net.TCPConn, []byte, error) {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return nil, nil, context.DeadlineExceeded
 	}
 	address := net.JoinHostPort(lease.IP, fmt.Sprint(lease.Port))
-	conn, err := net.DialTimeout("tcp", address, remaining)
+	conn, err := dialProviderTCP(config, address, remaining)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", errProviderDial, err)
 	}
-	control := conn.(*net.TCPConn)
+	control, ok := conn.(*net.TCPConn)
+	if !ok {
+		conn.Close()
+		return nil, nil, fmt.Errorf("provider control dial returned non-TCP connection")
+	}
 	handshake, buildErr := buildHandshakeWithGreeting(string(lease.User), string(lease.Password), 3, lease.IP, lease.Port, greeting)
 	defer clearBytes(handshake)
 	if buildErr != nil {
@@ -1223,6 +1562,10 @@ func openDatagramControlUntil(lease ProviderLease, deadline time.Time, greeting 
 }
 
 func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
+	return armDatagramConfig(Config{}, lease, timeout)
+}
+
+func armDatagramConfig(config Config, lease ProviderLease, timeout time.Duration) (*DatagramSession, error) {
 	if timeout <= 0 {
 		return nil, context.DeadlineExceeded
 	}
@@ -1238,7 +1581,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 		if index == 1 {
 			fallbackTried = true
 		}
-		control, reply, err := openDatagramControlUntil(lease, deadline, greeting)
+		control, reply, err := openDatagramControlUntilConfig(config, lease, deadline, greeting)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -1249,7 +1592,7 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 			}
 			continue
 		}
-		session, err := armDatagramWithControl(lease, control, reply, deadline)
+		session, err := armDatagramWithControlConfig(config, lease, control, reply, deadline)
 		if err == nil {
 			return session, nil
 		}
@@ -1271,6 +1614,10 @@ func armDatagram(lease ProviderLease, timeout time.Duration) (*DatagramSession, 
 }
 
 func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []byte, deadline time.Time) (*DatagramSession, error) {
+	return armDatagramWithControlConfig(Config{}, lease, control, reply, deadline)
+}
+
+func armDatagramWithControlConfig(config Config, lease ProviderLease, control *net.TCPConn, reply []byte, deadline time.Time) (*DatagramSession, error) {
 	marker := bytes.LastIndex(reply, []byte{4, 1, 1, 0, 1})
 	if marker < 0 || marker+10 > len(reply) {
 		control.Close()
@@ -1299,7 +1646,7 @@ func armDatagramWithControl(lease ProviderLease, control *net.TCPConn, reply []b
 		// Use one socket per candidate. A response that arrives late for a
 		// rejected SID then remains queued on the closed socket and cannot arm
 		// the next candidate's association.
-		remote, dialErr := net.DialUDP("udp4", nil, remoteAddress)
+		remote, dialErr := dialProviderUDP(config, remoteAddress.String(), remaining)
 		if dialErr != nil {
 			continue
 		}
@@ -1362,13 +1709,17 @@ func writeAllToUDP(conn *net.UDPConn, payload []byte) (int, error) {
 }
 
 func resolveIPv4(host string) (string, error) {
+	return resolveIPv4Context(context.Background(), host)
+}
+
+func resolveIPv4Context(ctx context.Context, host string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
 			return v4.String(), nil
 		}
 		return "", errors.New("datagram target requires IPv4")
 	}
-	addresses, err := net.LookupIP(host)
+	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return "", err
 	}
@@ -1380,24 +1731,99 @@ func resolveIPv4(host string) (string, error) {
 	return "", errors.New("datagram target has no IPv4 address")
 }
 
+// watchRuntimePolicy keeps the listeners bound for as long as the runtime is
+// authorized to exist, which is not the same as "holds a valid policy".
+//
+// A policy that merely lapses never closes the listeners. Serving needs no
+// policy to fail safely: dialCandidateStream and the UDP paths already refuse
+// every new connection with "no healthy authorized candidate" / policy_stopped
+// while CandidateSnapshots has nothing valid, the limiter cuts existing streams
+// at the policy expiry (ErrPolicyStopped), and ClearExpired below wipes the
+// lease secrets the moment they expire. What closing the listeners added was
+// only harm:
+//
+//   - On 2026-09-14 a panel pull that returned ultra_access = null cost 37 s of
+//     ECONNREFUSED on ports 30522/32469/10002 while the runtime processes stayed
+//     alive and later re-bound the same sockets.
+//   - The panel can be unreachable for longer than any grace (the 2026-09-24
+//     panel migration). Hosts then saw a runtime without listeners, judged it
+//     broken and restarted it, so a control-plane outage turned into restart
+//     storms on idle forwards. The panel now issues up to 30 min of offline
+//     validity; a lapse beyond that is still an outage, not a verdict.
+//
+// While lapsed the status file reports policy_state=lapsed and error_code
+// policy_lapsed, so a host can tell "idle on purpose" from "broken". When a new
+// valid lease arrives on the control socket, the next stream is served by the
+// same listeners without a restart.
+//
+// Only an authorization decision tears the runtime down: a Revoke issued after
+// this runtime started. A change of the authorized transport (tcp <-> udp) also
+// restarts the runtime, because the listener set itself has to change.
 func watchRuntimePolicy(ctx context.Context, cancel context.CancelFunc, store *PolicyStore) {
-	ticker := time.NewTicker(250 * time.Millisecond)
+	watchRuntimePolicyStatus(ctx, cancel, store, nil, "")
+}
+
+// runtimePolicyTick is how often the watcher expires secrets and refreshes the
+// reported policy state when no control update arrives.
+const runtimePolicyTick = 250 * time.Millisecond
+
+func watchRuntimePolicyStatus(ctx context.Context, cancel context.CancelFunc, store *PolicyStore, status *StatusWriter, transport string) {
+	ticker := time.NewTicker(runtimePolicyTick)
 	defer ticker.Stop()
+	revocations := store.RevocationCount()
+	lapsed := false
+	var lastExpiry time.Time
+	check := func() bool {
+		store.ClearExpired()
+		if store.RevocationCount() != revocations {
+			log.Printf("policy revoked; stopping the runtime")
+			status.UpdatePolicyState(policyStateRevoked, time.Time{})
+			cancel()
+			return true
+		}
+		view := store.View()
+		if view.Valid {
+			if transport != "" && !strings.EqualFold(view.Transport, transport) {
+				log.Printf("policy transport changed from %s to %s; restarting the runtime", transport, view.Transport)
+				cancel()
+				return true
+			}
+			if lapsed {
+				log.Printf("policy resumed; serving on the existing listeners")
+			}
+			lapsed = false
+			lastExpiry = view.ExpiresAt
+			status.UpdatePolicyState(policyStateActive, view.ExpiresAt)
+			// Publish the local slice so the host can renew before a
+			// high-throughput download drains it and pauses mid-flight.
+			status.UpdateQuotaRemaining(store.Limiter().QuotaRemaining())
+			return false
+		}
+		if view.Held && view.ExpiresAt.After(lastExpiry) {
+			lastExpiry = view.ExpiresAt
+		}
+		if !lapsed {
+			log.Printf("policy lapsed; listeners stay bound and refuse connections until a new lease arrives")
+			lapsed = true
+		}
+		status.UpdatePolicyState(policyStateLapsed, lastExpiry)
+		return false
+	}
+	if check() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-store.Updates():
-			if !store.HasValid() {
-				cancel()
-				return
-			}
 		case <-ticker.C:
-			store.ClearExpired()
-			if !store.HasValid() {
-				cancel()
-				return
-			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if check() {
+			return
 		}
 	}
 }
@@ -1588,7 +2014,8 @@ type udpRuntimeLimits struct {
 func resolveUDPLimits(config Config) udpRuntimeLimits {
 	queuePackets := config.UDPQueuePackets
 	if queuePackets < 1 || queuePackets > 4096 {
-		queuePackets = 256
+		// Enough to ride out a ~1.5 s scheduling stall at an 800 pps burst.
+		queuePackets = 1024
 	}
 	maxAssociations := config.UDPMaxAssociations
 	if maxAssociations < 1 || maxAssociations > 8192 {
@@ -1641,7 +2068,7 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if testHookLocalUDPListening != nil {
 		testHookLocalUDPListening(local)
 	}
-	targetIP, err := resolveIPv4(targetHost)
+	targetIP, err := resolveUDPTargetIPv4(ctx, targetHost, resolveIPv4Context)
 	if err != nil {
 		local.Close()
 		return err
@@ -2145,11 +2572,27 @@ func main() {
 	if err != nil {
 		log.Fatal("runtime configuration unavailable")
 	}
+	config, err = normalizeRuntimeConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer cancelRoot()
+	go watchParentProcess(rootContext, cancelRoot, config.ParentPID)
+	if err := serveRuntime(rootContext, cancelRoot, config); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// normalizeRuntimeConfig applies defaults and validates a loaded runtime
+// configuration. It is shared by the standalone binary and the in-process
+// (iOS packet tunnel) entry point, which must not exit the host process.
+func normalizeRuntimeConfig(config Config) (Config, error) {
 	if config.ListenHost == "" {
 		config.ListenHost = "127.0.0.1"
 	}
 	if config.ForwardID <= 0 || config.ListenPort < 1 || config.ListenPort > 65535 || strings.TrimSpace(config.Target) == "" {
-		log.Fatal("runtime configuration invalid")
+		return config, errors.New("runtime configuration invalid")
 	}
 	if config.ControlSocket == "" {
 		config.ControlSocket = fmt.Sprintf("/run/ultra/forward-%d.control.sock", config.ForwardID)
@@ -2157,10 +2600,20 @@ func main() {
 	if config.ConnectTimeoutSecs < 1 || config.ConnectTimeoutSecs > 30 {
 		config.ConnectTimeoutSecs = 5
 	}
+	if config.ExternalUoT.Enabled {
+		normalizedExternalUoT, externalErr := config.ExternalUoT.normalized()
+		if externalErr != nil {
+			return config, errors.New("external UoT configuration invalid")
+		}
+		config.ExternalUoT = normalizedExternalUoT
+		if config.NativeSocks5 {
+			return config, errors.New("external UoT is not supported by native SOCKS5 mode")
+		}
+	}
 	if config.NativeSocks5 {
 		routePolicy, policyErr := ParseNativeRoutePolicy(config.NativeRoutePolicy)
 		if policyErr != nil {
-			log.Fatal("native route policy invalid")
+			return config, errors.New("native route policy invalid")
 		}
 		config.NativeRoutePolicy = string(routePolicy)
 		if config.NativePortMin < nativeDefaultPortMin || config.NativePortMin > 65535 {
@@ -2170,11 +2623,14 @@ func main() {
 			config.NativeFilterProfile = routePolicy.FilterProfile()
 		}
 	}
-	if config.LocationCachePath == "" {
-		config.LocationCachePath = "/var/lib/ultra/location.json"
-	}
-	if config.LocationLockPath == "" {
-		config.LocationLockPath = "/run/ultra/location.lock"
+	if config.LocationCachePath == "" || config.LocationLockPath == "" {
+		cachePath, lockPath := defaultLocationPaths(config.StatusPath)
+		if config.LocationCachePath == "" {
+			config.LocationCachePath = cachePath
+		}
+		if config.LocationLockPath == "" {
+			config.LocationLockPath = lockPath
+		}
 	}
 	if config.StatusPath == "" && config.ForwardID > 0 {
 		config.StatusPath = fmt.Sprintf("/run/ultra/forward-%d.status.json", config.ForwardID)
@@ -2195,19 +2651,26 @@ func main() {
 		config.ProbeIntervalMillis = 1000
 	}
 	if _, _, err := parseTarget(config.Target); err != nil {
-		log.Fatal(err)
+		return config, err
 	}
+	return config, nil
+}
+
+// serveRuntime runs the control socket and the data plane for a normalized
+// configuration until rootContext ends. cancelRoot is called when the control
+// socket fails so the whole runtime stops.
+func serveRuntime(rootContext context.Context, cancelRoot context.CancelFunc, config Config) error {
+	installFallbackResolverIfNeeded(config)
 	store := NewPolicyStore(config)
 	status := newStatusWriter(config.StatusPath, config.ForwardID, 5*time.Second)
-	status.UpdateError("awaiting_policy")
+	status.RecordTransportConfig(config)
+	status.UpdatePolicyState(policyStateAwaiting, time.Time{})
 	control := NewControlServer(config.ControlSocket, config, store, status)
 	if err := control.Listen(); err != nil {
 		status.UpdateError("control_socket_failed")
 		status.Close()
-		log.Fatal(err)
+		return err
 	}
-	rootContext, cancelRoot := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	defer cancelRoot()
 	go func() {
 		if err := control.Serve(); err != nil && rootContext.Err() == nil {
 			log.Printf("control socket stopped: %v", err)
@@ -2221,6 +2684,18 @@ func main() {
 		status.Close()
 	}()
 
+	runRuntimeLoop(rootContext, config, store, status)
+	return nil
+}
+
+// runRuntimeLoop starts the data plane once a valid policy is held and keeps it
+// until the root context ends. A runtime is restarted only when it stops by
+// itself (listener error), on a revocation, or when the authorized transport
+// changes; a lapsed policy keeps the listeners bound (see watchRuntimePolicy).
+// runtimeRestartDelay spaces restarts of a runtime whose listener failed.
+const runtimeRestartDelay = time.Second
+
+func runRuntimeLoop(rootContext context.Context, config Config, store *PolicyStore, status *StatusWriter) {
 	for rootContext.Err() == nil {
 		snapshot, err := store.WaitValid(rootContext)
 		if err != nil {
@@ -2228,13 +2703,22 @@ func main() {
 		}
 		policy := snapshot.Policy
 		snapshot.Lease.wipe()
-		locationContext, cancelLocation := context.WithTimeout(rootContext, locationRequestTimeout+time.Second)
-		location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
-		cancelLocation()
-		status.UpdateLocation(location)
 		status.UpdatePolicy(policy.PolicyGeneration)
+		status.UpdatePolicyState(policyStateActive, policy.ExpiresAt)
 		runtimeContext, cancelRuntime := context.WithCancel(rootContext)
+		// The detected zone is reported telemetry only. Detect it beside the
+		// listeners rather than before them: a network lookup of up to 3.5 s
+		// ahead of the bind made hosts time out waiting for the listener.
+		go func(ctx context.Context) {
+			locationContext, cancelLocation := context.WithTimeout(ctx, locationRequestTimeout+time.Second)
+			defer cancelLocation()
+			location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
+			if ctx.Err() == nil {
+				status.UpdateLocation(location)
+			}
+		}(runtimeContext)
 		runtimeErrors := make(chan error, 2)
+		selfStopped := false
 		var runtimeWait sync.WaitGroup
 		transport := strings.ToLower(policy.Transport)
 		if config.NativeSocks5 {
@@ -2257,10 +2741,14 @@ func main() {
 			runtimeWait.Add(1)
 			go func() {
 				defer runtimeWait.Done()
-				runtimeErrors <- serveUDP(runtimeContext, config, store, status)
+				if externalUoTEnabled(config) {
+					runtimeErrors <- serveExternalUoT(runtimeContext, config, store, status)
+				} else {
+					runtimeErrors <- serveUDP(runtimeContext, config, store, status)
+				}
 			}()
 		}
-		go watchRuntimePolicy(runtimeContext, cancelRuntime, store)
+		go watchRuntimePolicyStatus(runtimeContext, cancelRuntime, store, status, transport)
 		select {
 		case <-rootContext.Done():
 		case <-runtimeContext.Done():
@@ -2270,11 +2758,21 @@ func main() {
 			}
 			if err != nil && rootContext.Err() == nil {
 				status.UpdateError("runtime_stopped")
+				selfStopped = true
 			}
 			cancelRuntime()
 		}
 		cancelRuntime()
 		runtimeWait.Wait()
 		store.ClearExpired()
+		if selfStopped {
+			// A listener that failed by itself (for example a port another
+			// process holds) would otherwise be retried in a tight loop while
+			// the policy stays valid.
+			select {
+			case <-rootContext.Done():
+			case <-time.After(runtimeRestartDelay):
+			}
+		}
 	}
 }

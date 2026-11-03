@@ -17,4 +17,5 @@ foreach (['request_token', 'installed_bond_sha256', 'last_completed_request_toke
 if (!str_contains($agent, 'agent_sha256')) fail('sidecar heartbeat must report agent_sha256 for artifact gates');
 if (!str_contains($agent, 'agent_update_state')) fail('sidecar heartbeat must report update helper state');
 if (!str_contains($helper, '/artifacts/install-bond-sidecar.sh')) fail('sidecar update helper must route through artifact controller installer');
+if (!str_contains($artifactSource, "'sidecar_agent_linux_amd64'")) fail('sidecar manifest must advertise the amd64 frozen agent');
 echo "ok\n";

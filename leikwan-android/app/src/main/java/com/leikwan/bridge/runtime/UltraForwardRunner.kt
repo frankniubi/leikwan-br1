@@ -35,6 +35,7 @@ object UltraForwardRunner {
         val locationCacheFile = File(directory, "$suffix.location.json")
         val locationLockFile = File(directory, "$suffix.location.lock")
         val privateFiles = listOf(configFile, controlSocketFile, statusFile, locationCacheFile, locationLockFile)
+        UltraUsageLedger.captureBeforeDelete(statusFile)
         privateFiles.forEach { file -> runCatching { file.delete() } }
         val listenPort = listenPortOverride ?: forward.listenPort
         require(listenPort in 1..65535) { "ultra_listen_port_invalid" }
@@ -71,6 +72,11 @@ object UltraForwardRunner {
             addProperty("location_lock_path", locationLockFile.absolutePath)
             addProperty("status_path", statusFile.absolutePath)
             addProperty("probe_timeout_ms", 800)
+            // TCP first-flight is a plain host pass-through: the runtime applies
+            // it per stream to the listed authenticated candidates only.
+            if (!nativeSocks5) {
+                policy.tcpFirstFlight?.let { add("tcp_first_flight", it.toBootstrapJson()) }
+            }
             if (automaticSelection) {
                 addProperty("probe_target", "1.1.1.1:53")
             }
@@ -106,6 +112,7 @@ object UltraForwardRunner {
                 RuntimeProcessPlan(
                     role = RuntimeProcessRole.ULTRA,
                     command = listOf(binary, "--config", configFile.absolutePath),
+                    permanentExitCodes = ULTRA_PERMANENT_EXIT_CODES,
                 )
             ),
             bypassHosts = emptySet(),

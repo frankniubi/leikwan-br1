@@ -41,7 +41,6 @@ try {
                 'windows' => $this->windowsClientAppUrl(),
                 'android' => $this->androidClientApkUrl(),
                 'mac_arm64' => $this->macosClientArm64AppUrl(),
-                'mac_x64' => $this->macosClientX64AppUrl(),
             ];
         }
 
@@ -55,8 +54,11 @@ try {
         'windows' => 'windows_client_app',
         'android' => 'android_client_apk',
         'mac_arm64' => 'macos_client_app_arm64',
-        'mac_x64' => 'macos_client_app_x64',
     ];
+    // Intel macOS is retired: no download helper may link the x64 DMG.
+    if (method_exists($controller, 'macosClientX64AppUrl')) {
+        failDownloadCacheBust('the retired Intel macOS download link is still offered');
+    }
     foreach ($controller->links() as $name => $url) {
         $entry = $manifest[$keys[$name]] ?? null;
         if (!is_array($entry)) {
@@ -78,11 +80,13 @@ try {
         'Windows App ' . ($manifest['windows_client_app']['version'] ?? ''),
         'Android App ' . ($manifest['android_client_apk']['version'] ?? ''),
         'macOS App - Apple Silicon ' . ($manifest['macos_client_app_arm64']['version'] ?? ''),
-        'macOS App - Intel ' . ($manifest['macos_client_app_x64']['version'] ?? ''),
     ] as $label) {
         if (!str_contains($overview, $label)) {
             failDownloadCacheBust('download surface is missing version label: ' . $label);
         }
+    }
+    if (str_contains($overview, 'macOS App - Intel') || str_contains($overview, 'Download Intel')) {
+        failDownloadCacheBust('unverified Intel macOS artifact is still displayed');
     }
 } finally {
     unlink($envPath);

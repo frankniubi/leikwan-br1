@@ -15,8 +15,8 @@ android {
         applicationId = "com.leikwan.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 29
-        versionName = "0.2.27"
+        versionCode = 49
+        versionName = "0.2.47"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += "arm64-v8a"
@@ -37,11 +37,13 @@ android {
 
     buildTypes {
         release {
-            // Keep the release runtime unminified until the known R8 suspend-state
-            // machine issue is re-audited; this also keeps the test artifact
-            // behavior aligned with the previously accepted release packaging.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 shrinking + obfuscation (optimizer still off via -dontoptimize in
+            // proguard-rules.pro, which guards the Kotlin suspend state-machine issue).
+            // 2026-10-02: verified on the API 34 QA emulator against production with a
+            // -Pqatest R8 build: fresh enrollment, catalog pull, sealed Ultra lease with the
+            // Keystore agreement key, Ultra runtime start, libbox TUN, renewal and stop.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -125,6 +127,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("org.robolectric:robolectric:4.12.2")
+    testImplementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.test:core-ktx:1.6.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 

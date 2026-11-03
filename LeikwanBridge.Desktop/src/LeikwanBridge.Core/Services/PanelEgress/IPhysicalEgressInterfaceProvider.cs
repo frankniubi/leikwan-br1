@@ -18,4 +18,6 @@ public interface IPhysicalEgressInterfaceProvider
     /// known. In that case no host routes should be added (zero side effects).
     /// </summary>
     bool IsDefaultRoutePhysical(AddressFamily family);
+
+    void SetPreferredInterface(string? interfaceName) { }
 }

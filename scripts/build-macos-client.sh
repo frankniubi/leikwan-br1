@@ -23,15 +23,32 @@ fail() {
   exit 1
 }
 
+# Obfuscation guard for the Go ultra-client relay. A plain `go build -ldflags '-s -w'`
+# strips the symbol table but NOT the pclntab, so tools/ultra-client function names
+# (main.parseTarget, main.credentialChecksum, ...) and -literals-eligible strings
+# (leikwan-ultra-policy-v2) still ship in cleartext. garble renames those and encrypts
+# the literals; their absence proves the binary really went through garble instead of a
+# silent fall-through to `go build`. runtimeBuildVersion is deliberately excluded: garble
+# preserves the -X stamp so panel attestation (self_sha256 / fingerprint) keeps working.
+assert_ultra_obfuscated() {
+  local path="$1"
+  local marker
+  for marker in leikwan-ultra-policy-v2 parseTarget credentialChecksum runtimeAttestation copyInbound selfExecutableHash ParseNativeRoutePolicy; do
+    if LC_ALL=C grep -a -q -F -e "$marker" "$path"; then
+      fail "ultra-client still contains unobfuscated symbol '$marker'; garble did not run"
+    fi
+  done
+}
+
 usage() {
   cat <<'EOF'
-Usage: scripts/build-macos-client.sh --rid <osx-arm64|osx-x64> [options]
+Usage: scripts/build-macos-client.sh --rid osx-arm64 [options]
   --version <version>       App version (default: 1.0.0)
   --output-root <path>      Intermediate output directory
   --wstunnel-src <path>     Upstream wstunnel checkout/cache
   --sing-box-src <path>     Upstream sing-box checkout/cache
   --managed-load-receipt <path>
-                            Hash-bound probe receipt for cross-architecture packaging
+                            Hash-bound probe receipt when packaging arm64 on a non-arm64 host
   GARBLE_PATH=<path>        Pinned garble binary (default: PATH or temporary go install)
   --no-package              Build publish/helpers only
   --dry-run                 Print the pinned build plan without compiling
@@ -59,12 +76,8 @@ case "$rid" in
     go_arch="arm64"
     architecture="arm64"
     ;;
-  osx-x64)
-    rust_target="x86_64-apple-darwin"
-    go_arch="amd64"
-    architecture="x86_64"
-    ;;
-  *) fail "--rid must be osx-arm64 or osx-x64" ;;
+  osx-x64) fail "osx-x64 is no longer built: the macOS client supports Apple Silicon (osx-arm64) only" ;;
+  *) fail "--rid must be osx-arm64 (the macOS client supports Apple Silicon only)" ;;
 esac
 
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"
@@ -91,8 +104,8 @@ if [[ "$dry_run" -eq 1 ]]; then
   printf 'dotnet publish LeikwanBridge.Mac -r %s --self-contained true\n' "$rid"
   printf 'uot_binary=leikwan-uot-bond\n'
   printf 'cargo build --locked -p leikwan-bond -p leikwan-ingress -p leikwan-uot --target %s\n' "$rust_target"
-  printf 'garble build GOOS=darwin GOARCH=%s -literals -tiny -trimpath ./tools/ultra-client\n' "$go_arch"
-  printf 'ultra_obfuscator=garble-v0.17.0-literals-tiny\n'
+  printf 'garble build GOOS=darwin GOARCH=%s -literals -trimpath ./tools/ultra-client\n' "$go_arch"
+  printf 'ultra_obfuscator=garble-v0.17.0-literals\n'
   printf 'source_commit=%s\n' "$source_commit"
   printf 'go build GOOS=darwin GOARCH=%s -tags with_gvisor,with_quic,with_wireguard,with_utls ./cmd/sing-box\n' "$go_arch"
   printf 'package=%s\n' "$package_after_build"
@@ -158,13 +171,22 @@ cargo build \
   --release \
   --target "$rust_target"
 
+# The runtime reports this build identity to the panel's attestation check. Without it the
+# runtime says "development", an unpublished fingerprint the panel does not enforce.
+ultra_ldflags='-s -w -buildid='
+if [[ -n "${LEIKWAN_ULTRA_BUILD_VERSION:-}" ]]; then
+  [[ "$LEIKWAN_ULTRA_BUILD_VERSION" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+(\.[0-9a-f]{7,40})?$ ]] \
+    || fail "LEIKWAN_ULTRA_BUILD_VERSION must look like 2026.10.25.1.<shortsha>"
+  ultra_ldflags="$ultra_ldflags -X main.runtimeBuildVersion=$LEIKWAN_ULTRA_BUILD_VERSION"
+fi
 (
   cd "$repo_root/tools/ultra-client"
   GOOS=darwin GOARCH="$go_arch" CGO_ENABLED=0 \
-    "$garble_path" -literals -tiny -seed="$garble_seed" build \
-      -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+    "$garble_path" -literals -seed="$garble_seed" build \
+      -mod=readonly -trimpath -buildvcs=false -ldflags="$ultra_ldflags" \
       -o "$helper_dir/ultra-client" .
 )
+assert_ultra_obfuscated "$helper_dir/ultra-client"
 
 if [[ ! -d "$sing_box_src/.git" ]]; then
   git clone --filter=blob:none --branch "$sing_box_version" "$sing_box_repository" "$sing_box_src"

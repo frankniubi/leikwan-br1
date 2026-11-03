@@ -12,12 +12,12 @@
 
 <h2>Steps</h2>
 <ol>
-<li><strong>Open Forwards and click Create Forward.</strong></li>
+<li><strong>Open My Services and click New forward on your package.</strong> The Create Forward button on the service details page opens the same form.</li>
 <li><strong>Pick a Forward Route.</strong> Take the line closest to the destination. Every line uses ultra, so there is nothing else to decide.</li>
 <li><strong>Fill in Target Host and Target Port.</strong> This is the address the game itself connects to, not the address of the site you downloaded it from.</li>
 <li><strong>Choose the Transport</strong> your service needs: TCP, UDP, or TCP + UDP.</li>
-<li><strong>Save.</strong> Keep the suggested Local Listen Port unless you have a reason to change it.</li>
-<li><strong>Write down the assigned local port.</strong> It shows up on the row within a few seconds.</li>
+<li><strong>Click Create Forward.</strong> Leave Local Listen Port empty so the panel assigns one, unless you have a reason to pick it yourself.</li>
+<li><strong>Write down the assigned local port.</strong> After saving you land on the service details page; the new forward is in the Forward Rules table and the Local Listen column is its port.</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
@@ -31,10 +31,10 @@ E --> F[Wait until the forward is ready]
 F --> G[Note the assigned local port]
 </pre>
 <p>The form only asks for the route, the destination, the transport, and the local port. The rest is filled in for you.</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward form with the route, target host, target port and transport fields"><figcaption>The Create Forward form. Only four fields need your attention.</figcaption></figure>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-en.png" width="1440" height="960" alt="Create Forward form with the route, target host, target port and transport fields"><figcaption>The Create Forward form. Only four fields need your attention.</figcaption></figure>
 
 <h2>How to know it worked</h2>
-<p>The row stays saved instead of flipping through provisioning, and the assigned local port is filled in. The Clients page then shows a recent client sync for the device that will carry this forward.</p>
+<p>In Forward Rules the row reads <strong>Running</strong>, Local Listen has a number, and Endpoint Status no longer says <strong>No endpoint assigned yet</strong>. Then check that the device that will carry this forward is online on the Clients page.</p>
 
 <h2>If it did not work</h2>
 <p><strong>Stop</strong> if the panel refuses to save. Three usual reasons: the plan is not active any more, the target host or port is not right, or the local port you typed is already in use - clear it and let the panel suggest one again.</p>

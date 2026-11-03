@@ -170,6 +170,49 @@ class SidecarAgentUpdateArtifactTests(unittest.TestCase):
 
             self.assertEqual(["manual-force-sidecar-refresh"], update_tokens)
 
+    def test_explicit_and_auto_tokens_do_not_ping_pong_reinstall(self) -> None:
+        # fra1 point 7 (2026-09/10): explicit token + persistent auto-release
+        # mismatch evicted each other from last_completed_request_token and
+        # reinstalled the sidecar every heartbeat.
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = pathlib.Path(tmp_dir)
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps({"state_dir": str(tmp / "state"), "installer_version": "2026.08.10.1"}) + "\n",
+                encoding="utf-8",
+            )
+            agent = sidecar_agent.SidecarAgent(config_path)
+            launched: list[str] = []
+
+            def fake_update(token: str) -> None:
+                launched.append(token)
+                state = agent.load_update_state()
+                state.update({"request_token": token, "status": "success", "last_completed_request_token": token})
+                agent.save_update_state(state)
+
+            agent.request_self_update = fake_update  # type: ignore[method-assign]
+            management = {
+                "agent_update_request_token": "uot-0.2.2-rollout-20260813",
+                "desired_installer_version": "2026.10.02.1",
+                "bond_runtime": {"listen_port": 14969},
+            }
+            for _ in range(6):
+                agent.apply_management(dict(management))
+
+            self.assertEqual(
+                ["uot-0.2.2-rollout-20260813", "auto-release:installer=2026.10.02.1"],
+                launched,
+            )
+
+    def test_completed_update_tokens_is_bounded_and_includes_last_completed(self) -> None:
+        state = {
+            "completed_request_tokens": [f"t{i}" for i in range(40)] + [7, ""],
+            "last_completed_request_token": "latest",
+        }
+        history = sidecar_agent.SidecarAgent.completed_update_tokens(state)
+        self.assertEqual(sidecar_agent.UPDATE_COMPLETED_HISTORY_LIMIT, len(history))
+        self.assertEqual("latest", history[-1])
+
     def test_heartbeat_payload_includes_agent_update_state_for_remote_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = pathlib.Path(tmp_dir)

@@ -392,7 +392,25 @@ class SingboxConfigBuilderTest {
     }
 
     @Test
-    fun `tun inbound omits ipv6 address by default to avoid v6 blackhole`() {
+    fun `proxy selector starts on the picked node rather than the first one`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val selector = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1), ssNode(2)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+                defaultProxyNodeId = 2L,
+            ).configJson
+        ).asJsonObject.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .single { it.get("tag").asString == "proxy" }
+
+        assertEquals("proxy-2", selector.get("default").asString)
+    }
+
+    @Test
+    fun `tun inbound always captures ipv6 so it cannot leak around the tunnel`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
 
         val config = JsonParser.parseString(
@@ -406,11 +424,51 @@ class SingboxConfigBuilderTest {
         val addresses = tunInbound.getAsJsonArray("address").map { it.asString }
 
         assertTrue(addresses.any { it == "172.19.0.1/30" })
-        assertFalse(addresses.any { it.contains(":") })
+        assertTrue(addresses.any { it == "fdfe:dcba:9876::1/126" })
     }
 
     @Test
-    fun `dns strategy is ipv4 only when ipv6 tun disabled`() {
+    fun `captured ipv6 is rejected in the tunnel while dns hands out ipv4 only`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val rules = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+            ).configJson
+        ).asJsonObject.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+
+        val hijackIndex = rules.indexOfFirst { it.get("action")?.asString == "hijack-dns" }
+        val rejectIndex = rules.indexOfFirst {
+            it.get("ip_version")?.asInt == 6 && it.get("action")?.asString == "reject"
+        }
+        assertTrue(hijackIndex >= 0)
+        assertTrue("v6 DNS is still answered by sing-box", rejectIndex > hijackIndex)
+        val firstOutboundRule = rules.indexOfFirst { it.has("outbound") }
+        assertTrue("v6 is refused before any direct or proxy rule", rejectIndex < firstOutboundRule)
+    }
+
+    @Test
+    fun `ipv6 dns opt-in carries ipv6 instead of rejecting it`() {
+        val builder = SingboxConfigBuilder(settings = baseSettings())
+
+        val config = JsonParser.parseString(
+            builder.build(
+                proxyNodes = listOf(ssNode(1)),
+                runtimeContext = null,
+                connectionMode = ProxyConnectionMode.DIRECT,
+                enableIpv6Dns = true,
+            ).configJson
+        ).asJsonObject
+        val rules = config.getAsJsonObject("route").getAsJsonArray("rules").map { it.asJsonObject }
+
+        assertFalse(rules.any { it.has("ip_version") })
+        assertEquals(baseSettings().dnsStrategy, config.getAsJsonObject("dns").get("strategy").asString)
+    }
+
+    @Test
+    fun `dns strategy is ipv4 only unless ipv6 dns is enabled`() {
         val builder = SingboxConfigBuilder(settings = baseSettings())
 
         val config = JsonParser.parseString(

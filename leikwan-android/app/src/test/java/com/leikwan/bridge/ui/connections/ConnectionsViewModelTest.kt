@@ -13,8 +13,12 @@ import com.leikwan.bridge.runtime.NativeOutboundCapability
 import com.leikwan.bridge.runtime.NativeOutboundCarrier
 import com.leikwan.bridge.runtime.NativeOutboundLease
 import com.leikwan.bridge.service.ProxyConnectionMode
+import com.leikwan.bridge.session.DeviceLimitGate
+import com.leikwan.bridge.session.DeviceLimitNotice
+import com.leikwan.bridge.session.DeviceLimitReachedException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -53,6 +57,7 @@ class ConnectionsViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        DeviceLimitGate.clear()
     }
 
     private fun forward(
@@ -101,6 +106,28 @@ class ConnectionsViewModelTest {
         startConnect = startConnect,
         stopConnect = stopConnect,
     )
+
+    @Test
+    fun `route selection progress follows the runtime while connecting`() {
+        val selecting = MutableStateFlow<Int?>(null)
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            routeSelectionState = selecting,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.selectingRouteCandidates)
+
+        selecting.value = 4
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(4, viewModel.state.value.selectingRouteCandidates)
+
+        selecting.value = null
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.selectingRouteCandidates)
+    }
 
     @Test
     fun `with no nodes the pairing surface is empty`() {
@@ -154,6 +181,105 @@ class ConnectionsViewModelTest {
         assertEquals(6L, viewModel.state.value.nodeFor(10L)?.id)
         assertEquals(5L, viewModel.state.value.nodeFor(11L)?.id)
         assertEquals(6L, prefs.selectedProxyId)
+    }
+
+    @Test
+    fun `a picked node that goes away is not replaced by another node`() {
+        val nodes = MutableStateFlow(listOf(node(5, "HK"), node(6, "TW")))
+        val started = mutableListOf<Long>()
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { nodes },
+            startConnect = { id -> started += id },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.selectNodeForForward(10L, 6L)
+
+        nodes.value = listOf(node(5, "HK"), node(6, "TW", enabled = false))
+        dispatcher.scheduler.advanceUntilIdle()
+        assertNull(viewModel.state.value.nodeFor(10L))
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertTrue(started.isEmpty())
+        assertEquals(app.getString(R.string.connections_error_node_unavailable), viewModel.state.value.error)
+    }
+
+    @Test
+    fun `a node pick while connected is refused instead of silently waiting for a reconnect`() {
+        val viewModel = vm(nodes = listOf(node(5, "HK"), node(6, "TW")), catalog = catalog(forward(10), selected = 10))
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+
+        viewModel.selectNodeForForward(10L, 6L)
+
+        assertEquals(5L, viewModel.state.value.nodeFor(10L)?.id)
+        assertEquals(5L, prefs.selectedProxyId)
+    }
+
+    @Test
+    fun `the persisted node pick survives reopening the app`() {
+        prefs.selectedForwardId = 10L
+        prefs.selectedProxyId = 6L
+        val viewModel = vm(nodes = listOf(node(5, "HK"), node(6, "TW")), catalog = catalog(forward(10), forward(11)))
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(6L, viewModel.state.value.nodeFor(10L)?.id)
+        assertEquals(6L, prefs.selectedProxyId)
+    }
+
+    @Test
+    fun `a picked service the panel no longer lists is not swapped for the first one`() {
+        prefs.selectedForwardId = 12L
+        val viewModel = vm(nodes = listOf(node(5)), catalog = catalog(forward(10), forward(11)))
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0L, viewModel.state.value.selectedForwardId)
+        assertEquals(app.getString(R.string.connections_error_service_unavailable), viewModel.state.value.error)
+    }
+
+    @Test
+    fun `device limit refusal shows the persistent notice and retries at the steady cadence`() {
+        var attempts = 0
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog(forward(10), selected = 10) },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            startConnect = {
+                attempts += 1
+                if (attempts == 1) throw DeviceLimitReachedException(limit = 2, active = 2)
+            },
+            deviceLimitRetryMs = 60_000,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleConnect()
+        dispatcher.scheduler.runCurrent()
+
+        var state = viewModel.state.value
+        assertEquals(VpnStatus.DISCONNECTED, state.vpnStatus)
+        assertNull(state.error)
+        assertEquals(DeviceLimitNotice(limit = 2, active = 2), state.deviceLimit)
+        assertEquals(1, attempts)
+
+        dispatcher.scheduler.advanceTimeBy(59_000)
+        dispatcher.scheduler.runCurrent()
+        assertEquals(1, attempts)
+
+        dispatcher.scheduler.advanceTimeBy(1_001)
+        dispatcher.scheduler.runCurrent()
+        state = viewModel.state.value
+        assertEquals(2, attempts)
+        assertEquals(VpnStatus.CONNECTED, state.vpnStatus)
+
+        DeviceLimitGate.clear()
+        dispatcher.scheduler.runCurrent()
+        assertNull(viewModel.state.value.deviceLimit)
     }
 
     @Test
@@ -597,6 +723,54 @@ class ConnectionsViewModelTest {
     }
 
     @Test
+    fun `reopening the app over a running native tunnel keeps it up`() {
+        val direction = "Hong Kong -> China Mainland"
+        val nativeForwardId = 10L
+        val carrier = NativeOutboundCarrier(
+            forwardId = nativeForwardId,
+            direction = direction,
+            scopeDigest = NativeOutboundLease.scopeDigest(nativeForwardId, direction, "tcp+udp", "global"),
+            transport = "tcp+udp",
+            routeScopes = listOf("cn_only", "global"),
+            defaultRouteScope = "global",
+        )
+        val catalog = ForwardCatalog(
+            visibleForwards = listOf(forward(nativeForwardId, direction = direction)),
+            selectedForwardId = nativeForwardId,
+            nativeOutbound = NativeOutboundCapability(
+                enabled = true,
+                protocol = "socks5",
+                leaseProtocol = "leikwan-ultra-native-socks5-v1",
+                transport = "tcp+udp",
+                forwardIds = listOf(nativeForwardId),
+                defaultForwardId = nativeForwardId,
+                routeScopes = listOf("cn_only", "global"),
+                defaultRouteScope = "global",
+                forwards = listOf(carrier),
+            ),
+        )
+        prefs.nativeOutboundSelected = true
+        prefs.nativeOutboundForwardId = nativeForwardId
+        prefs.nativeOutboundRouteScope = "global"
+        var stopCalls = 0
+        // A fresh view model (activity recreated, app reopened) while the VPN service still runs.
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = { catalog },
+            nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stopCalls++ },
+            vpnRunning = true,
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0, stopCalls)
+        assertEquals(VpnStatus.CONNECTED, viewModel.state.value.vpnStatus)
+        assertTrue(viewModel.state.value.nativeSelected)
+        assertTrue(prefs.nativeOutboundSelected)
+    }
+
+    @Test
     fun `turning native selection off stops the active native tunnel`() {
         val direction = "Hong Kong -> China Mainland"
         val nativeForwardId = 10L
@@ -646,5 +820,110 @@ class ConnectionsViewModelTest {
         assertEquals(1, stopCalls)
         assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
         assertFalse(viewModel.state.value.nativeSelected)
+    }
+
+    private fun nativeCapability(forwardId: Long, direction: String): NativeOutboundCapability =
+        NativeOutboundCapability(
+            enabled = true,
+            protocol = "socks5",
+            leaseProtocol = "leikwan-ultra-native-socks5-v1",
+            transport = "tcp+udp",
+            forwardIds = listOf(forwardId),
+            defaultForwardId = forwardId,
+            routeScopes = listOf("global"),
+            defaultRouteScope = "global",
+            forwards = listOf(
+                NativeOutboundCarrier(
+                    forwardId = forwardId,
+                    direction = direction,
+                    scopeDigest = NativeOutboundLease.scopeDigest(forwardId, direction, "tcp+udp", "global"),
+                    transport = "tcp+udp",
+                    routeScopes = listOf("global"),
+                    defaultRouteScope = "global",
+                ),
+            ),
+        )
+
+    @Test
+    fun `native outbound rules are not node-carrying services`() {
+        val flagged = forward(12, target = "127.0.0.9:1080").copy(nativeOutbound = true)
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(10), forward(11, direction = "CAN -> HKG"), flagged),
+                    selectedForwardId = 10,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.state.value
+        // 11 is a carrier of the native capability, 12 carries the panel's native flag.
+        assertEquals(listOf(10L), state.serviceForwards.map { it.forwardId })
+        assertTrue(state.appGroupLines().none { it.forwardId == 11L || it.forwardId == 12L })
+    }
+
+    @Test
+    fun `services and native outbound share one selection`() {
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(10), forward(11, direction = "CAN -> HKG")),
+                    selectedForwardId = 10,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+        assertFalse(viewModel.state.value.nativeSelected)
+
+        viewModel.selectNativeForward(11)
+        assertTrue(viewModel.state.value.nativeSelected)
+        assertEquals(11L, viewModel.state.value.nativeForwardId)
+        assertTrue(prefs.nativeOutboundSelected)
+
+        viewModel.selectForward(10)
+        assertFalse(viewModel.state.value.nativeSelected)
+        assertEquals(10L, viewModel.state.value.selectedForwardId)
+        assertFalse(prefs.nativeOutboundSelected)
+
+        // Picking a native rule through the services path still goes native, never node pairing.
+        viewModel.selectForward(11)
+        assertTrue(viewModel.state.value.nativeSelected)
+    }
+
+    @Test
+    fun `an ordinary connect never selects a native rule`() {
+        // A stale selection left on the native rule after native outbound was turned off.
+        prefs.selectedForwardId = 11
+        prefs.nativeOutboundSelected = false
+        var started: Long? = null
+        val viewModel = ConnectionsViewModel(
+            app,
+            prefs,
+            catalogFetcher = {
+                ForwardCatalog(
+                    visibleForwards = listOf(forward(11, direction = "CAN -> HKG"), forward(10)),
+                    selectedForwardId = 11,
+                    nativeOutbound = nativeCapability(11, "CAN -> HKG"),
+                )
+            },
+            nodeFlows = { flowOf(listOf(node(5))) },
+            startConnect = { started = it },
+        )
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(10L, viewModel.state.value.selectedForwardId)
+        assertEquals(10L, prefs.selectedForwardId)
+        viewModel.toggleConnect()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(10L, started)
     }
 }

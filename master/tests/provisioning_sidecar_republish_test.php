@@ -107,7 +107,9 @@ namespace Leikwan\Master\Database {
                 return $rows;
             }
 
-            if (str_contains($normalized, 'SELECT n.* FROM nodes n LEFT JOIN node_groups g ON g.id = n.group_id')) {
+            // Node selection now also returns the node's group key alongside n.*.
+            if (str_contains($normalized, 'FROM nodes n LEFT JOIN node_groups g ON g.id = n.group_id')
+                && (str_starts_with($normalized, 'SELECT n.* FROM') || str_starts_with($normalized, 'SELECT n.*, g.group_key AS node_group_key FROM'))) {
                 $nodes = $this->matchingNodes($params, $normalized);
                 usort($nodes, static function (array $left, array $right): int {
                     $loadCmp = ((int) $left['current_load']) <=> ((int) $right['current_load']);
@@ -364,7 +366,19 @@ namespace Leikwan\Master\Database {
                     }
                 }
 
-                $rows[] = $node;
+                // Mirror nodeSelectionFreshnessSql(): stale heartbeats are never selected.
+                $cutoff = (string) ($params['node_heartbeat_cutoff'] ?? '');
+                if ($cutoff !== '' && strcmp((string) ($node['last_heartbeat_at'] ?? ''), $cutoff) < 0) {
+                    continue;
+                }
+
+                $groupKey = '';
+                foreach ($groupIdsByKey as $key => $groupId) {
+                    if ($groupId === (int) ($node['group_id'] ?? 0)) {
+                        $groupKey = (string) $key;
+                    }
+                }
+                $rows[] = $node + ['node_group_key' => $groupKey];
             }
 
             return $rows;
@@ -459,7 +473,7 @@ namespace {
         'public_ip' => '8.8.8.8',
         'status' => 'active',
         'current_load' => 0,
-        'last_heartbeat_at' => '2026-04-15 00:00:00',
+        'last_heartbeat_at' => gmdate('Y-m-d H:i:s'),
         'owner_service_id' => null,
         'sharing_mode' => null,
         'user_slave_group_id' => null,

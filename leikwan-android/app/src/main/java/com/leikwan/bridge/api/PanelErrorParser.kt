@@ -1,8 +1,42 @@
 package com.leikwan.bridge.api
 
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.leikwan.bridge.session.DeviceLimitReachedException
 
 object PanelErrorParser {
+    private const val HTTP_TOO_MANY_REQUESTS = 429
+
+    /**
+     * Maps a panel `429 client_online_limit_reached` refusal to [DeviceLimitReachedException].
+     * Counts are read from the flat fields first and from `details` second; any other status or
+     * error code returns null so ordinary rate limiting keeps its existing handling.
+     */
+    fun deviceLimitFromHttp(code: Int, body: String?): DeviceLimitReachedException? {
+        if (code != HTTP_TOO_MANY_REQUESTS || body.isNullOrBlank()) return null
+        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
+        val error = obj.get("error")
+        val errorCode = if (error?.isJsonObject == true) {
+            stringValue(error.asJsonObject.get("code"))
+        } else {
+            stringValue(error)
+        }
+        if (errorCode != DeviceLimitReachedException.CODE) return null
+        val details = obj.get("details")?.takeIf { it.isJsonObject }?.asJsonObject
+        return DeviceLimitReachedException(
+            limit = countValue(obj, details, "online_device_limit"),
+            active = countValue(obj, details, "active_online_devices"),
+        )
+    }
+
+    private fun countValue(obj: JsonObject, details: JsonObject?, key: String): Int? =
+        intValue(obj.get(key)) ?: intValue(details?.get(key))
+
+    private fun intValue(element: JsonElement?): Int? = runCatching {
+        element?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.toInt()
+    }.getOrNull()?.takeIf { it >= 0 }
+
     fun messageFromHttp(code: Int, reason: String?, body: String?): String {
         return messageFromBody(body)
             ?: buildString {

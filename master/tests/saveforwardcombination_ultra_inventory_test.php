@@ -105,6 +105,13 @@ namespace {
         'ultra_destination_zone' => 'tokyo',
         'ultra_allowed_ingress_zones' => ['shanghai', 'beijing'],
         'ultra_fallback_policy' => 'detected_then_any',
+        'external_uot_enabled' => 1,
+        'external_uot_sidecar_target' => '185.220.238.153:7443',
+        'external_uot_token' => 'external-uot-test-token',
+        'external_uot_queue_packets' => 512,
+        'external_uot_keepalive_seconds' => 15,
+        'external_uot_reconnect_grace_seconds' => 45,
+        'external_uot_frame_payload_max' => 4096,
         'ultra_lines' => [
             ['ultra_line_id' => 10, 'enabled' => 1, 'sort_order' => 10],
             ['ultra_line_id' => 11, 'enabled' => 1, 'sort_order' => 20],
@@ -123,6 +130,19 @@ namespace {
         || ($combo['ultra_fallback_policy'] ?? '') !== 'detected_then_any') {
         failUltraCombination('Ultra combination policy was not normalized');
     }
+    foreach ([
+        'external_uot_enabled' => 1,
+        'external_uot_sidecar_target' => '185.220.238.153:7443',
+        'external_uot_token' => 'external-uot-test-token',
+        'external_uot_queue_packets' => 512,
+        'external_uot_keepalive_seconds' => 15,
+        'external_uot_reconnect_grace_seconds' => 45,
+        'external_uot_frame_payload_max' => 4096,
+    ] as $key => $expected) {
+        if (($combo[$key] ?? null) !== $expected) {
+            fail('external UoT field was not persisted: ' . $key);
+        }
+    }
     if (!array_key_exists('leigod_line_id', $combo) || $combo['leigod_line_id'] !== null) {
         failUltraCombination('Ultra must not persist a legacy scalar line authority');
     }
@@ -134,6 +154,30 @@ namespace {
         if (str_contains($execute['sql'], 'forward_combination_leigod_lines')) {
             failUltraCombination('Ultra save modified legacy line memberships');
         }
+    }
+
+    // New Ultra combinations inherit the operator default when the optional
+    // external UoT fields are omitted, while an explicit 0 remains an opt-out.
+    Database::$inserts = [];
+    Database::$executes = [];
+    $defaultEnabled = $base;
+    unset($defaultEnabled['external_uot_enabled'], $defaultEnabled['external_uot_sidecar_target'], $defaultEnabled['external_uot_token']);
+    $service->saveForwardCombination($defaultEnabled);
+    $combo = Database::$inserts['forward_combinations'][0] ?? [];
+    if (($combo['external_uot_enabled'] ?? 0) !== 1
+        || ($combo['external_uot_sidecar_target'] ?? '') !== '185.220.238.143:7443'
+        || !preg_match('/^[0-9a-f]{48}$/', (string) ($combo['external_uot_token'] ?? ''))) {
+        failUltraCombination('new Ultra combinations must inherit an enabled external UoT default');
+    }
+    Database::$inserts = [];
+    $explicitOptOut = $base;
+    $explicitOptOut['external_uot_enabled'] = 0;
+    $service->saveForwardCombination($explicitOptOut);
+    $combo = Database::$inserts['forward_combinations'][0] ?? [];
+    if (($combo['external_uot_enabled'] ?? 1) !== 0
+        || ($combo['external_uot_sidecar_target'] ?? null) !== null
+        || ($combo['external_uot_token'] ?? null) !== null) {
+        failUltraCombination('explicit external UoT opt-out must remain disabled');
     }
 
     Database::$inserts = [];
@@ -149,6 +193,11 @@ namespace {
         || ($combo['ultra_fallback_policy'] ?? '') !== 'detected_then_any'
         || isset(Database::$inserts['forward_combination_ultra_lines'])) {
         failUltraCombination('non-Ultra mode persisted Ultra policy or memberships');
+    }
+    if (($combo['external_uot_enabled'] ?? 1) !== 0
+        || !array_key_exists('external_uot_sidecar_target', $combo) || $combo['external_uot_sidecar_target'] !== null
+        || !array_key_exists('external_uot_token', $combo) || $combo['external_uot_token'] !== null) {
+        failUltraCombination('non-Ultra mode persisted external UoT settings');
     }
 
     $invalidFallback = $base;

@@ -1,11 +1,14 @@
 #!/bin/sh
-# Build the Leikwan OpenWrt packages (ipk) for one target architecture.
+# Build the Leikwan OpenWrt packages for one target architecture.
 #
 # Usage:  ./build.sh <amd64|arm64> [sdk-dir]
 #
 # The script cross-compiles the two Go programs with CGO_ENABLED=0, stages them
 # into the package directories, then hands off to the OpenWrt SDK. It never
 # modifies the SDK tree outside build_dir/staging_dir/bin.
+#
+# The output format follows the SDK: a 24.10 SDK emits .ipk (opkg edition),
+# a 25.12+ SDK emits .apk (apk edition). The package sources are identical.
 set -eu
 
 ARCH="${1:-amd64}"
@@ -28,14 +31,14 @@ echo "==> building leikwand for linux/$GOARCH"
 mkdir -p "$HERE/leikwand/bin"
 ( cd "$REPO/tools/leikwand" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.agentVersion=$VERSION" \
+	go build -trimpath -ldflags "-s -w -X main.agentVersion=${VERSION:-1.2.6}" \
 	-o "$HERE/leikwand/bin/leikwand" . )
 
 echo "==> building ultra-client runtime for linux/$GOARCH"
 mkdir -p "$HERE/leikwan-runtime/bin"
 ( cd "$REPO/tools/ultra-client" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${VERSION:-1.0.0}" \
+	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${VERSION:-1.2.6}" \
 	-o "$HERE/leikwan-runtime/bin/ultra-client" . )
 
 echo "==> verifying the staged binaries are static"
@@ -50,12 +53,42 @@ for pkg in leikwand leikwan-runtime luci-app-leikwan; do
 	cp -a "$HERE/$pkg" "$SDK/package/leikwan/"
 done
 
-echo "==> building ipk with the SDK"
+echo "==> building packages with the SDK"
 cd "$SDK"
+# GitHub's ubuntu-24.04 image ships uutils coreutils: /usr/bin/install reports
+# "install (uutils coreutils) 0.10.0" with no "GNU" substring, so the SDK's
+# SetupHostCommand probe (install --version | grep GNU) fails both attempts
+# and aborts the whole pass — while the tool itself works fine for OpenWrt's
+# host builds. The SDK tarball is freshly unpacked per run: patch the probe to
+# accept either upstream coreutils or the uutils rewrite. The neighbouring
+# probes (cp, bash, tar, ...) keep passing because their match strings are
+# still printed by the uutils builds.
+python3 - <<'PY'
+src = open('include/prereq-build.mk', encoding='utf-8').read()
+old = "$(eval $(call SetupHostCommand,install,Please install GNU 'install', \\\n\tinstall --version | grep GNU, \\\n\tginstall --version | grep GNU))"
+new = "$(eval $(call TestHostCommand,install,Please install GNU 'install', \\\n\tinstall --version 2>&1 | grep -qE 'GNU|uutils coreutils'))"
+if old in src:
+	open('include/prereq-build.mk', 'w', encoding='utf-8').write(src.replace(old, new))
+	print('install probe accepts uutils coreutils')
+PY
+# The prereq check swallows its own output (2>/dev/null inside toplevel.mk),
+# so run it verbosely first: a missing host package should say its name
+# instead of a bare Error 1. TMP_DIR must exist for the error file.
+mkdir -p tmp
+make -j1 -r -s -f include/prereq-build.mk TOPDIR="$(pwd)/" TMP_DIR="$(pwd)/tmp" prereq
 make defconfig >/dev/null
 make package/leikwan/leikwand/compile V=s
 make package/leikwan/leikwan-runtime/compile V=s
 make package/leikwan/luci-app-leikwan/compile V=s
 
 echo "==> packages"
-find "$SDK/bin" -name '*.ipk' -newermt '-1 hour' -print | sort
+# ipk SDKs emit .ipk (name_version-r1_arch.ipk); apk SDKs (25.12+) emit .apk
+# (name-version-r1.apk — hyphenated, no arch suffix). Whichever appears is the
+# edition this SDK produced, so both are listed, and the sanity check accepts
+# either naming to catch a silent SDK failure.
+find "$SDK/bin" \( -name '*.ipk' -o -name '*.apk' \) -newermt '-1 hour' -print | sort
+count=$(find "$SDK/bin" \( -name 'leikwand_*.ipk' -o -name 'leikwand-*.apk' \) -newermt '-1 hour' | wc -l)
+if [ "$count" -lt 1 ]; then
+	echo "no leikwand package produced; the SDK run failed silently" >&2
+	exit 1
+fi

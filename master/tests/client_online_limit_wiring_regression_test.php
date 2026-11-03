@@ -7,17 +7,20 @@ function fail(string $message): never
     exit(1);
 }
 
-$auth = file_get_contents(__DIR__ . '/../src/Support/Auth.php');
 $clientController = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
 $schema = file_get_contents(__DIR__ . '/../migrations/schema.sql');
 $tenant = file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
 $provisioning = file_get_contents(__DIR__ . '/../src/Support/ProvisioningService.php');
 
 foreach ([
-    [$auth, 'ClientOnlineSessionService'],
-    [$auth, 'enforceFromRequest($client, $request)'],
+    // Enforcement moved out of Auth::authenticateClient (1f7858f4) into the
+    // client-agent controller, so every pull route and the heartbeat enforce
+    // the online-device limit after access policy and device trust checks.
+    [$clientController, 'use Leikwan\Master\Support\ClientOnlineSessionService;'],
     [$clientController, 'enforceFromRequest($client, $request, \'pull\')'],
-    [$clientController, "recordAndEnforce(\$client, \$deviceId, \$deviceSessionService->deviceMetadataFromRequest(\$request), 'heartbeat')"],
+    [$clientController, 'return [$sessions, $sessions->enforceFromRequest($client, $request, $touchType)];'],
+    [$clientController, "[\$deviceSessionService, \$deviceId] = \$this->enforceClientRequest(\$client, \$request, 'heartbeat');"],
+    [$clientController, "[\$deviceSessionService, \$deviceId] = \$this->enforceClientRequest(\$client, \$request, 'pull');"],
     [$clientController, "'active_online_devices' =>"],
     [$tenant, 'online_device_limit'],
     [$provisioning, "'online_device_limit' =>"],

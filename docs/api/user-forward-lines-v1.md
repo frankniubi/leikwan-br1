@@ -25,6 +25,7 @@ and are limited to 16 KiB.
 
 | Method | Path | Required headers | Result |
 | --- | --- | --- | --- |
+| `GET` | `/api/v1/user/services` | Bearer | The tenant's services and their `service_id` (`services.id`, not the Client ID or the WHMCS service id) |
 | `GET` | `/api/v1/user/services/{service_id}/forward-options` | Bearer | Public route choices, transports, capabilities, and quota |
 | `GET` | `/api/v1/user/services/{service_id}/forwards` | Bearer | Active forwards owned by the tenant |
 | `POST` | `/api/v1/user/services/{service_id}/forwards` | Bearer, `Content-Type`, `Idempotency-Key` | Creates or replays one forward; `201` on create |
@@ -102,8 +103,8 @@ The list, detail, create, and patch responses use this representation:
     "service_id": null
   },
   "ingress": {
-    "host": "edge.example.test",
-    "port": 443
+    "host": null,
+    "port": null
   },
   "state": "active",
   "endpoint_count": 1,
@@ -119,6 +120,9 @@ The list, detail, create, and patch responses use this representation:
 Both are read-only: the direction comes from the assigned route, never from the
 request. Every other forward reports `"native_outbound": false` and
 `"native_direction": null`.
+
+`ingress` is reserved: both members are always `null`. Connection details reach
+the client through its own configuration flow.
 
 The resource never contains provider line IDs, combination IDs, active
 combination IDs, node IDs or addresses, transport endpoint fields, client
@@ -156,8 +160,9 @@ Invoke-RestMethod `
 ```
 
 `listen_port: null` requests automatic allocation. A manual target requires a
-host and port. A service-IP target uses an owned service ID and does not accept
-a manual host:
+host and port. A service-IP target uses an owned service ID that has a public
+IP, and does not accept a manual host. A rejected service ID reports
+`fields: {"target.service_id": "not_found" | "not_allowed" | "no_public_ip"}`:
 
 ```json
 {
@@ -180,6 +185,8 @@ server-assigned target, and the direction conflict contract.
 
 On success the response is `201`, includes `Location` and an ETag such as
 `"forward-123-r1"`, and contains the safe forward resource under `forward`.
+An idempotent replay returns `200` with `Content-Location` (not `Location`) and
+the same ETag.
 
 ## List and Detail
 
@@ -305,8 +312,12 @@ unclassified and are never restored automatically.
 JSON values use strict types. Ports are integers from 1 through 65535; only
 `listen_port` may be `null`. Manual hosts are ASCII IPv4, IPv6, or DNS names up
 to 253 characters. URL schemes, userinfo, paths, whitespace, control bytes,
-shell metacharacters, and IPv6 zone identifiers are rejected. Private and
-loopback targets remain valid for tenant-owned backends.
+shell metacharacters, and IPv6 zone identifiers are rejected. Only public
+targets are accepted: loopback, link-local, metadata, multicast and shorthand IPs
+fail with `reserved_range` or `invalid`, and private ranges (10/8, 172.16/12,
+192.168/16, fc00::/7) with `private_range`. Native Outbound forwards are exempt.
+Each account may send 120 requests a minute (30 of them changes); past that the
+API returns `429 rate_limited` with `Retry-After`.
 
 The stable error envelope is:
 

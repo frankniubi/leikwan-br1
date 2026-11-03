@@ -11,7 +11,15 @@ data class RuntimeProcessPlan(
     val role: RuntimeProcessRole,
     val command: List<String>,
     val readyPort: Int? = null,
+    /**
+     * Exit codes that mean "configuration/validation error": a guard that sees one of them on
+     * repeated fast exits stops restarting. Any other fast exit is retried with bounded backoff.
+     */
+    val permanentExitCodes: Set<Int> = emptySet(),
 )
+
+/** ultra-client exits through Go's log.Fatal (status 1) only on invalid configuration. */
+val ULTRA_PERMANENT_EXIT_CODES: Set<Int> = setOf(1)
 
 data class RuntimeBinaryPaths(
     val wstunnelBinary: String?,

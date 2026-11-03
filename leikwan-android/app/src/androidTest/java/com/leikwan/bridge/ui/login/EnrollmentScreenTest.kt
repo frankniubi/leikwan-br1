@@ -6,6 +6,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.leikwan.bridge.ui.theme.LeikwanTheme
@@ -18,7 +19,7 @@ class EnrollmentScreenTest {
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun enrollmentUsesClientIdTokenOrOneTimeCodeOnly() {
+    fun enrollmentUsesClientIdAndTokenOnly() {
         composeRule.setContent {
             LeikwanTheme {
                 EnrollmentScreen(onEnrollmentSuccess = {})
@@ -27,17 +28,20 @@ class EnrollmentScreenTest {
 
         composeRule.onNode(hasText("Client ID") and hasSetTextAction()).assertExists()
         composeRule.onNode(hasText("Agent Token") and hasSetTextAction()).assertExists()
-        composeRule.onNodeWithText("One-time Code").assertExists()
-        composeRule.onNodeWithText("會聚總站 (Cloudflare)").assertExists()
-        composeRule.onNodeWithText("请根据您所在地区选择").assertExists()
-        composeRule.onNodeWithText("保存登录信息").assertExists()
+        // There is no one-time login; sign-in is client ID + agent token only.
+        composeRule.onNodeWithText("One-time Code").assertDoesNotExist()
+        // Theme and language are reachable before signing in.
+        composeRule.onNodeWithContentDescription("Theme").assertExists()
+        composeRule.onNodeWithContentDescription("Language").assertExists()
+        composeRule.onNodeWithText("Global (Cloudflare)").assertExists()
+        composeRule.onNodeWithText("Remember sign-in details").assertExists()
         composeRule.onNodeWithText("https://v3.leikwanhost.com").assertDoesNotExist()
         composeRule.onNodeWithText("https://api-leikwanbridge.nbwly.com").assertDoesNotExist()
         composeRule.onNodeWithText("Email").assertDoesNotExist()
         composeRule.onNodeWithText("Panel URL").assertDoesNotExist()
 
-        composeRule.onNodeWithText("會聚總站 (Cloudflare)").performClick()
-        composeRule.onNodeWithText("會聚中國内地 (Aliyun CDN)").assertExists()
+        composeRule.onNodeWithText("Global (Cloudflare)").performClick()
+        composeRule.onNodeWithText("Mainland China (Aliyun CDN)").assertExists()
     }
 
     @Test

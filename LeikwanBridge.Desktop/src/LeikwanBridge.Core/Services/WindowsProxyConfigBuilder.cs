@@ -15,7 +15,21 @@ public static class WindowsProxyConfigBuilder
     public const string TunGateway = "172.19.0.2";
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
-    private const string NativeRuleSetDownloadHost = "raw.githubusercontent.com";
+
+    /// <summary>
+    /// Bundled runtimes whose own traffic must never be captured by the TUN
+    /// (they are what the proxy outbound tunnels through).
+    /// </summary>
+    public static readonly IReadOnlyList<string> ManagedRuntimeProcessNames =
+    [
+        "ultra-client.exe",
+        "wstunnel.exe",
+        "leikwan-bond.exe",
+        "leikwan-uot-bond.exe",
+        "leikwan-ingress.exe",
+        "leikwan-mptcp-relay.exe",
+        "leikwan-client-win.exe",
+    ];
 
     public static string NormalizeTunStack(string? value)
     {
@@ -90,7 +104,8 @@ public static class WindowsProxyConfigBuilder
         string? nativeProxyHost = null,
         int? nativeProxyPort = null,
         string? nativeRoutePolicy = null,
-        int measuredPayloadCeiling = 0)
+        int measuredPayloadCeiling = 0,
+        string? ruleSetDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(lease);
         if (!lease.IsUsable(DateTimeOffset.UtcNow))
@@ -106,6 +121,13 @@ public static class WindowsProxyConfigBuilder
         var chinaIpCidrs = lease.RouteScope == "global" && bypassChinaMainland
             ? LoadChinaIpCidrs(chinaIpListPath)
             : [];
+        var includeChinaRuleSets = IsNativeRestrictedScope(lease.RouteScope) || chinaIpCidrs.Count > 0;
+        // Bundled rule-sets (bin\geoip-cn.srs, bin\geosite-cn.srs) keep
+        // startup off GitHub: sing-box does not open its inbounds until a
+        // remote rule-set's first download finishes.
+        var localRuleSets = includeChinaRuleSets
+            ? NativeChinaRuleSets.TryResolve(ruleSetDirectory)
+            : null;
         var bypassIps = new List<string>();
         var bypassDomains = new List<string>();
         // The app-private relay still opens the provider connection outside
@@ -114,8 +136,10 @@ public static class WindowsProxyConfigBuilder
         AddHost(lease.EndpointHost, bypassIps, bypassDomains);
         foreach (var host in bypassHosts ?? [])
             AddHost(host, bypassIps, bypassDomains);
-        if (IsNativeRestrictedScope(lease.RouteScope))
-            AddHost(NativeRuleSetDownloadHost, bypassIps, bypassDomains);
+        // Only the remote fallback downloads rule-sets; restricted scopes
+        // fetch them directly instead of through the relay.
+        if (IsNativeRestrictedScope(lease.RouteScope) && localRuleSets is null)
+            AddHost(NativeChinaRuleSets.RemoteDownloadHost, bypassIps, bypassDomains);
 
         using var fragment = JsonDocument.Parse(
             NativeOutboundConfigBuilder.Build(
@@ -132,18 +156,19 @@ public static class WindowsProxyConfigBuilder
             Server = lease.EndpointHost,
             Port = lease.EndpointPort,
         };
+        // Restricted native scopes must not carry bootstrap DNS through the
+        // relay. Keep metadata and rule-set bootstrap on the normal path.
+        var dns = BuildDns(
+            bootstrapProfile,
+            bypassDomains,
+            dnsMode,
+            customDnsServers,
+            lease.RouteScope == "cn_only" ? "direct" : "proxy",
+            lease.RouteScope);
         var root = new JsonObject
         {
             ["log"] = new JsonObject { ["level"] = "error" },
-            // Restricted native scopes must not carry bootstrap DNS through the
-            // relay. Keep metadata and rule-set bootstrap on the normal path.
-            ["dns"] = BuildDns(
-                bootstrapProfile,
-                bypassDomains,
-                dnsMode,
-                customDnsServers,
-                lease.RouteScope == "cn_only" ? "direct" : "proxy",
-                lease.RouteScope),
+            ["dns"] = dns,
             ["inbounds"] = BuildInbounds(mode, proxyPort, tunMtu, tunStack, bypassIps, measuredPayloadCeiling),
             ["outbounds"] = new JsonArray
             {
@@ -158,15 +183,15 @@ public static class WindowsProxyConfigBuilder
                 chinaIpCidrs,
                 lease.RouteScope,
                 nativeRoutePolicy,
-                dnsMode == WindowsProxyDnsMode.Custom && lease.RouteScope == "intl_only"
-                    ? "custom-0"
-                    : null),
+                // Resolve with the protected server this config actually declares.
+                dns["final"]?.GetValue<string>()),
         };
-        AddNativeChinaRuleSets(
-            root["route"]!.AsObject(),
-            lease.RouteScope,
-            chinaIpCidrs.Count > 0,
-            lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        if (includeChinaRuleSets)
+        {
+            root["route"]!.AsObject()["rule_set"] = NativeChinaRuleSets.BuildDefinitions(
+                localRuleSets,
+                lease.RouteScope is "cn_only" or "intl_only" ? "direct" : "proxy");
+        }
 
         return new WindowsProxyConfigResult(
             root.ToJsonString(),
@@ -245,8 +270,10 @@ public static class WindowsProxyConfigBuilder
                 {
                     // Native SOCKS5 carries DNS as real UDP. TCP DNS through
                     // the provider can be accepted at the SOCKS layer while
-                    // the upstream resolver closes the stream before replying.
-                    ["type"] = IsNativeRestrictedScope(nativeRouteScope) ? "udp" : "tcp",
+                    // the upstream resolver closes the stream before replying,
+                    // and every native scope resolves before the SOCKS handoff,
+                    // so a failing TCP resolver takes down all named traffic.
+                    ["type"] = nativeRouteScope is not null ? "udp" : "tcp",
                     ["tag"] = tag,
                     ["server"] = custom[index],
                     ["server_port"] = 53,
@@ -348,7 +375,7 @@ public static class WindowsProxyConfigBuilder
             ["type"] = "tun",
             ["tag"] = "tun-in",
             ["interface_name"] = TunInterfaceName,
-            ["address"] = new JsonArray(TunAddress),
+            ["address"] = new JsonArray(TunAddress, TunIpv6Address),
             // The runtime measures the native-UDP payload ceiling per association; an
             // MTU above it would only produce frames the path silently drops.
             ["mtu"] = UltraRuntimeMtu.Resolve(tunMtu, measuredPayloadCeiling),
@@ -370,6 +397,8 @@ public static class WindowsProxyConfigBuilder
         {
             "127.0.0.0/8",
             "255.255.255.255/32",
+            "::1/128",
+            "ff00::/8",
         };
         routeExcludes.AddRange(bypassIps);
         if (routeExcludes.Count > 0)
@@ -382,8 +411,45 @@ public static class WindowsProxyConfigBuilder
         return new JsonArray(tun);
     }
 
+    /// <summary>
+    /// The sing-box outbound (tag "proxy") for one validated profile; shared with
+    /// LeikwanBridge.Core.Nodes.UserNodeOutbound so every desktop builds node outbounds alike.
+    /// </summary>
+    public static JsonObject BuildProxyOutbound(WindowsProxyProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (profile.IsExternal)
+            throw new InvalidOperationException("proxy_external_requires_forward");
+        var copy = profile.Clone();
+        copy.Protocol = WindowsProxyProtocol.Normalize(copy.Protocol);
+        copy.Transport = copy.Transport.Trim().ToLowerInvariant();
+        Validate(copy, DefaultProxyPort, DefaultTunMtu, "gvisor");
+        return BuildOutbound(copy);
+    }
+
     private static JsonObject BuildOutbound(WindowsProxyProfile profile)
-        => profile.IsShadowsocks ? BuildShadowsocks(profile) : BuildVless(profile);
+        => profile.IsShadowsocks ? BuildShadowsocks(profile)
+            : profile.IsSocks5 ? BuildSocks5(profile)
+            : BuildVless(profile);
+
+    private static JsonObject BuildSocks5(WindowsProxyProfile profile)
+    {
+        var outbound = new JsonObject
+        {
+            ["type"] = "socks",
+            ["tag"] = "proxy",
+            ["server"] = profile.Server,
+            ["server_port"] = profile.Port,
+            ["version"] = "5",
+            ["domain_resolver"] = "local",
+        };
+        if (!string.IsNullOrEmpty(profile.Username))
+        {
+            outbound["username"] = profile.Username;
+            outbound["password"] = profile.Password;
+        }
+        return outbound;
+    }
 
     private static JsonObject BuildShadowsocks(WindowsProxyProfile profile)
     {
@@ -397,6 +463,13 @@ public static class WindowsProxyConfigBuilder
             ["password"] = profile.Password,
             ["domain_resolver"] = "local",
         };
+        var plugin = NormalizePlugin(profile.Plugin);
+        if (plugin.Length > 0)
+        {
+            outbound["plugin"] = plugin;
+            if (!string.IsNullOrWhiteSpace(profile.PluginOpts))
+                outbound["plugin_opts"] = profile.PluginOpts.Trim();
+        }
         if (profile.IsShadowsocks2022)
         {
             // Pin the SS2022 UDP-over-TCP dialect even when native UDP is
@@ -433,11 +506,16 @@ public static class WindowsProxyConfigBuilder
         if (profile.Transport != "tcp")
         {
             var transport = new JsonObject { ["type"] = profile.Transport };
-            if (profile.Transport == "ws")
+            if (profile.Transport is "ws" or "httpupgrade")
             {
                 transport["path"] = string.IsNullOrWhiteSpace(profile.Path) ? "/" : profile.Path;
                 if (!string.IsNullOrWhiteSpace(profile.Host))
-                    transport["headers"] = new JsonObject { ["Host"] = profile.Host };
+                {
+                    if (profile.Transport == "ws")
+                        transport["headers"] = new JsonObject { ["Host"] = profile.Host };
+                    else
+                        transport["host"] = profile.Host;
+                }
             }
             else if (profile.Transport == "grpc" && !string.IsNullOrWhiteSpace(profile.ServiceName))
             {
@@ -451,8 +529,12 @@ public static class WindowsProxyConfigBuilder
             var tls = new JsonObject { ["enabled"] = true };
             if (!string.IsNullOrWhiteSpace(profile.ServerName))
                 tls["server_name"] = profile.ServerName;
-            if (!string.IsNullOrWhiteSpace(profile.Fingerprint))
-                tls["utls"] = new JsonObject { ["enabled"] = true, ["fingerprint"] = profile.Fingerprint };
+            // REALITY needs uTLS in sing-box; default to chrome like the panel does.
+            var fingerprint = !string.IsNullOrWhiteSpace(profile.Fingerprint)
+                ? profile.Fingerprint
+                : !string.IsNullOrWhiteSpace(profile.RealityPublicKey) ? "chrome" : string.Empty;
+            if (fingerprint.Length > 0)
+                tls["utls"] = new JsonObject { ["enabled"] = true, ["fingerprint"] = fingerprint };
             if (profile.AllowInsecure)
                 tls["insecure"] = true;
             if (!string.IsNullOrWhiteSpace(profile.Alpn))
@@ -493,6 +575,24 @@ public static class WindowsProxyConfigBuilder
 
         if (mode == WindowsProxyMode.Tun)
         {
+            // Our own runtimes (ultra-client, wstunnel, bond...) carry the
+            // forward the proxy outbound points at.  Their relay connections go
+            // to lease-provided addresses that are not in the bypass list, so
+            // under strict_route they would re-enter the TUN, hit the proxy
+            // outbound (127.0.0.1:<forward>) and loop back into the same
+            // runtime: the tunnel "connects" instantly but nothing leaves.
+            // Send every packet they originate - DNS included, hence before
+            // hijack-dns - straight out through the physical interface.
+            var runtimes = new JsonArray();
+            foreach (var name in ManagedRuntimeProcessNames)
+                runtimes.Add(name);
+            rules.Add(new JsonObject
+            {
+                ["inbound"] = new JsonArray("tun-in"),
+                ["process_name"] = runtimes,
+                ["outbound"] = "direct",
+            });
+
             rules.Add(new JsonObject
             {
                 ["inbound"] = new JsonArray("tun-in"),
@@ -541,11 +641,15 @@ public static class WindowsProxyConfigBuilder
             });
         }
 
-        if (IsNativeRestrictedScope(nativeRouteScope))
+        // Resolve before handing the destination to SOCKS. Otherwise its
+        // upstream performs a second lookup and replaces the protected answer
+        // with a polluted or region-wrong one (Google, YouTube and GitHub fail
+        // TLS on an unrestricted global route). Same rule as the macOS client.
+        var resolveNativeDomains = nativeRouteScope is not null
+            && (!IsNativeRestrictedPolicy(nativeRoutePolicy)
+                || !string.Equals(nativeRouteScope, "global", StringComparison.OrdinalIgnoreCase));
+        if (resolveNativeDomains)
         {
-            // Resolve before handing the destination to SOCKS. Otherwise its
-            // upstream can perform a second lookup and replace the protected
-            // split-DNS result with a polluted or region-wrong answer.
             rules.Add(new JsonObject
             {
                 ["action"] = "resolve",
@@ -585,43 +689,11 @@ public static class WindowsProxyConfigBuilder
         return new JsonObject
         {
             ["auto_detect_interface"] = true,
-            ["default_domain_resolver"] = IsNativeRestrictedScope(nativeRouteScope)
+            ["default_domain_resolver"] = resolveNativeDomains
                 ? defaultDomainResolver ?? "remote"
                 : "local",
             ["rules"] = rules,
             ["final"] = nativeRouteScope == "cn_only" ? "direct" : "proxy",
-        };
-    }
-
-    private static void AddNativeChinaRuleSets(
-        JsonObject route,
-        string routeScope,
-        bool includeChinaBypass,
-        string downloadDetour = "proxy")
-    {
-        if (!IsNativeRestrictedScope(routeScope) && !includeChinaBypass)
-            return;
-        downloadDetour = string.Equals(downloadDetour, "direct", StringComparison.OrdinalIgnoreCase)
-            ? "direct"
-            : "proxy";
-        route["rule_set"] = new JsonArray
-        {
-            new JsonObject
-            {
-                ["tag"] = "geoip-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
-            new JsonObject
-            {
-                ["tag"] = "geosite-cn",
-                ["type"] = "remote",
-                ["format"] = "binary",
-                ["url"] = $"https://{NativeRuleSetDownloadHost}/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-                ["download_detour"] = downloadDetour,
-            },
         };
     }
 
@@ -715,6 +787,12 @@ public static class WindowsProxyConfigBuilder
             domains.Add(normalized.ToLowerInvariant());
     }
 
+    private static string NormalizePlugin(string? plugin)
+    {
+        var value = plugin?.Trim().ToLowerInvariant() ?? string.Empty;
+        return value == "simple-obfs" ? "obfs-local" : value;
+    }
+
     private static void Validate(WindowsProxyProfile profile, int proxyPort, int tunMtu, string tunStack)
     {
         if (!WindowsProxyProtocol.IsSupported(profile.Protocol))
@@ -738,6 +816,15 @@ public static class WindowsProxyConfigBuilder
             if (string.IsNullOrWhiteSpace(profile.Password)
                 && !string.Equals(profile.Method.Trim(), "none", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("Shadowsocks password is required.", nameof(profile.Password));
+            var plugin = NormalizePlugin(profile.Plugin);
+            if (plugin.Length > 0 && !WindowsProxyProtocol.ShadowsocksPluginOptions.Contains(plugin, StringComparer.Ordinal))
+                throw new ArgumentException("Unsupported Shadowsocks plugin.", nameof(profile.Plugin));
+        }
+        else if (profile.IsSocks5)
+        {
+            if (string.IsNullOrEmpty(profile.Username) != string.IsNullOrEmpty(profile.Password)
+                || profile.Username.Length > 255 || profile.Password.Length > 255)
+                throw new ArgumentException("SOCKS5 needs both a username and a password, or neither.", nameof(profile.Username));
         }
         else
         {

@@ -12,6 +12,10 @@ source_commit="unknown"
 metadata_path=""
 merge_versions=""
 managed_load_receipt=""
+ultra_hardening="${ULTRA_HARDENING:-garble-v0.17.0-literals}"
+# 1 = Developer ID sign and notarize (needs the MACOS_DEVID_* and ASC_* secrets in the
+# environment). Off by default so local and fork builds keep the ad-hoc seal.
+developer_id_sign="${LEIKWAN_DEVELOPER_ID_SIGN:-0}"
 dry_run=0
 helpers="sing-box wstunnel leikwan-bond leikwan-ingress leikwan-uot-bond ultra-client"
 
@@ -22,11 +26,11 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/package-macos-client.sh --rid <osx-arm64|osx-x64> --version <version> --publish-dir <path> --helper-dir <path> --helper-hashes <path> [options]
+Usage: scripts/package-macos-client.sh --rid osx-arm64 --version <version> --publish-dir <path> --helper-dir <path> --helper-hashes <path> [options]
   --output-dir <path>       Artifact output directory
   --source-commit <sha>     Source revision for metadata
   --managed-load-receipt <path>
-                            Hash-bound probe receipt for cross-architecture packaging
+                            Hash-bound probe receipt when packaging arm64 on a non-arm64 host
   --dry-run                 Validate inputs without creating an app/DMG/ZIP
 
 Metadata merge mode:
@@ -56,6 +60,10 @@ done
 [[ -d "$repo_root" ]] || fail "repository root missing"
 repo_root="$(cd "$repo_root" && pwd)"
 output_dir="${output_dir:-$repo_root/artifacts/macos}"
+case "$developer_id_sign" in
+  0|1) ;;
+  *) fail "LEIKWAN_DEVELOPER_ID_SIGN must be 0 or 1" ;;
+esac
 
 sha256_file() {
   shasum -a 256 "$1" | awk '{print tolower($1)}'
@@ -81,9 +89,7 @@ versions_path = pathlib.Path(sys.argv[2]).resolve()
 metadata_path = pathlib.Path(sys.argv[3]).resolve()
 specifications = {
     "macos_client_app_arm64": ("artifacts/macos/leikwan-bridge-arm64.dmg", "/artifacts/macos/leikwan-bridge-arm64.dmg", "arm64", "dmg"),
-    "macos_client_app_x64": ("artifacts/macos/leikwan-bridge-x64.dmg", "/artifacts/macos/leikwan-bridge-x64.dmg", "x86_64", "dmg"),
     "macos_client_update_arm64": ("artifacts/macos/leikwan-bridge-update-arm64.zip", "/artifacts/macos/leikwan-bridge-update-arm64.zip", "arm64", "zip"),
-    "macos_client_update_x64": ("artifacts/macos/leikwan-bridge-update-x64.zip", "/artifacts/macos/leikwan-bridge-update-x64.zip", "x86_64", "zip"),
 }
 
 if versions_path != (root / "artifacts" / "versions.json").resolve():
@@ -183,8 +189,8 @@ fi
 
 case "$rid" in
   osx-arm64) architecture="arm64"; suffix="arm64" ;;
-  osx-x64) architecture="x86_64"; suffix="x64" ;;
-  *) fail "--rid must be osx-arm64 or osx-x64" ;;
+  osx-x64) fail "osx-x64 is no longer packaged: the macOS client supports Apple Silicon (osx-arm64) only" ;;
+  *) fail "--rid must be osx-arm64 (the macOS client supports Apple Silicon only)" ;;
 esac
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.][0-9]+)?$ ]] || fail "version must be numeric"
 [[ -d "$publish_dir" ]] || fail "publish directory missing"
@@ -239,7 +245,6 @@ check_architecture() {
   detected="$(file -b "$path" 2>/dev/null || true)"
   case "$architecture" in
     arm64) printf '%s' "$detected" | grep -Eqi 'Mach-O.*(arm64|aarch64)' || fail "wrong architecture for $(basename "$path"): $detected" ;;
-    x86_64) printf '%s' "$detected" | grep -Eqi 'Mach-O.*(x86_64|x86-64)' || fail "wrong architecture for $(basename "$path"): $detected" ;;
   esac
 }
 
@@ -379,7 +384,14 @@ mkdir -p "$dmg_root"
 ditto "$app" "$dmg_root/LeiKwan Bridge.app"
 ln -s /Applications "$dmg_root/Applications"
 rm -f "$dmg" "$update_zip" "$metadata"
-hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+if [[ "$developer_id_sign" -eq 1 ]]; then
+  # Developer ID signs, notarizes, and staples the app, then builds and notarizes the
+  # DMG itself. It must run before the archives below, which embed the app.
+  bash "$repo_root/scripts/sign-and-notarize-macos.sh" \
+    --app "$app" --dmg "$dmg" --report "$output_dir/leikwan-bridge-$suffix-signed-helpers.txt"
+else
+  hdiutil create -volname 'LeiKwan Bridge' -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+fi
 hdiutil verify "$dmg" >/dev/null
 mount_point="$work_dir/verify-mount"
 mkdir -p "$mount_point"
@@ -401,7 +413,7 @@ dotnet_version="$(dotnet --version 2>/dev/null || printf unknown)"
 
 python3 - "$metadata" "$version" "$architecture" "$suffix" "$source_commit" \
   "$dmg_sha" "$dmg_size" "$zip_sha" "$zip_size" "$resources_dir/helper-manifest.json" \
-  "$go_version" "$rust_version" "$dotnet_version" <<'PY'
+  "$go_version" "$rust_version" "$dotnet_version" "$ultra_hardening" <<'PY'
 import json
 import pathlib
 import sys
@@ -420,6 +432,7 @@ import sys
     go_version,
     rust_version,
     dotnet_version,
+    ultra_hardening,
 ) = sys.argv[1:]
 app_key = "macos_client_app_" + suffix
 update_key = "macos_client_update_" + suffix
@@ -447,7 +460,7 @@ payload = {
             "architecture": architecture,
             "format": "dmg",
             "hardening": {
-                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "ultra_client": ultra_hardening,
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },
@@ -462,7 +475,7 @@ payload = {
             "architecture": architecture,
             "format": "zip",
             "hardening": {
-                "ultra_client": "garble-v0.17.0-literals-tiny",
+                "ultra_client": ultra_hardening,
                 "native_helpers": "release-strip",
                 "managed_symbols": "disabled",
             },

@@ -55,16 +55,61 @@ if [[ "$(id -u)" != "0" ]]; then
   exit 1
 fi
 
+REQUIRED_COMMANDS=(python3 curl install ip ss sha256sum awk mktemp)
+CA_BUNDLE_PATH="${LEIKWAN_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+SYSTEMD_UNIT_DIR="${LEIKWAN_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+UNITS_CHANGED=0
+
+dependencies_present() {
+  local cmd
+  for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    command -v "$cmd" >/dev/null 2>&1 || return 1
+  done
+  [[ -r "$CA_BUNDLE_PATH" ]]
+}
+
 ensure_debian12_dependencies() {
+  # This helper runs on every client/slave/sidecar install and update; only
+  # touch apt when something is actually missing.
+  if dependencies_present; then
+    return 0
+  fi
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y python3 curl ca-certificates coreutils iproute2
     return 0
   fi
-  for cmd in python3 curl install ip ss sha256sum awk; do
+  for cmd in "${REQUIRED_COMMANDS[@]}"; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "missing required command: $cmd" >&2; return 1; }
   done
+}
+
+same_file_content() {
+  local left="$1" right="$2"
+  [[ -f "$left" && -f "$right" ]] || return 1
+  [[ "$(sha256sum "$left" | awk '{print $1}')" == "$(sha256sum "$right" | awk '{print $1}')" ]]
+}
+
+# Write stdin to path only when the content differs. Returns 0 when replaced.
+write_file_if_changed() {
+  local path="$1" mode="$2" staged
+  staged="$(mktemp "${path}.new.XXXXXX")"
+  cat > "$staged"
+  if same_file_content "$staged" "$path"; then
+    rm -f "$staged"
+    chmod "$mode" "$path"
+    return 1
+  fi
+  chmod "$mode" "$staged"
+  mv "$staged" "$path"
+  return 0
+}
+
+write_unit_if_changed() {
+  if write_file_if_changed "$1" 0644; then
+    UNITS_CHANGED=1
+  fi
 }
 
 sha256_file() {
@@ -86,10 +131,15 @@ download_checked() {
     echo "missing manifest sha256 for $key" >&2
     return 1
   }
+  if [[ -f "$path" && "$(sha256_file "$path")" == "${expected,,}" ]]; then
+    chmod 0755 "$path"
+    echo "  $key up to date, skipping download"
+    return 0
+  fi
   tmp="${path}.new"
-  curl -fsSL --max-time 120 "$url" -o "$tmp"
+  curl "${CURL_PIN[@]}" -fsSL --max-time 120 "$url" -o "$tmp"
   actual="$(sha256_file "$tmp")"
-  if [[ "$actual" != "$expected" ]]; then
+  if [[ "$actual" != "${expected,,}" ]]; then
     rm -f "$tmp"
     echo "downloaded artifact sha256 mismatch: $key" >&2
     return 1
@@ -114,13 +164,21 @@ install_artifact() {
   fi
 }
 
+# Downloads never go through a proxy. A caller that resolved the panel over
+# strict DoH passes LEIKWAN_CURL_RESOLVE=host:port:ip so polluted system DNS
+# cannot send curl to the wrong address.
+CURL_PIN=(--noproxy '*')
+if [[ "${LEIKWAN_CURL_RESOLVE:-}" =~ ^[A-Za-z0-9.-]+:[0-9]+:[0-9a-fA-F.:]+$ ]]; then
+  CURL_PIN+=(--resolve "$LEIKWAN_CURL_RESOLVE")
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '')"
 
 ensure_debian12_dependencies
 
 if [[ -n "$ARTIFACT_BASE" ]]; then
-  VERSIONS_JSON="$(curl -fsSL --max-time 60 "$ARTIFACT_BASE/artifacts/versions.json")"
+  VERSIONS_JSON="$(curl "${CURL_PIN[@]}" -fsSL --max-time 60 "$ARTIFACT_BASE/artifacts/versions.json")"
 else
   if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/tools/tcp-accel/tcp_accel.py" ]]; then
     echo "--artifact-base is required when running outside a BR1 source checkout" >&2
@@ -129,16 +187,15 @@ else
   VERSIONS_JSON="{}"
 fi
 
-install -d -m 0755 "$INSTALL_ROOT" "$CONFIG_ROOT" "$BIN_DIR"
+install -d -m 0755 "$INSTALL_ROOT" "$CONFIG_ROOT" "$BIN_DIR" "$SYSTEMD_UNIT_DIR"
 
 install_artifact tcp_accel_runtime /artifacts/leikwan-tcp-accel.py tools/tcp-accel/tcp_accel.py "$INSTALL_ROOT/tcp_accel.py"
 python3 -m py_compile "$INSTALL_ROOT/tcp_accel.py"
 
-cat > "$BIN_DIR/leikwan-tcp-accel" <<WRAPPER
+write_file_if_changed "$BIN_DIR/leikwan-tcp-accel" 0755 <<WRAPPER || true
 #!/usr/bin/env bash
 exec /usr/bin/python3 "$INSTALL_ROOT/tcp_accel.py" "\$@"
 WRAPPER
-chmod 0755 "$BIN_DIR/leikwan-tcp-accel"
 
 if [[ ! -s "$CONFIG_ROOT/token" ]]; then
   umask 077
@@ -159,7 +216,7 @@ ENV
     chmod 0600 "$CONFIG_ROOT/server.env"
   fi
 
-  cat > /etc/systemd/system/leigod-tcp-accel-server.service <<'UNIT'
+  write_unit_if_changed "$SYSTEMD_UNIT_DIR/leigod-tcp-accel-server.service" <<'UNIT'
 [Unit]
 Description=Leikwan BR1 tcp-accel sidecar server
 After=network-online.target
@@ -203,7 +260,7 @@ JSON
     chmod 0600 "$CONFIG_ROOT/client-through-bridge-example.json"
   fi
 
-  cat > /etc/systemd/system/leigod-tcp-accel-client@.service <<'UNIT'
+  write_unit_if_changed "$SYSTEMD_UNIT_DIR/leigod-tcp-accel-client@.service" <<'UNIT'
 [Unit]
 Description=Leikwan BR1 tcp-accel client %i
 After=network-online.target
@@ -248,7 +305,7 @@ JSON
     chmod 0600 "$CONFIG_ROOT/bridge-example.json"
   fi
 
-  cat > /etc/systemd/system/leigod-tcp-accel-bridge@.service <<'UNIT'
+  write_unit_if_changed "$SYSTEMD_UNIT_DIR/leigod-tcp-accel-bridge@.service" <<'UNIT'
 [Unit]
 Description=Leikwan BR1 tcp-accel slave SOCKS bridge %i
 After=network-online.target
@@ -279,7 +336,7 @@ case "$MODE" in
   all) install_client_role; install_slave_role; install_server_role ;;
 esac
 
-if command -v systemctl >/dev/null 2>&1; then
+if [[ "$UNITS_CHANGED" == "1" || "${LEIKWAN_INSTALL_FORCE_RESTART:-0}" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
 fi
 

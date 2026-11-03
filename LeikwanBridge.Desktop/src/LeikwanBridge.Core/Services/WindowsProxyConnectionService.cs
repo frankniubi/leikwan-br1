@@ -14,7 +14,7 @@ namespace LeikwanBridge.Core.Services;
 /// redirector.  A single gate makes mode changes transactional: the previous
 /// mode is stopped before a new config is exposed to the operating system.
 /// </summary>
-public sealed class WindowsProxyConnectionService : IAsyncDisposable
+public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBridge.Core.Nodes.IWindowsProxyProfileHost
 {
     private readonly WindowsProxyProfileStore _store;
     private readonly IWindowsProxyProcessHost _processHost;
@@ -26,9 +26,11 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private readonly int _tunMtu;
     private readonly string _tunStack;
     private readonly string _chinaIpListPath;
+    private readonly string _ruleSetDirectory;
     private readonly INativeOutboundRelayHost _nativeRelayHost;
     private readonly IWindowsTunMtuReader _tunMtuReader;
     private readonly TimeSpan _mtuApplyMinInterval;
+    private string _preferredEgressInterface;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly List<WindowsProxyProfile> _profiles = [];
     private WindowsProxySnapshot _snapshot = WindowsProxySnapshot.Disconnected;
@@ -48,6 +50,16 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
     private bool _disposed;
 
     public const string NativeOutboundDisplayName = "原生出口";
+    public const string ProcessLostErrorCode = "proxy_process_lost";
+
+    /// <summary>
+    /// Local slice remainder below which a native lease is renewed early. At
+    /// the observed fleet ceiling (~2.5 Gbit/s) 2 GiB is ~7 s of drain time,
+    /// enough to cover one renewal-loop poll plus the refresh round trip
+    /// before the slice empties; the runtime's bounded copy pause (120 s) is
+    /// the last-resort backstop behind this.
+    /// </summary>
+    public const long NativeQuotaRenewalRemainingBytes = 2L * 1024 * 1024 * 1024;
 
     /// <summary>Minimum spacing between two live-MTU apply attempts.</summary>
     public static readonly TimeSpan MtuApplyDefaultInterval = TimeSpan.FromSeconds(60);
@@ -65,7 +77,9 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         string? chinaIpListPath = null,
         INativeOutboundRelayHost? nativeRelayHost = null,
         IWindowsTunMtuReader? tunMtuReader = null,
-        TimeSpan? mtuApplyMinInterval = null)
+        TimeSpan? mtuApplyMinInterval = null,
+        string? preferredEgressInterface = null,
+        string? ruleSetDirectory = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _singBoxPath = singBoxPath ?? string.Empty;
@@ -86,14 +100,24 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         _pendingTunMtu = tunMtu;
         _tunStack = tunStack;
         _chinaIpListPath = chinaIpListPath ?? string.Empty;
+        // geoip-cn.srs / geosite-cn.srs ship next to sing-box (bin\), like
+        // CN.conf; BuildNative falls back to remote rule-sets without them.
+        _ruleSetDirectory = string.IsNullOrWhiteSpace(ruleSetDirectory)
+            ? Path.GetDirectoryName(_singBoxPath) ?? string.Empty
+            : ruleSetDirectory;
         _nativeRelayHost = nativeRelayHost ?? new NativeOutboundRelayHost();
         _tunMtuReader = tunMtuReader ?? new WindowsTunMtuReader();
         _mtuApplyMinInterval = mtuApplyMinInterval ?? MtuApplyDefaultInterval;
+        _preferredEgressInterface = preferredEgressInterface?.Trim() ?? string.Empty;
         if (_mtuApplyMinInterval < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(mtuApplyMinInterval));
+        _processHost.UnexpectedExit += exitCode => _ = HandleUnexpectedExitAsync(exitCode);
     }
 
     public event Action<WindowsProxySnapshot>? SnapshotChanged;
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+        => _preferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
 
     public IReadOnlyList<WindowsProxyProfile> Profiles
     {
@@ -232,6 +256,24 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         => ObserveMeasuredPayloadCeiling(
             forwardId,
             UltraRuntimeStatus.ReadForwardPayloadCeiling(_runtimeDirectory, forwardId));
+
+    /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained. The host renews the lease on this signal instead of waiting for
+    /// the expiry window: a high-throughput download can exhaust a slice inside
+    /// one renewal interval, and a paused-then-dropped download is the reported
+    /// "large downloads interrupt" symptom. A snapshot without the field (older
+    /// runtime) or an idle connection reads as false, so the legacy expiry-only
+    /// cadence is unchanged there.
+    /// </summary>
+    public bool IsNativeQuotaLow()
+    {
+        if (_activeNativeLease is not { } lease
+            || _snapshot.State != WindowsProxyConnectionState.Connected)
+            return false;
+        return UltraRuntimeStatus.ReadForwardQuotaRemaining(_runtimeDirectory, lease.ForwardId)
+            is long remaining && remaining < NativeQuotaRenewalRemainingBytes;
+    }
 
     /// <summary>
     /// Applies the pending TUN MTU to the live connection.
@@ -522,12 +564,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             {
                 if (forwardListenPort.Value is < 1 or > 65535)
                     throw new InvalidOperationException("proxy_forward_listener_invalid");
-                profile = profile.Clone();
-                // Preserve implicit TLS identity before replacing only the dial endpoint.
-                if (profile.Tls && string.IsNullOrWhiteSpace(profile.ServerName))
-                    profile.ServerName = profile.Server;
-                profile.Server = "127.0.0.1";
-                profile.Port = forwardListenPort.Value;
+                profile = LeikwanBridge.Core.Nodes.UserNodeOutbound.RewriteForForward(profile, forwardListenPort.Value);
             }
             profileName = profile.Name;
             var normalizedProcessRules = (processRules ?? [])
@@ -741,7 +778,8 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 customDnsServers,
                 nativeProxyHost: "127.0.0.1",
                 nativeProxyPort: nativeRelayPort,
-                measuredPayloadCeiling: _measuredPayloadCeiling);
+                measuredPayloadCeiling: _measuredPayloadCeiling,
+                ruleSetDirectory: _ruleSetDirectory);
 
             Publish(new WindowsProxySnapshot(
                 WindowsProxyConnectionState.Starting,
@@ -754,13 +792,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 ""));
             connectionStopped = true;
             await StopCoreAsync(ct);
-            await _nativeRelayHost.StartCandidatesAsync(
+            var egressInterface = EgressInterfaceConfig.ResolveOrThrow(_preferredEgressInterface);
+            await _nativeRelayHost.StartCandidatesWithEgressAsync(
                 lease.ForwardId,
                 ResolveUltraBinaryPath(),
                 nativeRelayPort,
                 leases,
                 _runtimeDirectory,
-                ct);
+                ct,
+                egressInterface);
             Directory.CreateDirectory(_runtimeDirectory);
             var configPath = Path.Combine(_runtimeDirectory, $"proxy-{Guid.NewGuid():N}.json");
             try
@@ -964,6 +1004,39 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             await _nativeRelayHost.DisposeAsync();
             _gate.Dispose();
         }
+    }
+
+    private async Task HandleUnexpectedExitAsync(int exitCode)
+    {
+        try { await _gate.WaitAsync().ConfigureAwait(false); }
+        catch (ObjectDisposedException) { return; }
+        WindowsProxySnapshot? lost = null;
+        try
+        {
+            if (_disposed
+                || _snapshot.State != WindowsProxyConnectionState.Connected
+                || _processHost.IsRunning)
+                return;
+            Log.Warning("proxy process exited unexpectedly (exit code {ExitCode}, mode {Mode})", exitCode, _snapshot.Mode);
+            try { await StopCoreAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception exception) { Log.Warning(exception, "cleanup after unexpected proxy exit failed"); }
+            _activeProfileId = 0;
+            lost = _snapshot = _snapshot with
+            {
+                State = WindowsProxyConnectionState.Error,
+                SystemProxyEnabled = false,
+                ProcessProxyEnabled = false,
+                ErrorCode = ProcessLostErrorCode,
+            };
+        }
+        finally
+        {
+            try { _gate.Release(); }
+            catch (ObjectDisposedException) { }
+        }
+        // Outside the gate: subscribers reconnect, which needs the gate again.
+        if (lost is not null)
+            SnapshotChanged?.Invoke(lost);
     }
 
     private async Task StopCoreAsync(CancellationToken ct)
@@ -1170,7 +1243,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
         }
     }
 
-    private static string ErrorCode(Exception exception)
+    private string ErrorCode(Exception exception)
     {
         var code = exception switch
         {
@@ -1180,7 +1253,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
                 => "sing_box_missing",
             FileNotFoundException => "proxy_config_missing",
             KeyNotFoundException => "proxy_profile_not_found",
-            WindowsProxyProcessExitException => "proxy_process_exited",
+            WindowsProxyProcessExitException exit => ClassifyProcessExit(exit.Diagnostics, () => LocalPortFailure.DiagnoseLive(_proxyPort)),
             UnauthorizedAccessException => "permission_required",
             _ => exception.Message,
         };
@@ -1189,5 +1262,33 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable
             .Take(64)
             .ToArray());
         return normalized.Length == 0 ? "proxy_connection_failed" : normalized;
+    }
+
+    public static string ClassifyProcessExit(string diagnostics, Func<string?> livePortCause)
+    {
+        if (diagnostics.Contains("Only one usage", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
+            return livePortCause() ?? LocalPortFailure.InUse;
+        if (diagnostics.Contains("access permissions", StringComparison.OrdinalIgnoreCase))
+            return LocalPortFailure.Reserved;
+        return "proxy_process_exited";
+    }
+
+    /// <summary>
+    /// The code a start failure shows in the banner. Known causes become stable
+    /// codes; anything else keeps its own message so nothing is hidden.
+    /// </summary>
+    public static string FailureCode(Exception exception, Func<string?> livePortCause)
+    {
+        switch (exception)
+        {
+            case WindowsProxyProcessExitException exit:
+                var code = ClassifyProcessExit(exit.Diagnostics, livePortCause);
+                return code == "proxy_process_exited" ? exception.Message : code;
+            case UnauthorizedAccessException:
+                return "permission_required";
+            default:
+                return exception.Message;
+        }
     }
 }

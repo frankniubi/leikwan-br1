@@ -37,7 +37,7 @@
    点击 `Create Forward` 后等待保存和 provisioning 状态更新。
 3. 打开 `/tenant/forwards`。记录自己的 Local Listen Port、Target、Transport 和 Endpoint Status。保存成功不等于应用成功。
 4. 打开 `/tenant/clients`。页面只提供 Linux 安装命令和 Windows installer:
-   - Windows: 选择 `下载 installer`，用户本人在 App 中完成登录。
+   - Windows: 选择 `下载安装包`，用户本人在 App 中完成登录。
    - Linux: 选择 `复制命令`，只在目标 Linux 主机以相当于 root 的权限运行一次；完整命令和其中的 Bearer token 不进入 AI、工单、日志或共享历史。
 5. 回到 `/tenant/clients`，只核对 `最大在线` 的当前值；不要要求用户提供安装次数、client 列表、group、line、provider 或 diagnostics 内容。
 6. 选择真实应用的连接地址:

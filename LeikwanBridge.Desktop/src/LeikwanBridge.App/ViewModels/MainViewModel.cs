@@ -34,6 +34,9 @@ public partial class MainViewModel : ObservableObject
     private bool _proxyServiceInitialized;
     private bool _proxyGameStoreInitialized;
     private WindowsClientAppArtifact? _availableUpdateArtifact;
+    // Last minimum-version policy seen in a pull. Memory only: a restart
+    // starts ungated until the next full pull carries the policy again.
+    private ClientUpdateRequirement _updateRequirement = new(CurrentAppVersion);
     private DispatcherTimer? _usageTimer;
     private readonly RuntimeUsageReader _usageReader = new();
     private readonly CancellationTokenSource _lifecycleCts = new();
@@ -69,7 +72,9 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private bool _isConnected;
     [ObservableProperty] private string _connectionStatus = "Disconnected";
-    [ObservableProperty] private string _lastSyncTime = "Never";
+    [ObservableProperty] private bool _isDeviceLimitReached;
+    [ObservableProperty] private string _deviceLimitMessage = string.Empty;
+    [ObservableProperty] private string _lastSyncTime = GetString("DashNever");
     [ObservableProperty] private int _activeForwardCount;
     [ObservableProperty] private bool _isLoadingForwards = true;
     [ObservableProperty] private string _totalBytesIn = "0 B";
@@ -90,6 +95,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _updateErrorMessage = "";
     [ObservableProperty] private bool _isUpdateInProgress;
     [ObservableProperty] private bool _showUpdateError;
+    [ObservableProperty] private bool _isUpdateRequired;
+    [ObservableProperty] private string _requiredUpdateMinimumVersion = "";
     [ObservableProperty] private ForwardViewModel? _selectedForward;
     [ObservableProperty] private WindowsProxySnapshot _proxySnapshot = WindowsProxySnapshot.Disconnected;
     [ObservableProperty] private string _selectedProxyGameId = "";
@@ -125,19 +132,83 @@ public partial class MainViewModel : ObservableObject
     public WindowsProxyEditorViewModel ProxyEditor { get; } = new();
 
     public string SelectedProxyGameDisplayName => _selectedProxyGameDisplayName;
-    public bool IsForwardPairingView => string.Equals(CurrentView, "Forwards", StringComparison.OrdinalIgnoreCase);
-
     partial void OnCurrentViewChanged(string value)
-        => OnPropertyChanged(nameof(IsForwardPairingView));
+    {
+        if (string.Equals(value, "Dashboard", StringComparison.OrdinalIgnoreCase))
+            _ = RefreshAccessPolicyAsync();
+    }
 
-    partial void OnShowUpdatePromptChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+    partial void OnShowUpdatePromptChanged(bool value) => NotifyUpdateOverlayState();
 
-    partial void OnShowUpdateErrorChanged(bool value)
-        => OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+    partial void OnShowUpdateErrorChanged(bool value) => NotifyUpdateOverlayState();
 
-    /// <summary>Shows the overlay for both the update prompt and failures.</summary>
-    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError;
+    partial void OnIsUpdateRequiredChanged(bool value) => NotifyUpdateOverlayState();
+
+    partial void OnIsUpdateInProgressChanged(bool value) => NotifyUpdateOverlayState();
+
+    private void NotifyUpdateOverlayState()
+    {
+        OnPropertyChanged(nameof(IsUpdateOverlayVisible));
+        OnPropertyChanged(nameof(IsOptionalUpdateTitleVisible));
+        OnPropertyChanged(nameof(CanDeferUpdate));
+        OnPropertyChanged(nameof(CanDismissUpdateError));
+        OnPropertyChanged(nameof(IsUpdateRetryVisible));
+        OnPropertyChanged(nameof(IsRequiredUpdateUnavailable));
+    }
+
+    /// <summary>
+    /// Shows the overlay for the update prompt, failures and - without any
+    /// way to close it - while the panel's minimum version is not met.
+    /// </summary>
+    public bool IsUpdateOverlayVisible => ShowUpdatePrompt || ShowUpdateError || IsUpdateRequired;
+
+    /// <summary>"Update available" title; the required title replaces it while gated.</summary>
+    public bool IsOptionalUpdateTitleVisible => ShowUpdatePrompt && !IsUpdateRequired;
+
+    /// <summary>A required update can only be installed, never deferred.</summary>
+    public bool CanDeferUpdate => ShowUpdatePrompt && !IsUpdateRequired;
+
+    /// <summary>A failed required update keeps the overlay up with Retry only.</summary>
+    public bool CanDismissUpdateError => ShowUpdateError && !IsUpdateRequired;
+
+    /// <summary>
+    /// Retry after a failure, and also while gated without an installable
+    /// update (manifest unreachable or not yet newer) - then it re-checks.
+    /// </summary>
+    public bool IsUpdateRetryVisible
+        => ShowUpdateError || (IsUpdateRequired && !ShowUpdatePrompt && !IsUpdateInProgress);
+
+    /// <summary>Gated, but no installer is known yet and nothing is running.</summary>
+    public bool IsRequiredUpdateUnavailable
+        => IsUpdateRequired && !ShowUpdatePrompt && !ShowUpdateError && !IsUpdateInProgress;
+
+    /// <summary>
+    /// Applies the <c>client_update</c> policy of a full config pull. A null
+    /// policy (the pull carried none) keeps the remembered one; the gate only
+    /// changes when a pull states a new minimum. Never touches the tunnel.
+    /// </summary>
+    public void ApplyClientUpdatePolicy(ClientUpdatePolicy? policy)
+    {
+        if (!_updateRequirement.Observe(policy))
+            return;
+        RequiredUpdateMinimumVersion = _updateRequirement.MinimumVersion;
+        IsUpdateRequired = _updateRequirement.IsRequired;
+        if (IsUpdateRequired)
+        {
+            Log.Warning(
+                "client update required (current={Current}, minimum={Minimum})",
+                _updateRequirement.CurrentVersion,
+                _updateRequirement.MinimumVersion);
+        }
+    }
+
+    /// <summary>Tests pin the running version the gate compares against.</summary>
+    public void ConfigureClientUpdateGateForTests(string currentVersion)
+    {
+        _updateRequirement = new ClientUpdateRequirement(currentVersion);
+        RequiredUpdateMinimumVersion = string.Empty;
+        IsUpdateRequired = false;
+    }
 
     /// <summary>
     /// Injected by MainWindow so the retry button can re-run the failed
@@ -158,6 +229,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void DismissUpdateError()
     {
+        if (IsUpdateRequired)
+            return;
         ShowUpdateError = false;
         UpdateErrorMessage = string.Empty;
     }
@@ -172,6 +245,7 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedProxyPairedForwardNode));
         OnPropertyChanged(nameof(IsProxyReadyForSelectedPairedForward));
         OnPropertyChanged(nameof(IsProxyConnectedForSelectedPairedForward));
+        NotifyDashboardServiceChanged();
     }
 
     public bool IsProxyConnected => ProxySnapshot.State == WindowsProxyConnectionState.Connected;
@@ -208,6 +282,16 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _config = new AgentConfig();
+        Forwards.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(ForwardCount));
+            OnPropertyChanged(nameof(SpeedLimitText));
+        };
+        ProxyProfiles.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HostedNodeCount));
+            OnPropertyChanged(nameof(LocalNodeCount));
+        };
     }
 
     partial void OnSelectedProxyGameIdChanged(string value)
@@ -321,8 +405,11 @@ public partial class MainViewModel : ObservableObject
                 proxyPort: _config.GetEffectiveProxyPort(),
                 tunMtu: _config.GetEffectiveProxyTunMtu(),
                 tunStack: _config.GetEffectiveProxyTunStack(),
-                chinaIpListPath: _config.GetEffectiveProxyChinaIpList());
+                chinaIpListPath: _config.GetEffectiveProxyChinaIpList(),
+                preferredEgressInterface: _config.PreferredEgressInterface,
+                ruleSetDirectory: _config.GetEffectiveProxyRuleSetDirectory());
             _proxyService.SnapshotChanged += HandleProxySnapshotChanged;
+            CreateNodeSync(stateDir);
         }
 
         if (_proxyServiceInitialized)
@@ -345,6 +432,8 @@ public partial class MainViewModel : ObservableObject
         _proxyServiceInitialized = true;
         RefreshProxyProfiles();
         RefreshProxyGameOptions();
+        if (_nodeSync is not null)
+            await _nodeSync.InitializeAsync(ct);
     }
 
     public void SetProxyPort(int proxyPort)
@@ -353,6 +442,12 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_port_invalid");
         _proxyService?.SetProxyPort(proxyPort);
         _config.ProxyPort = proxyPort;
+    }
+
+    public void SetPreferredEgressInterface(string? interfaceName)
+    {
+        _config.PreferredEgressInterface = interfaceName?.Trim() ?? string.Empty;
+        _proxyService?.SetPreferredEgressInterface(_config.PreferredEgressInterface);
     }
 
     public void RefreshProxyProfiles()
@@ -390,6 +485,7 @@ public partial class MainViewModel : ObservableObject
 
         if (SelectedProxyForwardId == forwardId)
             SelectedProxyProfileId = profileId;
+        PushPairingInBackground(forwardId, profileId);
         OnPropertyChanged(nameof(PairedProxyForwardRows));
         OnPropertyChanged(nameof(PairedProxyForwardOptions));
         NotifySelectedProxyPairingStateChanged();
@@ -407,9 +503,14 @@ public partial class MainViewModel : ObservableObject
             throw new InvalidOperationException("proxy_forward_required");
         SelectedProxyForwardId = forwardId;
         SetProxyProfileForForward(forwardId, profileId);
-        await StartProxyAsync(WindowsProxyMode.Http, profileId, ct: ct);
+        await StartProxyAsync(ChosenProxyMode, profileId, ct: ct);
         RefreshProxyForwardRows();
     }
+
+    public WindowsProxyMode ChosenProxyMode
+        => _config.ProxyModeChosen
+            && Enum.TryParse<WindowsProxyMode>(_config.ProxyActiveMode, ignoreCase: true, out var mode)
+            ? mode : WindowsProxyMode.Http;
 
     public async Task StopProxyForForwardAsync(int forwardId, CancellationToken ct = default)
     {
@@ -672,7 +773,19 @@ public partial class MainViewModel : ObservableObject
         var profile = ProxyEditor.ToProfile();
         if (string.IsNullOrWhiteSpace(profile.Name))
             profile.Name = $"{profile.Server}:{profile.Port}";
-        await _proxyService!.SaveProfileAsync(profile, ct);
+        if (profile.IsHosted && _nodeSync is not null)
+        {
+            // A hosted node is the panel's copy: the edit goes to the panel first and this
+            // device applies the listing it returns (every device of the client converges).
+            var node = Core.Nodes.WindowsProxyProfileNodeRepository.ToNode(profile)
+                ?? throw new InvalidOperationException("node_protocol_unsupported");
+            Core.Services.WindowsProxyConfigBuilder.BuildProxyOutbound(profile);
+            await _nodeSync.SaveAsync(node, ct);
+        }
+        else
+        {
+            await _proxyService!.SaveProfileAsync(profile, ct);
+        }
         _config.ProxyActiveProfileId = profile.Id;
         if (SelectedProxyForwardId > 0)
             _config.ProxyProfileIdsByForwardId[SelectedProxyForwardId] = profile.Id;
@@ -688,7 +801,10 @@ public partial class MainViewModel : ObservableObject
         await EnsureProxyServiceAsync(ct);
         if (_proxyForwardProfileId == profileId)
             await StopProxyAsync(ct);
-        await _proxyService!.DeleteProfileAsync(profileId, ct);
+        if (_nodeSync is not null && _proxyService!.Profiles.Any(profile => profile.Id == profileId && profile.IsHosted))
+            await _nodeSync.DeleteAsync(profileId, ct); // deletes it on the panel, i.e. for every device
+        else
+            await _proxyService!.DeleteProfileAsync(profileId, ct);
         foreach (var forwardId in _config.ProxyProfileIdsByForwardId
             .Where(pair => pair.Value == profileId).Select(pair => pair.Key).ToList())
             _config.ProxyProfileIdsByForwardId.Remove(forwardId);
@@ -703,6 +819,7 @@ public partial class MainViewModel : ObservableObject
         string? selectedGameId = null,
         CancellationToken ct = default)
     {
+        ForgetProxySession();
         if (profileId <= 0)
             throw new InvalidOperationException("proxy_saved_profile_required");
         await EnsureProxyServiceAsync(ct);
@@ -746,6 +863,8 @@ public partial class MainViewModel : ObservableObject
         _config.ProxyActiveProfileId = profileId;
         _config.ProxyActiveMode = mode.ToString();
         SelectedProxyGameId = !profile.IsExternal && mode == WindowsProxyMode.Process ? game!.Id : string.Empty;
+        RememberProxySession(new ProxyRecoverySession(
+            false, mode, forward.ForwardId, profileId, SelectedProxyGameId, "global", false, false));
     }
 
     public async Task StartNativeOutboundAsync(
@@ -757,6 +876,7 @@ public partial class MainViewModel : ObservableObject
         bool? unrestrictedRoute = null,
         CancellationToken ct = default)
     {
+        ForgetProxySession();
         await EnsureProxyServiceAsync(ct);
         var capability = NativeOutboundCapability;
         if (capability is not { Enabled: true })
@@ -828,6 +948,8 @@ public partial class MainViewModel : ObservableObject
                 ? _config.GetEffectiveProxyDnsServers()
                 : null);
         StartNativeLeaseRenewalLoop();
+        RememberProxySession(new ProxyRecoverySession(
+            true, mode, forwardId, 0, _nativeActiveGameId, normalizedScope, effectiveBypassChina, useUnrestrictedRoute));
         AddLog($"Started {WindowsProxyConnectionService.NativeOutboundDisplayName} ({normalizedScope}).");
     }
 
@@ -875,6 +997,7 @@ public partial class MainViewModel : ObservableObject
 
     private async Task StopProxyAsync(string reason, CancellationToken ct)
     {
+        ForgetProxySession();
         CancelProxyForwardStart();
         await _proxyForwardGate.WaitAsync(ct);
         try
@@ -1048,6 +1171,7 @@ public partial class MainViewModel : ObservableObject
             polling.SyncError -= OnSyncError;
             if (_clientUpdatedHandler is not null)
                 polling.ClientUpdated -= _clientUpdatedHandler;
+            polling.ClientUpdatePolicyReceived -= OnClientUpdatePolicyReceived;
         }
         _clientUpdatedHandler = null;
         if (health is not null)
@@ -1154,6 +1278,8 @@ public partial class MainViewModel : ObservableObject
             NotifySelectedProxyPairingStateChanged();
             if (snapshot.State == WindowsProxyConnectionState.Error)
                 AddLog($"Proxy error: {snapshot.ErrorCode}");
+            if (IsProxyLostError(snapshot))
+                StartProxyRecovery();
         });
     }
 
@@ -1302,6 +1428,7 @@ public partial class MainViewModel : ObservableObject
         _availableUpdateArtifact = artifact;
         AvailableUpdateVersion = artifact.Version;
         ShowUpdatePrompt = true;
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusAvailable"), artifact.Version);
         ReportUpdateFinished();
     }
 
@@ -1313,14 +1440,26 @@ public partial class MainViewModel : ObservableObject
         _config.PendingUpdateDownloadedAt = DateTimeOffset.UtcNow.ToString("O");
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusDeferred"), version);
         ReportUpdateFinished();
     }
 
     public void ReportNoUpdateAvailableForTests(string version)
     {
+        if (IsUpdateRequired)
+        {
+            // The manifest offers nothing newer than this build yet; stay
+            // gated with Retry rather than claiming the client is current.
+            ShowUpdatePrompt = false;
+            AvailableUpdateVersion = string.Empty;
+            UpdateCheckStatus = GetString("UpdateRequiredUnavailable");
+            ReportUpdateFinished();
+            return;
+        }
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Already up to date ({version}).";
+        UpdateCheckStatus = string.Format(GetString("UpdateStatusLatest"), version);
         ReportUpdateFinished();
     }
 
@@ -1329,6 +1468,7 @@ public partial class MainViewModel : ObservableObject
         ShowUpdatePrompt = false;
         AvailableUpdateVersion = string.Empty;
         ConnectionStatus = $"Update check failed: {message}";
+        UpdateCheckStatus = GetString("UpdateStatusFailed");
         ReportUpdateFailed(message);
     }
 
@@ -1385,12 +1525,14 @@ public partial class MainViewModel : ObservableObject
             _config.AgentToken,
             MasterApiClient.BuildWindowsDeviceId(_config.ActiveClientId > 0 ? _config.ActiveClientId : _config.ClientId, Environment.MachineName),
             $"Leikwan Bridge on {Environment.MachineName}",
-            "windows-desktop");
+            "windows-desktop",
+            leaseKeyStore: UltraLeaseKeyStore.ForDirectory(_config.GetEffectiveStateDir()));
 
         var ok = await _api.TestConnectionAsync(ct);
         ct.ThrowIfCancellationRequested();
         ThrowIfShuttingDown();
-        if (!ok)
+        var deviceLimit = ok ? null : _api.LastDeviceLimit;
+        if (!ok && deviceLimit is null)
         {
             ConnectionStatus = string.IsNullOrWhiteSpace(_api.LastErrorMessage)
                 ? GetString("DashDisconnected")
@@ -1401,7 +1543,20 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsConnected = true;
-        ConnectionStatus = GetString("DashConnected");
+        _ = RefreshAccessPolicyAsync(ct);
+        if (deviceLimit is null)
+        {
+            ClearDeviceLimit();
+            ConnectionStatus = GetString("DashConnected");
+        }
+        else
+        {
+            // The token is valid; the panel only refuses this device while the
+            // client's online device limit is full. Start the session anyway:
+            // the polling loop retries on its steady cadence and the banner
+            // stays until a pull is admitted.
+            ShowDeviceLimit(deviceLimit);
+        }
         ShowSetupWizard = false;
 
         // Initialize services
@@ -1443,8 +1598,10 @@ public partial class MainViewModel : ObservableObject
             if (IsShuttingDown || _diagnostics is null || _api is null)
                 return;
             _diagnostics.QueueDebugLogUpload(client, _api, _lifecycleCts.Token);
+            _ = SyncHostedNodesIfChangedAsync(client.HostedNodesRevision, _lifecycleCts.Token);
         };
         _pollingService.ClientUpdated += _clientUpdatedHandler;
+        _pollingService.ClientUpdatePolicyReceived += OnClientUpdatePolicyReceived;
         _healthCheckService.HealthIssue += OnHealthIssue;
 
         var installRoot = AppDefaults.GetInstallRoot();
@@ -1470,8 +1627,10 @@ public partial class MainViewModel : ObservableObject
         _runtimeManager?.StopAll();
         _api?.Dispose();
         _api = null;
+        ResetAccessPolicyState();
         _diagnostics = null;
         IsConnected = false;
+        ClearDeviceLimit();
         NativeOutboundCapability = null;
         _nativeActiveForwardId = 0;
         _nativeActiveRouteScope = "global";
@@ -1483,7 +1642,13 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NavigateTo(string view) => CurrentView = view;
+    private void NavigateTo(string view)
+        => CurrentView = IsServicesViewId(view) ? "Proxy" : view;
+
+    /// <summary>The services and nodes section lives on the connect page. The old view ids still open that page.</summary>
+    private static bool IsServicesViewId(string view)
+        => string.Equals(view, "Nodes", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(view, "Forwards", StringComparison.OrdinalIgnoreCase);
 
     [RelayCommand]
     private void SelectForward(ForwardViewModel? forward)
@@ -1492,7 +1657,7 @@ public partial class MainViewModel : ObservableObject
             return;
 
         SelectedForward = forward;
-        CurrentView = "Forwards";
+        CurrentView = "Proxy";
     }
 
     /// <summary>
@@ -1597,7 +1762,11 @@ public partial class MainViewModel : ObservableObject
     public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;
     public int ForwardCount => Forwards.Count;
 
-    public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning, StateManager? stateManager = null)
+    public void ApplyForwardSnapshot(
+        IEnumerable<ForwardConfig> forwards,
+        Func<int, bool> isRunning,
+        StateManager? stateManager = null,
+        Func<int, string?>? startFailure = null)
     {
         IsLoadingForwards = false;
         var snapshot = forwards.ToList();
@@ -1612,7 +1781,7 @@ public partial class MainViewModel : ObservableObject
             var busy = _busyForwards.Contains(forward.ForwardId);
             var userStopped = applied.TryGetValue(forward.ForwardId.ToString(), out var appliedState) && appliedState!.UserStopped;
             var degraded = HasDegradedLeg(qualityStateManager, forward);
-            var vm = new ForwardViewModel(forward, BuildSummary(forward, running, busy, userStopped, degraded));
+            var vm = new ForwardViewModel(forward, BuildSummary(forward, running, busy, userStopped, degraded, startFailure?.Invoke(forward.ForwardId)));
             Forwards.Add(vm);
             ConnectionQualityForwards.Add(BuildConnectionQuality(forward, running, qualityStateManager));
         }
@@ -1622,7 +1791,7 @@ public partial class MainViewModel : ObservableObject
         ActiveForwardCount = Forwards.Count;
     }
 
-    private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded)
+    private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded, string? startFailure)
     {
         var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(forward);
         var lifecycle = busy ? ForwardLifecycleState.Connecting
@@ -1634,7 +1803,7 @@ public partial class MainViewModel : ObservableObject
             : degraded ? ForwardQualityState.Degraded
             : ForwardQualityState.Good;
 
-        var friendly = lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "";
+        var friendly = FriendlyForwardMessage(lifecycle, startFailure);
 
         return new ForwardSummary(
             forward.ForwardId,
@@ -1657,7 +1826,7 @@ public partial class MainViewModel : ObservableObject
         var direction = string.IsNullOrWhiteSpace(forward.ForwardCombinationDirection)
             ? "-"
             : forward.ForwardCombinationDirection.Trim();
-        return $"Forward #{forward.ForwardId} · {direction}";
+        return $"{GetStringOr("ForwardNumberPrefix", "Forward #")}{forward.ForwardId} · {direction}";
     }
 
     private void SetLifecycle(int forwardId, ForwardLifecycleState lifecycle)
@@ -1675,7 +1844,7 @@ public partial class MainViewModel : ObservableObject
             lifecycle,
             running ? ForwardQualityState.Good : ForwardQualityState.Unavailable,
             running ? ForwardQualityState.Good.ToString() : ForwardQualityState.Unavailable.ToString(),
-            lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "",
+            FriendlyForwardMessage(lifecycle, _runtimeManager?.GetLastStartFailure(forwardId)),
             busy,
             CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
             CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
@@ -1858,7 +2027,10 @@ public partial class MainViewModel : ObservableObject
 
         InvokeOnUiThread(() =>
         {
-            ApplyForwardSnapshot(forwards, forwardId => _runtimeManager?.IsForwardRunning(forwardId) == true);
+            ApplyForwardSnapshot(
+                forwards,
+                forwardId => _runtimeManager?.IsForwardRunning(forwardId) == true,
+                startFailure: forwardId => _runtimeManager?.GetLastStartFailure(forwardId));
             _healthCheckService?.UpdateForwards(forwards);
         });
 
@@ -1956,6 +2128,13 @@ public partial class MainViewModel : ObservableObject
             Log.Information("live TUN MTU applied mtu={Mtu}", mtu);
             InvokeOnUiThread(() => AddLog($"TUN MTU updated to {mtu} to match the measured path."));
         }
+    }
+
+    private void OnClientUpdatePolicyReceived(ClientUpdatePolicy? policy)
+    {
+        if (IsShuttingDown)
+            return;
+        InvokeOnUiThread(() => ApplyClientUpdatePolicy(policy));
     }
 
     private void OnNativeOutboundUpdated(NativeOutboundCapability? capability)
@@ -2090,7 +2269,9 @@ public partial class MainViewModel : ObservableObject
             // 16 second poll and a fresh candidate batch per forward.
             var expiresAt = proxyService.ActiveNativeLeaseExpiresAt ?? _nativeLeaseBatchExpiresAt;
             var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
+            var quotaLow = dataPlaneRunning && _proxyService.IsNativeQuotaLow();
             if (expiresAt is not null
+                && !quotaLow
                 && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 
@@ -2226,6 +2407,7 @@ public partial class MainViewModel : ObservableObject
     {
         TotalBytesIn = FormatBytes(snapshot.BytesIn);
         TotalBytesOut = FormatBytes(snapshot.BytesOut);
+        SampleUsage(snapshot);
     }
 
     private void StartUsageRefresh()
@@ -2297,10 +2479,13 @@ public partial class MainViewModel : ObservableObject
         {
             LastSyncTime = state.LastSuccessAt > 0
                 ? DateTimeOffset.FromUnixTimeSeconds((long)state.LastSuccessAt).LocalDateTime.ToString("HH:mm:ss")
-                : "Never";
+                : GetString("DashNever");
 
             if (string.Equals(state.Status, "ok", StringComparison.OrdinalIgnoreCase))
             {
+                if (IsDeviceLimitReached)
+                    AddLog("Device limit cleared; this device is connected again.");
+                ClearDeviceLimit();
                 ConnectionStatus = GetString("DashConnected");
             }
         });
@@ -2311,9 +2496,45 @@ public partial class MainViewModel : ObservableObject
         InvokeOnUiThread(() =>
         {
             IsLoadingForwards = false;
+            if (DeviceLimitReachedException.TryFind(ex, out var limit))
+            {
+                // Not a network error: keep the explanation up until a pull
+                // is admitted, and log only when the state first appears.
+                if (!IsDeviceLimitReached)
+                    AddLog($"Sync refused: {limit.Message}");
+                ShowDeviceLimit(limit);
+                return;
+            }
             ConnectionStatus = $"Error: {ex.Message}";
             AddLog($"Sync error: {ex.Message}");
         });
+    }
+
+    private void ShowDeviceLimit(DeviceLimitReachedException limit)
+    {
+        DeviceLimitMessage = FormatDeviceLimitMessage(limit);
+        IsDeviceLimitReached = true;
+        ConnectionStatus = GetString("DeviceLimitStatus");
+    }
+
+    private void ClearDeviceLimit()
+    {
+        IsDeviceLimitReached = false;
+        DeviceLimitMessage = string.Empty;
+    }
+
+    /// <summary>
+    /// Localized explanation for a device refused by the client's online
+    /// device limit; the counts are omitted when the panel did not send them.
+    /// </summary>
+    public static string FormatDeviceLimitMessage(DeviceLimitReachedException limit)
+    {
+        var key = limit.HasCounts ? "DeviceLimitReachedWithCounts" : "DeviceLimitReachedMessage";
+        if (System.Windows.Application.Current?.TryFindResource(key) is not string template)
+            return limit.Message;
+        return limit.HasCounts
+            ? string.Format(System.Globalization.CultureInfo.CurrentCulture, template, limit.ActiveOnlineDevices, limit.OnlineDeviceLimit)
+            : template;
     }
 
     private void OnHealthIssue(int forwardId, string issue)
@@ -2327,15 +2548,41 @@ public partial class MainViewModel : ObservableObject
     {
         if (IsShuttingDown)
             return;
+        // Native helper output is verbose by nature. Keep it out of the
+        // Activity view unless the user explicitly enables Debug.
+        if (!DesktopLogLevel.IsDebug(_config.LogLevel))
+            return;
         InvokeOnUiThread(() => AddLog($"[fwd-{forwardId}/{label}] {line}"));
     }
 
     private void AddLog(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        var entry = $"[{DateTime.Now:HH:mm:ss}] {LogPrivacy.Redact(message)}";
         LogEntries.Add(entry);
         while (LogEntries.Count > 5000)
             LogEntries.RemoveAt(0);
+    }
+
+    private static string GetStringOr(string key, string fallback)
+        => System.Windows.Application.Current?.TryFindResource(key) as string ?? fallback;
+
+    /// <summary>
+    /// Message for a row that is not running. A failed start names its local cause
+    /// (for example a port held by another program) instead of a bare "Unavailable".
+    /// The raw code is the fallback when no resource is loaded.
+    /// </summary>
+    private static string FriendlyForwardMessage(ForwardLifecycleState lifecycle, string? startFailure)
+    {
+        if (lifecycle != ForwardLifecycleState.Unavailable)
+            return string.Empty;
+        return startFailure switch
+        {
+            LocalPortFailure.InUse => GetStringOr("ProxyErrLocalPortInUse", LocalPortFailure.InUse),
+            LocalPortFailure.HeldBySystem => GetStringOr("ProxyErrLocalPortHeldBySystem", LocalPortFailure.HeldBySystem),
+            LocalPortFailure.Reserved => GetStringOr("ProxyErrLocalPortReserved", LocalPortFailure.Reserved),
+            "permission_required" => GetStringOr("ProxyErrPermissionRequired", "permission_required"),
+            _ => "Unavailable",
+        };
     }
 
     private static string GetString(string key)

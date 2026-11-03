@@ -55,4 +55,31 @@ class PrepareBundleTests(unittest.TestCase):
             self.assertFalse(any('--deep' in command and '--sign' in command for command in commands))
 
 
+    def test_preserved_signed_helper_is_not_resigned(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = Path(d) / 'Test.app'; contents = app / 'Contents'
+            helpers = contents / 'Resources/bin'; helpers.mkdir(parents=True)
+            (contents / 'MacOS').mkdir()
+            main = contents / 'MacOS/LeikwanBridge.Mac'
+            reused = helpers / 'ultra-client'; fresh = helpers / 'sing-box'
+            for p in (main, reused, fresh): p.write_bytes(struct.pack('<II', 0xfeedfacf, 0x100000c) + bytes(24))
+            fresh.write_bytes(fresh.read_bytes() + b'fresh')
+            (contents / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable':'LeikwanBridge.Mac'}))
+            (contents / 'Resources/helper-manifest.json').write_text(json.dumps({'architecture':'arm64','helpers':[
+                {'name':'ultra-client','path':'bin/ultra-client','sha256':'old','size_bytes':1},
+                {'name':'sing-box','path':'bin/sing-box','sha256':'old','size_bytes':1}]}))
+            reused_before = module.digest(reused)
+            def run(args, **kwargs):
+                if '--sign' in args and Path(args[-1]).is_file():
+                    p=Path(args[-1]);p.write_bytes(p.read_bytes()+b'signed')
+                return type('R', (), {'returncode': 0, 'stdout': ''})()
+            with patch.dict(module.os.environ, {'LEIKWAN_PRESERVE_SIGNED_SHA256': ' ' + reused_before.upper() + ' ,'}), \
+                 patch.object(module,'clean_metadata'), patch.object(module.subprocess,'run',side_effect=run):
+                module.seal(app)
+            self.assertEqual(reused_before, module.digest(reused))
+            self.assertTrue(fresh.read_bytes().endswith(b'signed'))
+            recorded = {h['name']: h['sha256'] for h in json.loads((contents / 'Resources/helper-manifest.json').read_text())['helpers']}
+            self.assertEqual(reused_before, recorded['ultra-client'])
+
+
 if __name__ == '__main__': unittest.main()

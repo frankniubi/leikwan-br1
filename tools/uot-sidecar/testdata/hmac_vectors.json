@@ -1,0 +1,32 @@
+[
+  {
+    "secret": "4f1c9a7e2b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+    "forward_id": 170,
+    "target": "203.0.113.10:5201",
+    "token": "hmac-sha256:50bcbb67301f6f954530e83830e9178976bfb397206d5e1ed52cc58fb4a7441e"
+  },
+  {
+    "secret": "4f1c9a7e2b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+    "forward_id": 171,
+    "target": "[2001:DB8:0:0::0001]:443",
+    "token": "hmac-sha256:3d2ed38112c53e8ad5360a7772ed2c547955e2df5353a36bfaed58f37b999212"
+  },
+  {
+    "secret": "4f1c9a7e2b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+    "forward_id": 172,
+    "target": "Relay.Example.COM:8443",
+    "token": "hmac-sha256:1adbdc790b7c1f9f8b98da1952afdba035154d3ebb5ebc7f71d180c5537b3bd8"
+  },
+  {
+    "secret": "4f1c9a7e2b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+    "forward_id": 9,
+    "target": "  198.51.100.7:9000  ",
+    "token": "hmac-sha256:e8e7e07b4acaadb8541f1cc7fc84bb8b1a7de2846dd90c1eb7a66a5902e1c37f"
+  },
+  {
+    "secret": "4f1c9a7e2b3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8",
+    "forward_id": 1234567,
+    "target": "[::ffff:192.0.2.1]:53",
+    "token": "hmac-sha256:14e8e8787530fb20c40473177ec2dfcbf98e6fdf2b3a45e034229891f57235d7"
+  }
+]

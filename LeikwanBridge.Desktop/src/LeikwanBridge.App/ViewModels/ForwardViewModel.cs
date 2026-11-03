@@ -15,6 +15,12 @@ public partial class ForwardViewModel : ObservableObject
     public int ForwardId => Summary.ForwardId;
     public string DisplayName => Summary.DisplayName;
 
+    /// <summary>The forwarded target's address (IP or host name), for the dashboard card.</summary>
+    public string TargetAddress => ForwardTarget.Split(Config?.Target).Address;
+
+    /// <summary>The forwarded target's port, for the dashboard card.</summary>
+    public string TargetPort => ForwardTarget.Split(Config?.Target).Port;
+
     public ForwardConfig? Config { get; }
 
     public ForwardViewModel(ForwardConfig config, ForwardSummary summary)

@@ -720,7 +720,7 @@ func TestServeUDPPrewarmsAssociationBeforeFirstClientPacket(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -783,7 +783,7 @@ func TestServeUDPUntanglesLocalShadowsocksEnvelope(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, UDPQueuePackets: 2, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -843,7 +843,7 @@ func TestServeUDPProtocolKeepaliveUsesReservedEnvelope(t *testing.T) {
 		UDPKeepaliveIntervalSecs: 5, ConnectTimeoutSecs: 1,
 	}
 	store := testUDPStore(t, config, provider)
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -993,7 +993,7 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 	if err := store.Replace(policy, lease); err != nil {
 		t.Fatal(err)
 	}
-	status := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
+	status := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), config.ForwardID, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
@@ -1067,14 +1067,32 @@ func TestServeUDPDoesNotBlockNewClientWhileAnotherAssociationArms(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	burstDeadline := time.Now().Add(3 * time.Second)
+	// 128 associations arm concurrently; a loaded 2-vCPU runner needs several seconds.
+	burstDeadline := time.Now().Add(10 * time.Second)
 	for index, client := range burst {
-		_ = client.SetReadDeadline(burstDeadline)
-		count, _, err := client.ReadFromUDP(response)
+		// UDP may drop a datagram on a loaded runner, so resend like a real client
+		// would; a runtime that blocks new clients still misses the deadline.
+		wantBurst := []byte(fmt.Sprintf("burst-%03d", index))
+		var count int
+		var err error
+		for {
+			wait := time.Now().Add(500 * time.Millisecond)
+			if wait.After(burstDeadline) {
+				wait = burstDeadline
+			}
+			_ = client.SetReadDeadline(wait)
+			count, _, err = client.ReadFromUDP(response)
+			var timeout net.Error
+			if err == nil || !errors.As(err, &timeout) || !timeout.Timeout() || !time.Now().Before(burstDeadline) {
+				break
+			}
+			if _, writeErr := client.WriteToUDP(wantBurst, destination); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
 		if err != nil {
 			t.Fatalf("burst client %d did not receive a response: %v", index, err)
 		}
-		wantBurst := []byte(fmt.Sprintf("burst-%03d", index))
 		if !bytes.Equal(response[:count], wantBurst) {
 			t.Fatalf("burst client %d response = %q, want %q", index, response[:count], wantBurst)
 		}
@@ -1107,7 +1125,7 @@ func TestResolveUDPLimits(t *testing.T) {
 		associations int
 		workers      int
 	}{
-		{name: "defaults", queue: 256, associations: 1024, workers: 64},
+		{name: "defaults", queue: 1024, associations: 1024, workers: 64},
 		{
 			name: "configured",
 			config: Config{
@@ -1123,7 +1141,7 @@ func TestResolveUDPLimits(t *testing.T) {
 				UDPMaxAssociations: 16,
 				UDPSetupWorkers:    64,
 			},
-			queue: 256, associations: 16, workers: 16,
+			queue: 1024, associations: 16, workers: 16,
 		},
 	}
 	for _, test := range tests {

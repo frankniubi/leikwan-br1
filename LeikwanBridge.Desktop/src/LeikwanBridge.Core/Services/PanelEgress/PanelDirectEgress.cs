@@ -55,6 +55,9 @@ public static class PanelDirectEgress
 
     public static Task RefreshAsync(CancellationToken ct = default) => Engine.RefreshAsync(ct);
 
+    public static void SetPreferredInterface(string? interfaceName)
+        => Engine.SetPreferredInterface(interfaceName);
+
     /// <summary>
     /// Subscribes network-address changes with a debounced route refresh.
     /// Idempotent; call once at application startup.

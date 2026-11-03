@@ -18,7 +18,10 @@ final class PrecisionGridUi
         $html = '';
         foreach ($groups as $group => $groupItems) {
             $html .= '<section class="pg-nav-section" data-nav-group="' . self::escape($group) . '">';
-            $html .= '<h2 class="pg-nav-heading">' . self::escape($group) . '</h2><nav class="pg-nav-list">';
+            if ($group !== '') {
+                $html .= '<h2 class="pg-nav-heading">' . self::escape($group) . '</h2>';
+            }
+            $html .= '<nav class="pg-nav-list">';
             foreach ($groupItems as $item) {
                 $active = !empty($item['active']);
                 $html .= '<a class="nav-link' . ($active ? ' active' : '') . '" href="'
@@ -33,8 +36,13 @@ final class PrecisionGridUi
 
     public static function pageHeader(string $eyebrow, string $title, string $actionsHtml = '', string $statusHtml = ''): string
     {
-        return '<header class="pg-page-header"><div><div class="pg-eyebrow">' . self::escape($eyebrow)
-            . '</div><h1>' . self::escape($title) . '</h1>' . $statusHtml . '</div>'
+        // The eyebrow names the navigation group; it only adds information
+        // when it differs from the page title.
+        $eyebrowHtml = trim($eyebrow) !== '' && trim($eyebrow) !== trim($title)
+            ? '<div class="pg-eyebrow">' . self::escape($eyebrow) . '</div>'
+            : '';
+        return '<header class="pg-page-header"><div>' . $eyebrowHtml
+            . '<h1>' . self::escape($title) . '</h1>' . $statusHtml . '</div>'
             . ($actionsHtml !== '' ? '<div class="pg-header-actions">' . $actionsHtml . '</div>' : '') . '</header>';
     }
 

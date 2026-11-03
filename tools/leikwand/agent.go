@@ -21,12 +21,18 @@ type runtimeState struct {
 	contract string
 	policy   *UltraPolicy
 
-	leaseExpiry   time.Time
-	leaseIDs      []string
-	candidates    int
-	lastLeaseAt   time.Time
-	leaseFailures int
-	lastLeaseErr  string
+	leaseExpiry time.Time
+	// graceUntil is set while the runtime is serving the installed grant past
+	// its Panel expiry because the Panel could not be reached to renew it. Zero
+	// means the runtime holds no grace.
+	graceUntil time.Time
+	// renewNotBefore holds renewals back until the grant can be renewed.
+	renewNotBefore time.Time
+	leaseIDs       []string
+	candidates     int
+	lastLeaseAt    time.Time
+	leaseFailures  int
+	lastLeaseErr   string
 
 	status       *RuntimeStatus
 	statusAt     time.Time
@@ -59,14 +65,42 @@ type Agent struct {
 	deviceNm string
 	log      *Logger
 
-	mu          sync.Mutex
-	runtimes    map[int]*runtimeState
-	forwards    map[int]ForwardConfig
-	nativeCap   *NativeOutboundCapability
-	lastPullAt  time.Time
-	lastPullErr string
-	clientMeta  ClientMeta
-	diagToken   string
+	mu       sync.Mutex
+	runtimes map[int]*runtimeState
+	// panelStopped holds forwards the Panel stopped out of band, keyed to the
+	// policy generation they were stopped under. A full pull still lists them,
+	// so without this the next config pull would restart them immediately.
+	panelStopped map[int]string
+	forwards     map[int]ForwardConfig
+	nativeCap    *NativeOutboundCapability
+	// nativeForwards are the Panel's native outbound carriers. They never
+	// run on the ordinary forward path; the gateway relay serves them.
+	nativeForwards map[int]ForwardConfig
+	lastPullAt     time.Time
+	// configLoaded is set by the first full (200) pull of this process. The
+	// persisted revision only describes a previous process's state, so it is
+	// never sent as since_revision before this process holds a config: a 304
+	// would leave the forwards and the native capability empty indefinitely.
+	configLoaded bool
+	lastPullErr  string
+	clientMeta   ClientMeta
+	diagToken    string
+	// diagDoneToken is the last request the router answered. The Panel keeps
+	// returning the token until its own result row clears it, so without this
+	// the same request would be re-run on every pull.
+	diagDoneToken string
+
+	// lastPullCode is the machine-readable code of lastPullErr (e.g.
+	// client_online_limit_reached); pullLimit is set only for that code.
+	lastPullCode string
+	pullLimit    *panelError
+
+	// refusedGenerations holds grant generations the lease plane answered with
+	// policy_generation_invalid, keyed by forward. A refused generation is
+	// never retried and the next pull is a full one, so the forward picks up
+	// the rotated grant instead of sitting without a lease until the old
+	// grant's renew window opens.
+	refusedGenerations map[int]string
 
 	reconcile chan string
 	startedAt time.Time
@@ -74,15 +108,12 @@ type Agent struct {
 	forceStatusFlush chan struct{}
 	offline          bool
 
-	// wan and gateway are set by their own loops; they are nil when the
-	// corresponding feature is disabled.
-	wan           *wanManager
+	// gateway is set by its own loop; it is nil before the loop stores it.
 	gateway       *gatewayManager
 	gatewaySignal chan struct{}
 
 	// secretStamp tracks the credential file so an operator (or a restored
-	// backup, or an out-of-band pairing) can enrol a running agent without
-	// restarting it.
+	// backup) can enrol a running agent without restarting it.
 	secretStamp  time.Time
 	secretSeenAt time.Time
 }
@@ -90,20 +121,26 @@ type Agent struct {
 func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent {
 	deviceID := deviceIdentity(cfg, secrets)
 	deviceNm := deviceDisplayName(cfg, secrets)
+	panel := newPanelClient(cfg, secrets, deviceID, deviceNm)
+	panel.egress.log = log
+	panel.leaseKeys = newLeaseKeyStore(cfg.DataDir, log)
 	return &Agent{
-		cfg:              cfg,
-		store:            store,
-		secrets:          secrets,
-		panel:            newPanelClient(cfg, secrets, deviceID, deviceNm),
-		deviceID:         deviceID,
-		deviceNm:         deviceNm,
-		log:              log,
-		runtimes:         map[int]*runtimeState{},
-		forwards:         map[int]ForwardConfig{},
-		reconcile:        make(chan string, 16),
-		forceStatusFlush: make(chan struct{}, 1),
-		gatewaySignal:    make(chan struct{}, 1),
-		startedAt:        time.Now(),
+		cfg:                cfg,
+		store:              store,
+		secrets:            secrets,
+		panel:              panel,
+		deviceID:           deviceID,
+		deviceNm:           deviceNm,
+		log:                log,
+		runtimes:           map[int]*runtimeState{},
+		panelStopped:       map[int]string{},
+		forwards:           map[int]ForwardConfig{},
+		nativeForwards:     map[int]ForwardConfig{},
+		reconcile:          make(chan string, 16),
+		forceStatusFlush:   make(chan struct{}, 1),
+		gatewaySignal:      make(chan struct{}, 1),
+		startedAt:          time.Now(),
+		refusedGenerations: map[int]string{},
 	}
 }
 
@@ -139,15 +176,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	start(a.healthLoop)
 	start(a.leaseLoop)
 	start(a.reconcileLoop)
-	if a.cfg.UplinkEnabled {
-		start(a.uplinkLoop)
-	}
-	if a.cfg.gatewayActive() {
-		start(a.gatewayLoop)
-	}
+	// Always running: it starts the native relay when the Panel grants native
+	// outbound, without a mode switch and without a service restart.
+	start(a.gatewayLoop)
 
 	if !a.enrolled() {
-		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding (mode=%s)", a.cfg.Mode)
+		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
 	}
 
 	wg.Wait()
@@ -194,32 +228,156 @@ func (a *Agent) pullLoop(ctx context.Context) {
 		cancel()
 		switch {
 		case err == nil:
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), false)
 		case errors.Is(err, errNotModified):
-			delay = time.Duration(a.cfg.PollIntervalSecs) * time.Second
+			delay = a.pullDelay(time.Now(), true)
 		default:
-			a.store.UpdatePull(func(state *PullState) {
-				state.Failures++
-				state.LastError = err.Error()
-				state.LastStatus = "error"
-			})
-			backoff := time.Duration(clampInt(a.store.Pull().Failures*3, 5, 60)) * time.Second
-			a.log.Warn("panel", "config pull failed: %v (retry in %s)", err, backoff)
-			delay = backoff
+			delay = a.notePullFailure(err)
 		}
 		timer.Reset(delay)
 	}
 }
 
+// notePullFailure records a failed pull where LuCI and "ctl status" can see it
+// and returns the delay before the next attempt. The currently applied
+// forwards are deliberately left running: a control-plane refusal is not a
+// reason to tear down the data plane.
+func (a *Agent) notePullFailure(err error) time.Duration {
+	message, code := describePanelFailure(err)
+	limit, limited := asOnlineLimitError(err)
+	a.store.UpdatePull(func(state *PullState) {
+		state.Failures++
+		state.LastError = message
+		state.LastStatus = "error"
+	})
+	a.mu.Lock()
+	a.lastPullErr = message
+	a.lastPullCode = code
+	a.pullLimit = nil
+	if limited {
+		copied := *limit
+		a.pullLimit = &copied
+	}
+	a.mu.Unlock()
+	if limited {
+		// A slot only frees after another device has been silent for 180s, so
+		// a fast backoff would just hammer the Panel. Retry at a steady pace.
+		a.log.Warn("panel", "%s (retry in %s)", message, onlineLimitRetryInterval)
+		return onlineLimitRetryInterval
+	}
+	backoff := time.Duration(clampInt(a.store.Pull().Failures*3, 5, 60)) * time.Second
+	a.log.Warn("panel", "config pull failed: %s (retry in %s)", message, backoff)
+	return backoff
+}
+
+// clearPullFailureLocked is called with a.mu held after any successful pull.
+func (a *Agent) clearPullFailureLocked() {
+	a.lastPullErr = ""
+	a.lastPullCode = ""
+	a.pullLimit = nil
+}
+
 func (a *Agent) pullOnce(ctx context.Context) error {
 	pullState := a.store.Pull()
+	a.mu.Lock()
+	loaded := a.configLoaded
+	a.mu.Unlock()
 	since := ""
-	if !pullState.LastPullAt.IsZero() {
+	if loaded && !pullState.LastPullAt.IsZero() && !a.grantRefreshDue(time.Now()) {
 		since = pullState.ConfigRevision
 	}
+	return a.pullWith(ctx, since, 20)
+}
+
+// freshPull fetches the current grants without the long-poll revision. The
+// native relay calls it before every lease, like the desktop's
+// ResolveFreshNativeOutboundLeasesAsync.
+func (a *Agent) freshPull(ctx context.Context) error {
+	pullCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return a.pullWith(pullCtx, "", 0)
+}
+
+// grantRefreshDue mirrors the desktop's NeedsUltraPolicyRefresh. Ultra grants
+// live about five minutes but are not part of the stable config revision, so
+// a long poll keeps answering 304 while they expire. Once any ordinary
+// forward's grant is past renew_after (or close to expiry) the next pull is a
+// full one. Native carriers are excluded; the gateway refreshes those itself.
+func (a *Agent) grantRefreshDue(now time.Time) bool {
+	a.mu.Lock()
+	pending := len(a.refusedGenerations) > 0
+	a.mu.Unlock()
+	if pending {
+		// A generation the lease plane refused cannot be renewed, so a 304
+		// would leave the forward dead until the old grant's renew window.
+		return true
+	}
+	next, ok := a.nextGrantRefresh()
+	return ok && !next.After(now)
+}
+
+// nextGrantRefresh is the earliest point at which an ordinary forward's grant
+// needs a full pull; ok is false when no ordinary forward is applied.
+func (a *Agent) nextGrantRefresh() (next time.Time, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, forward := range a.forwards {
+		at := grantRefreshAt(forward.UltraAccess)
+		if !ok || at.Before(next) {
+			next, ok = at, true
+		}
+	}
+	return next, ok
+}
+
+// grantRefreshAt is renew_after (or two minutes before expiry without one),
+// never later than the expiry. A missing or unreadable grant is due at once.
+func grantRefreshAt(policy *UltraPolicy) time.Time {
+	if policy == nil {
+		return time.Time{}
+	}
+	expiresAt, err := parseRFC3339(policy.ExpiresAt)
+	if err != nil {
+		return time.Time{}
+	}
+	refresh := expiresAt.Add(-2 * time.Minute)
+	if renewAfter, err := parseRFC3339(policy.RenewAfter); err == nil {
+		refresh = renewAfter
+	}
+	if refresh.After(expiresAt) {
+		return expiresAt
+	}
+	return refresh
+}
+
+// pullDelay is the wait before the next pull. A 304 carries no grants, so the
+// poll interval must not carry the loop past renew_after: grants live five
+// minutes with a one-minute renew window, and a long poll_interval (or a long
+// poll that ends after renew_after) would otherwise let them expire between
+// pulls. A full pull that still left a grant due falls back to the poll
+// interval, so a Panel that keeps serving it is not hammered.
+func (a *Agent) pullDelay(now time.Time, notModified bool) time.Duration {
+	delay := time.Duration(a.cfg.PollIntervalSecs) * time.Second
+	next, ok := a.nextGrantRefresh()
+	if !ok {
+		return delay
+	}
+	switch until := next.Sub(now); {
+	case until > 0:
+		if until+time.Second < delay {
+			delay = until + time.Second
+		}
+	case notModified:
+		// The next pull is a full one; do not sit out the interval first.
+		delay = time.Second
+	}
+	return delay
+}
+
+func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {
 	// The Panel caps the long poll at 25s; ask for a little less so the
 	// client-side timeout always fires first.
-	response, err := a.panel.Pull(ctx, since, 20)
+	response, err := a.panel.Pull(ctx, since, waitSeconds)
 	if errors.Is(err, errNotModified) {
 		a.store.UpdatePull(func(state *PullState) {
 			state.LastPullAt = time.Now()
@@ -229,7 +387,7 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 		})
 		a.mu.Lock()
 		a.lastPullAt = time.Now()
-		a.lastPullErr = ""
+		a.clearPullFailureLocked()
 		a.mu.Unlock()
 		return errNotModified
 	}
@@ -239,8 +397,16 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 
 	a.mu.Lock()
 	a.clientMeta = response.Client
+	// The Panel can only ask a router for diagnostics through the pull, and it
+	// answers by POSTing the report from the heartbeat loop. The token was
+	// parsed but never stored, so a console diagnostics request never ran on a
+	// router at all.
+	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
+		a.diagToken = token
+	}
 	a.lastPullAt = time.Now()
-	a.lastPullErr = ""
+	a.configLoaded = true
+	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
 
@@ -261,9 +427,7 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 	a.applyForwards(response.Forwards)
 	a.evaluateRuntimeDrift()
 	a.triggerReconcile(reason)
-	if a.cfg.gatewayActive() {
-		a.triggerGatewayReconcile()
-	}
+	a.triggerGatewayReconcile()
 	return nil
 }
 
@@ -271,7 +435,12 @@ func (a *Agent) pullOnce(ctx context.Context) error {
 // runtime directly; reconcile decides what that means.
 func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	incoming := map[int]ForwardConfig{}
+	native := map[int]ForwardConfig{}
 	for _, forward := range forwards {
+		if acceptNativeForward(forward) {
+			native[forward.ForwardID] = forward
+			continue
+		}
 		if !acceptForward(forward) {
 			a.log.Debug("policy", "forward %d rejected locally (backend=%s client_mode=%s sidecar=%v aggregation=%v)",
 				forward.ForwardID, forward.BackendMode, forward.ClientMode, forward.SidecarRequired, forward.Aggregation)
@@ -281,14 +450,36 @@ func (a *Agent) applyForwards(forwards []ForwardConfig) {
 	}
 	a.mu.Lock()
 	a.forwards = incoming
+	a.nativeForwards = native
 	a.mu.Unlock()
+}
+
+// acceptNativeForward selects native outbound carriers. The runtime contract
+// (docs/api/native-outbound.md section 6) keeps them off the ordinary path
+// entirely: no listener on listen_port, no ordinary lease, no readiness probe.
+func acceptNativeForward(forward ForwardConfig) bool {
+	if forward.ForwardID <= 0 || !forward.NativeOutboundEnabled {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(forward.ServiceStatus))
+	return status == "" || status == "active"
+}
+
+// config returns a copy of the live configuration; reloadConfig swaps it.
+func (a *Agent) config() Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
 }
 
 // acceptForward mirrors the desktop client's UltraForwardPolicy: this runtime
 // speaks the Ultra protocol only, so forwards that need the bond/MPTCP/sidecar
 // data path are declined here rather than silently mis-served.
 func acceptForward(forward ForwardConfig) bool {
-	if forward.ForwardID <= 0 {
+	if forward.ForwardID <= 0 || forward.NativeOutboundEnabled {
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(forward.BackendMode), "ultra") {
@@ -330,7 +521,19 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	a.mu.Lock()
 	desired := make(map[int]ForwardConfig, len(a.forwards))
 	for k, v := range a.forwards {
+		if generation, stopped := a.panelStopped[k]; stopped {
+			if generation == policyGenerationOf(v) {
+				continue
+			}
+			// A new grant generation is the Panel re-enabling the forward.
+			delete(a.panelStopped, k)
+		}
 		desired[k] = v
+	}
+	for k := range a.panelStopped {
+		if _, listed := a.forwards[k]; !listed {
+			delete(a.panelStopped, k)
+		}
 	}
 	a.mu.Unlock()
 
@@ -401,7 +604,7 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 		a.stopRuntime(state.proc, "replace")
 	}
 
-	proc, err := a.startRuntime(ctx, forward, false, forward.UltraAccess, "", "")
+	proc, err := a.startRuntime(ctx, forward, forward.UltraAccess)
 	if err != nil {
 		a.log.Error("runtime", "forward %d start failed: %v", forward.ForwardID, err)
 		a.markForwardError(forward.ForwardID, "start_failed")
@@ -681,7 +884,6 @@ type StatusSnapshot struct {
 	Platform       string        `json:"platform"`
 	Architecture   string        `json:"architecture"`
 	UptimeSeconds  int64         `json:"uptime_seconds"`
-	Mode           string        `json:"mode"`
 	Enabled        bool          `json:"enabled"`
 	Enrolled       bool          `json:"enrolled"`
 	PanelURL       string        `json:"panel_url"`
@@ -695,11 +897,9 @@ type StatusSnapshot struct {
 	LastPullError  string        `json:"last_pull_error,omitempty"`
 	ForwardCount   int           `json:"forward_count"`
 	Forwards       []ForwardView `json:"forwards"`
-	Uplinks        []UplinkView  `json:"uplinks,omitempty"`
 	Gateway        *GatewayView  `json:"gateway,omitempty"`
 	RuntimeBin     string        `json:"runtime_bin"`
 	RuntimeOK      bool          `json:"runtime_present"`
-	SingBoxOK      bool          `json:"singbox_present"`
 
 	// Runtime drift is reported, never auto-applied: on OpenWrt the runtime is
 	// updated by opkg, so the router must have exactly one update authority.
@@ -707,12 +907,30 @@ type StatusSnapshot struct {
 	RuntimeSha256     string `json:"runtime_sha256,omitempty"`
 	DesiredRuntimeSha string `json:"desired_runtime_sha256,omitempty"`
 	RuntimeDrift      string `json:"runtime_drift,omitempty"`
+
+	// LastPullErrorCode is the stable code behind LastPullError, e.g.
+	// client_online_limit_reached, so LuCI can render it specially. The two
+	// counts are only set for client_online_limit_reached.
+	LastPullErrorCode   string `json:"last_pull_error_code,omitempty"`
+	OnlineDeviceLimit   int    `json:"online_device_limit,omitempty"`
+	ActiveOnlineDevices int    `json:"active_online_devices,omitempty"`
+
+	// Panel traffic ignores HTTP(S)_PROXY and is pinned to the physical WAN
+	// so a TUN proxy or VPN on the router cannot capture it. An empty device
+	// means the sockets are unbound; the reason says why.
+	PanelEgressDevice   string `json:"panel_egress_device"`
+	PanelEgressReason   string `json:"panel_egress_reason"`
+	PanelEgressOverride string `json:"panel_egress_override"`
+	PanelEgressError    string `json:"panel_egress_error,omitempty"`
+	ProxyIgnored        bool   `json:"proxy_ignored"`
 }
 
 func (a *Agent) snapshot() StatusSnapshot {
 	a.mu.Lock()
 	lastPull := a.lastPullAt
 	lastErr := a.lastPullErr
+	lastCode := a.lastPullCode
+	limit := a.pullLimit
 	meta := a.clientMeta
 	a.mu.Unlock()
 
@@ -722,7 +940,6 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Platform:       platformName,
 		Architecture:   runtime.GOARCH,
 		UptimeSeconds:  int64(time.Since(a.startedAt).Seconds()),
-		Mode:           a.cfg.Mode,
 		Enabled:        a.cfg.Enabled,
 		Enrolled:       a.enrolled(),
 		PanelURL:       a.panel.endpointLabel(),
@@ -736,18 +953,19 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Forwards:       a.forwardViews(),
 		RuntimeBin:     a.cfg.RuntimeBin,
 		RuntimeOK:      fileExists(a.cfg.RuntimeBin),
-		SingBoxOK:      fileExists(a.cfg.GatewaySingBoxBin),
 	}
 	if !lastPull.IsZero() {
 		snapshot.LastPullAt = formatRFC3339(lastPull)
 	}
+	snapshot.LastPullErrorCode = lastCode
+	if limit != nil {
+		snapshot.OnlineDeviceLimit = limit.OnlineDeviceLimit
+		snapshot.ActiveOnlineDevices = limit.ActiveOnlineDevices
+	}
+	snapshot.PanelEgressDevice, snapshot.PanelEgressReason, snapshot.PanelEgressOverride, snapshot.PanelEgressError = a.panel.egressView()
+	snapshot.ProxyIgnored = true
 	snapshot.ForwardCount = len(snapshot.Forwards)
-	if a.cfg.UplinkEnabled {
-		snapshot.Uplinks = a.uplinkViews()
-	}
-	if a.cfg.gatewayActive() {
-		snapshot.Gateway = a.gatewayView()
-	}
+	snapshot.Gateway = a.gatewayView()
 	a.mu.Lock()
 	snapshot.DesiredRuntimeSha = strings.ToLower(strings.TrimSpace(meta.DesiredUltraSHA))
 	a.mu.Unlock()

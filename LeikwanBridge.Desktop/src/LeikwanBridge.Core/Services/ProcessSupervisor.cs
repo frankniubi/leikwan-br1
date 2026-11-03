@@ -2,11 +2,12 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Core.Services;
 
-public class ProcessSupervisor : IProcessSupervisor
+public class ProcessSupervisor : IProcessSupervisor, IUltraRuntimeFailureSource
 {
     public record ManagedProcess(
         int ForwardId,
@@ -18,9 +19,13 @@ public class ProcessSupervisor : IProcessSupervisor
     private readonly ConcurrentDictionary<int, List<ManagedProcess>> _processes = new();
     private readonly ConcurrentDictionary<int, WindowsJobGroup> _jobGroups = new();
     private readonly Action<int, string, string>? _onOutput;
+    private readonly UltraRuntimeFailureLog _ultraFailures = new();
     private bool _disposed;
 
     public event Action<int, string>? ProcessExited;
+
+    /// <inheritdoc />
+    public event Action<int, string>? UltraCredentialSuspect;
 
     public ProcessSupervisor(Action<int, string, string>? onOutput = null)
     {
@@ -78,14 +83,25 @@ public class ProcessSupervisor : IProcessSupervisor
             {
                 if (e.Data != null)
                 {
-                    Log.Warning("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                    // Native helpers commonly use stderr for progress and
+                    // connection telemetry. The process exit/health path owns
+                    // actual failures; keep this stream available in Debug.
+                    Log.Debug("[fwd-{ForwardId}/{Label}] stderr: {Line}", forwardId, label, e.Data);
+                    // Ultra runtime data-plane failures (stream close stage,
+                    // candidate/setup failures) must survive the default log
+                    // level; rate-limited and address-redacted.
+                    if (role == UltraRuntimeFailureLog.RuntimeRole)
+                        ObserveUltraRuntimeStderr(forwardId, e.Data);
                     _onOutput?.Invoke(forwardId, label, $"[stderr] {e.Data}");
                 }
             };
             process.Exited += (_, _) =>
             {
-                Log.Warning("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
-                    forwardId, label, process.ExitCode);
+                var exitCode = process.ExitCode;
+                // HealthCheckService distinguishes an unexpected exit from a
+                // user stop and owns the warning/error decision.
+                Log.Debug("process exited for forward {ForwardId} [{Label}] exitCode={ExitCode}",
+                    forwardId, label, exitCode);
                 ProcessExited?.Invoke(forwardId, role);
             };
 
@@ -190,9 +206,55 @@ public class ProcessSupervisor : IProcessSupervisor
             .ToList();
     }
 
+    /// <summary>Handles one Ultra runtime stderr line (failure log + credential-suspect event).</summary>
+    protected void ObserveUltraRuntimeStderr(int forwardId, string line)
+        => ObserveUltraRuntimeLine(_ultraFailures, forwardId, line, UltraCredentialSuspect);
+
     protected void RaiseProcessExited(int forwardId, string role)
     {
         ProcessExited?.Invoke(forwardId, role);
+    }
+
+    /// <summary>
+    /// Logs a runtime failure line (rate-limited) and raises
+    /// <paramref name="credentialSuspect"/> for every line that suggests a dead
+    /// provider credential. Shared by the Windows and macOS supervisors.
+    /// </summary>
+    public static void ObserveUltraRuntimeLine(
+        UltraRuntimeFailureLog failures,
+        int forwardId,
+        string line,
+        Action<int, string>? credentialSuspect)
+    {
+        var kind = ObserveUltraRuntimeFailure(failures, forwardId, line);
+        if (kind is null || credentialSuspect is null || !UltraRuntimeFailureLog.IsCredentialSuspect(kind, line))
+            return;
+        try
+        {
+            credentialSuspect(forwardId, kind);
+        }
+        catch (Exception ex)
+        {
+            // Never let a subscriber break the output reader.
+            Log.Warning(ex, "ultra credential-suspect handler failed for forward {ForwardId}", forwardId);
+        }
+    }
+
+    public static string? ObserveUltraRuntimeFailure(UltraRuntimeFailureLog failures, int forwardId, string line)
+    {
+        return failures.ObserveKind(forwardId, line, DateTimeOffset.UtcNow, (kind, redacted, suppressed) =>
+        {
+            if (suppressed > 0)
+            {
+                Log.Warning("ultra runtime failure forward={ForwardId} kind={Kind} suppressed_previous={Suppressed}: {Line}",
+                    forwardId, kind, suppressed, redacted);
+            }
+            else
+            {
+                Log.Warning("ultra runtime failure forward={ForwardId} kind={Kind}: {Line}",
+                    forwardId, kind, redacted);
+            }
+        });
     }
 
     private static void KillProcess(ManagedProcess mp)

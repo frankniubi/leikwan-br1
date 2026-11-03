@@ -174,7 +174,8 @@ data class NativeOutboundLease(
         && leaseId.isNotBlank()
         && policyGeneration.matches(Regex("^[a-f0-9]{64}$"))
         && expiresAt.isAfter(now)
-        && !expiresAt.isAfter(now.plusSeconds(330))
+        // Same ceiling as the Ultra policy it is bound to, plus the historical 30 s skew allowance.
+        && !expiresAt.isAfter(now.plusSeconds(ULTRA_MAX_TTL_SECONDS + 30L))
         && transport == "tcp+udp"
         && routeScope in setOf(
             NATIVE_ROUTE_SCOPE_CN_ONLY,

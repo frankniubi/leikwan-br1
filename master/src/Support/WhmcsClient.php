@@ -9,9 +9,18 @@ final class WhmcsClient
 {
     private Config $config;
 
-    public function __construct(Config $config)
+    /**
+     * @var callable(string, array<string, mixed>): array<string, mixed>|null
+     */
+    private $requestHandler;
+
+    /**
+     * @param callable(string, array<string, mixed>): array<string, mixed>|null $requestHandler
+     */
+    public function __construct(Config $config, ?callable $requestHandler = null)
     {
         $this->config = $config;
+        $this->requestHandler = $requestHandler;
     }
 
     /**
@@ -34,6 +43,18 @@ final class WhmcsClient
             'secret' => $secret,
             'responsetype' => 'json',
         ]);
+
+        if ($this->requestHandler !== null) {
+            $decoded = ($this->requestHandler)($action, $params);
+            if (!is_array($decoded)) {
+                throw new ApiException('whmcs_response_invalid', 502);
+            }
+            if (($decoded['result'] ?? '') !== 'success') {
+                throw new ApiException('whmcs_response_error', 502, $decoded);
+            }
+
+            return $decoded;
+        }
 
         $ch = curl_init($baseUrl . '/includes/api.php');
         curl_setopt_array($ch, [
@@ -59,6 +80,8 @@ final class WhmcsClient
         }
 
         if (($decoded['result'] ?? '') !== 'success') {
+            // WHMCS explains the refusal here (for example "Invalid IP" when the panel is missing from the API allowlist).
+            error_log('WHMCS API ' . $action . ' refused: ' . substr((string) ($decoded['message'] ?? ''), 0, 200));
             throw new ApiException('whmcs_response_error', 502, $decoded);
         }
 

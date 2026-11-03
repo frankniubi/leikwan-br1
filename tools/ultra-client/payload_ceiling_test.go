@@ -266,7 +266,7 @@ func TestLeaseFrameDecodesRelayPayloadCeiling(t *testing.T) {
 }
 
 func TestStatusPublishesPayloadCeilingPerSelection(t *testing.T) {
-	writer := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	writer := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer writer.Close()
 	writer.UpdateUDPProbe("selection-reference-abcdefghijklmnop", udpProbeResult{
 		Sent: 30, Received: 30, MedianRTT: 10 * time.Millisecond,
@@ -295,7 +295,7 @@ func TestStatusPublishesPayloadCeilingPerSelection(t *testing.T) {
 }
 
 func TestDeclaredCeilingUpdateIsIgnoredWhenUnknown(t *testing.T) {
-	writer := newStatusWriter(filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
+	writer := newTestStatusWriter(t, filepath.Join(t.TempDir(), "status.json"), 42, time.Millisecond)
 	defer writer.Close()
 	writer.UpdateUDPPayloadCeiling(0, payloadCeilingSourceDeclared)
 	writer.mu.Lock()

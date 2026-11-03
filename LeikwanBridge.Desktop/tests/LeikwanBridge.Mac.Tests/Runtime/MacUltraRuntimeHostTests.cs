@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
@@ -59,6 +60,8 @@ public sealed class MacUltraRuntimeHostTests
         Assert.DoesNotContain("line-password", bootstrapText);
         Assert.Contains("location_cache_path", bootstrapText);
         Assert.Contains("location_lock_path", bootstrapText);
+        // The runtime exits when it is re-parented (host crash); it must be told who its parent is.
+        Assert.Contains($"\"parent_pid\":{Environment.ProcessId}", bootstrapText, StringComparison.Ordinal);
         Assert.Contains("\"auto_select\":false", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_target", bootstrapText, StringComparison.Ordinal);
         Assert.DoesNotContain("probe_samples", bootstrapText, StringComparison.Ordinal);
@@ -204,6 +207,59 @@ public sealed class MacUltraRuntimeHostTests
         Assert.Equal(1472, host.GetPayloadCeiling(42));
         Assert.All(lease.Password, value => Assert.Equal(0, value));
         host.Stop(42);
+    }
+
+    [Fact]
+    public void Start_WithExternalUotGrant_HandsItOverThroughStdinAndKeepsItOffDisk()
+    {
+        using var temp = new TemporaryDirectory();
+        var config = new AgentConfig
+        {
+            StateDir = temp.Path,
+            UltraBin = Path.Combine(temp.Path, "bin", "ultra-client"),
+        };
+        var state = new StateManager(temp.Path);
+        var supervisor = new RecordingProcessSupervisor();
+        var lease = CreateLease("203.0.113.199", "tcp+udp");
+        lease.ExternalUot = CreateExternalUotGrant();
+        var grant = lease.ExternalUot!;
+        var tokenBytes = grant.Token;
+        var host = new MacUltraRuntimeHost(
+            config,
+            supervisor,
+            state,
+            binaryExists: _ => true,
+            socketExists: _ => true,
+            portListeningProbe: _ => true,
+            leaseSender: (_, _, _, _) => Task.FromResult(true),
+            socketRoot: Path.Combine(temp.Path, "sockets"));
+        var forward = CreateForward("198.51.100.199:443", lease);
+
+        host.Start(forward, lease, "contract-a", "config_sync");
+
+        var launch = Assert.Single(supervisor.Launches);
+        using var bootstrap = JsonDocument.Parse(Encoding.UTF8.GetString(launch.StandardInput));
+        var externalUot = bootstrap.RootElement.GetProperty("external_uot");
+        Assert.True(externalUot.GetProperty("enabled").GetBoolean());
+        Assert.Equal("sidecar-a.example.com:7443", externalUot.GetProperty("sidecar_target").GetString());
+        Assert.Equal("sidecar-token-canary-0123456789", externalUot.GetProperty("token").GetString());
+        Assert.Equal(1024, externalUot.GetProperty("queue_packets").GetInt32());
+        var diskText = string.Concat(Directory.EnumerateFiles(temp.Path, "*", SearchOption.AllDirectories)
+            .Select(path => File.ReadAllText(path)));
+        Assert.DoesNotContain("sidecar-token-canary-0123456789", diskText, StringComparison.Ordinal);
+        Assert.DoesNotContain("sidecar-a.example.com", diskText, StringComparison.Ordinal);
+        Assert.Null(lease.ExternalUot);
+        Assert.All(tokenBytes, value => Assert.Equal(0, value));
+        Assert.Equal("", grant.SidecarTarget);
+        host.Stop(42);
+    }
+
+    private static ExternalUotGrant CreateExternalUotGrant()
+    {
+        using var document = JsonDocument.Parse(
+            """{"enabled":true,"sidecar_target":"sidecar-a.example.com:7443","token":"sidecar-token-canary-0123456789","queue_packets":1024,"keepalive_seconds":12,"reconnect_grace_seconds":45,"frame_payload_max":1400}""");
+        return ExternalUotGrant.TryParse(document.RootElement, out var failure)
+            ?? throw new InvalidOperationException(failure);
     }
 
     private static ForwardConfig CreateForward(string target, UltraLease lease)

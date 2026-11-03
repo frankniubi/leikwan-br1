@@ -41,6 +41,11 @@ public static class MacHeadlessHost
 
         Log.Information("headless_start version={Version} once={Once}", RuntimeVersion(), options.Once);
         IMacHeadlessClient? client = null;
+        // The update loop runs next to the client and is cancelled with it; it
+        // only acts on a console update request and can never take the tunnel
+        // down (see MacHeadlessAutoUpdate).
+        using var updateStop = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+        Task? updateLoop = null;
         try
         {
             client = await deps.Bootstrap(paths, shutdown.Token).ConfigureAwait(false);
@@ -49,6 +54,14 @@ public static class MacHeadlessHost
             // it last (Serilog keeps the final configuration).
             ConfigureLogging(paths, options, deps);
             await ApplyIdentityAsync(client, options, shutdown.Token).ConfigureAwait(false);
+            if (deps.AutoUpdate is { } autoUpdate)
+            {
+                var config = client.Config;
+                updateLoop = Task.Run(
+                    () => autoUpdate(paths, options, () => config.MasterUrl, updateStop.Token),
+                    CancellationToken.None);
+            }
+
             var controller = client.Controller;
             var selection = HeadlessClientOptions.ParseForwardSelection(options.Forwards);
 
@@ -99,6 +112,7 @@ public static class MacHeadlessHost
         }
         finally
         {
+            await StopUpdateLoopAsync(updateStop, updateLoop).ConfigureAwait(false);
             if (client is not null)
             {
                 try
@@ -112,6 +126,24 @@ public static class MacHeadlessHost
             }
 
             Log.CloseAndFlush();
+        }
+    }
+
+    private static async Task StopUpdateLoopAsync(CancellationTokenSource updateStop, Task? updateLoop)
+    {
+        if (updateLoop is null)
+            return;
+        try
+        {
+            updateStop.Cancel();
+            await updateLoop.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is TimeoutException or OperationCanceledException or ObjectDisposedException)
+        {
+        }
+        catch (Exception exception)
+        {
+            Log.Warning("headless_update_loop_stop_failed type={ErrorType}", exception.GetType().Name);
         }
     }
 
@@ -133,6 +165,13 @@ public static class MacHeadlessHost
         {
             config.ClientId = options.ClientId;
             config.ActiveClientId = options.ClientId;
+        }
+        if (!string.IsNullOrWhiteSpace(options.PreferredEgressInterface))
+            config.PreferredEgressInterface = options.PreferredEgressInterface.Trim();
+        if (!string.IsNullOrWhiteSpace(config.PreferredEgressInterface))
+        {
+            _ = EgressInterfaceConfig.ResolveOrThrow(config.PreferredEgressInterface);
+            PanelDirectEgress.SetPreferredInterface(config.PreferredEgressInterface);
         }
 
         if (string.IsNullOrWhiteSpace(options.AgentToken))
@@ -272,7 +311,9 @@ public static class MacHeadlessHost
                     continue;
                 try
                 {
-                    await controller.StartForwardAsync(forward.ForwardId, ct).ConfigureAwait(false);
+                    // A periodic ensure is not an operator retry: preserve the
+                    // runtime's per-forward startup failure cooldown.
+                    await controller.EnsureForwardAsync(forward.ForwardId, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -399,12 +440,12 @@ public static class MacHeadlessHost
         var configuration = new LoggerConfiguration()
             .MinimumLevel.Information()
             .WriteTo.File(
+                new RedactingTextFormatter("{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}"),
                 string.IsNullOrWhiteSpace(options.LogFile) ? defaultLogFile : options.LogFile,
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7,
                 fileSizeLimitBytes: 5 * 1024 * 1024,
-                rollOnFileSizeLimit: true,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
+                rollOnFileSizeLimit: true);
         Log.Logger = configuration.CreateLogger();
     }
 
@@ -447,9 +488,24 @@ internal static class MacHeadlessSignals
 
         if (!OperatingSystem.IsWindows())
         {
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => Handle("SIGTERM")));
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGINT, _ => Handle("SIGINT")));
-            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGQUIT, _ => Handle("SIGQUIT")));
+            // Cancel the default disposition. PosixSignalRegistration runs the
+            // handler and then, unless POSIX_SIGTERM's default action is
+            // suppressed, terminates the process - so teardown only ever got as
+            // far as the first forward before the process died. That left the
+            // remaining ultra-client children reparented to launchd, still
+            // holding their listening ports (measured 2026-09-14: 2 of 4
+            // survived, ports 30522 and 32502 still listening, and
+            // "stopped macOS processes for forward" was never logged). The
+            // Windows branch below has always cancelled its CloseKeyPress the
+            // same way; the POSIX branch was simply missing it.
+            static Action<PosixSignalContext> Graceful(Action onSignal) => context =>
+            {
+                context.Cancel = true;
+                onSignal();
+            };
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGTERM, Graceful(() => Handle("SIGTERM"))));
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGINT, Graceful(() => Handle("SIGINT"))));
+            registrations.Add(PosixSignalRegistration.Create(PosixSignal.SIGQUIT, Graceful(() => Handle("SIGQUIT"))));
         }
         else
         {
@@ -515,12 +571,21 @@ public sealed record MacHeadlessDependencies(
     TextWriter Error,
     Func<TimeSpan, CancellationToken, Task> Delay)
 {
+    /// <summary>Service-mode update loop, started after sign-in; it installs an
+    /// update only when one was requested from the panel console. Null (the
+    /// default for test-built dependencies) runs none; the production default
+    /// only runs it for the root LaunchDaemon.</summary>
+    public Func<MacPlatformPaths, HeadlessClientOptions, Func<string>, CancellationToken, Task>? AutoUpdate { get; init; }
+
     public static MacHeadlessDependencies Default { get; } = new(
         async (paths, ct) => new MacHeadlessClient(await MacAppBootstrap.CreateAsync(paths, ct).ConfigureAwait(false)),
         CreateDefaultPaths,
         Console.Out,
         Console.Error,
-        (delay, ct) => Task.Delay(delay, ct));
+        (delay, ct) => Task.Delay(delay, ct))
+    {
+        AutoUpdate = MacHeadlessAutoUpdate.RunIfDaemonAsync,
+    };
 
     private static MacPlatformPaths CreateDefaultPaths()
     {

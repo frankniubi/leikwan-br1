@@ -1,0 +1,275 @@
+import Foundation
+import LeikwanRuntime
+import Libbox
+
+/// Hosts the forward runtimes in the tunnel process. Android runs each of
+/// these as a child process; here ingress/bond run on Rust threads
+/// (LeikwanRuntime) and ultra on the Go runtime shared with libbox.
+///
+/// An in-process runtime that exits on its own (a Go panic on a malformed
+/// datagram, a Rust listener thread dying) leaves this host with no entry and
+/// no process to guard: Android would restart the child (`GuardedProcessPool`),
+/// so the tunnel's watchdog does the same here — a periodic check re-launches
+/// any registered launch whose handle reports stopped, with a bounded backoff.
+final class RuntimeHost {
+    private enum Handle {
+        case native(Int64)
+        case ultra(LkmobileUltraRuntime)
+    }
+
+    private struct Running {
+        let launch: RuntimeLaunch
+        let handle: Handle
+    }
+
+    private let lock = NSLock()
+    private var running: [Running] = []
+    private var restartCounts: [String: Int] = [:]
+    private static var logSinkInstalled = false
+    /// Restart backoff bookkeeping (attempt index per runtime name).
+    private var lastRestartAt: [String: Date] = [:]
+    /// Deliberate stops (stop(named:)/stopAll) must not be resurrected.
+    private var deliberatelyStopped: Set<String> = []
+
+    static func installLogSink() {
+        guard !logSinkInstalled else { return }
+        logSinkInstalled = true
+        _ = lk_runtime_set_log({ level, message, _ in
+            guard let message else { return }
+            TunnelLog.shared.write(String(cString: message), level: Int(level))
+        }, nil, 3)
+    }
+
+    /// Starts runtimes in order; on failure everything already started is
+    /// stopped again and the error names the failing runtime.
+    func start(_ launches: [RuntimeLaunch]) throws {
+        for launch in launches {
+            do {
+                let handle = try Self.start(launch)
+                lock.lock()
+                running.append(Running(launch: launch, handle: handle))
+                restartCounts[launch.name] = 0
+                deliberatelyStopped.remove(launch.name)
+                lock.unlock()
+                TunnelLog.shared.write("runtime \(launch.name) started")
+            } catch {
+                stopAll()
+                throw error
+            }
+        }
+    }
+
+    /// Multi-binding start: runtimes named in `optionalGroups` (runtime name -> binding id)
+    /// belong to non-default bindings. When one of them fails, the runtimes already started for
+    /// that binding are stopped, its remaining runtimes are skipped, and the start goes on;
+    /// any other failure stops everything and throws, like `start(_:)`.
+    /// Returns binding id -> error message for the bindings that did not start.
+    func start(_ launches: [RuntimeLaunch], optionalGroups: [String: String]) throws -> [String: String] {
+        if optionalGroups.isEmpty {
+            try start(launches)
+            return [:]
+        }
+        var failed: [String: String] = [:]
+        var startedByGroup: [String: [String]] = [:]
+        for launch in launches {
+            let group = optionalGroups[launch.name]
+            if let group = group, failed[group] != nil { continue }
+            do {
+                let handle = try Self.start(launch)
+                lock.lock()
+                running.append(Running(launch: launch, handle: handle))
+                restartCounts[launch.name] = 0
+                deliberatelyStopped.remove(launch.name)
+                lock.unlock()
+                if let group = group {
+                    startedByGroup[group, default: []].append(launch.name)
+                }
+                TunnelLog.shared.write("runtime \(launch.name) started")
+            } catch {
+                guard let group = group else {
+                    stopAll()
+                    throw error
+                }
+                let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                failed[group] = message
+                TunnelLog.shared.write("binding \(group) skipped: \(message)", level: 2)
+                for name in startedByGroup[group] ?? [] {
+                    stop(named: name)
+                }
+            }
+        }
+        return failed
+    }
+
+    func stopAll() {
+        lock.lock()
+        let stopping = running.reversed()
+        running.removeAll()
+        for item in stopping { deliberatelyStopped.insert(item.launch.name) }
+        lock.unlock()
+        for item in stopping {
+            switch item.handle {
+            case let .native(handle):
+                _ = lk_runtime_stop(handle)
+            case let .ultra(runtime):
+                runtime.stop()
+            }
+            TunnelLog.shared.write("runtime \(item.launch.name) stopped")
+        }
+    }
+
+    /// Stops the runtime with this name (if running); used to restart one runtime in place.
+    func stop(named name: String) {
+        lock.lock()
+        let matching = running.filter { $0.launch.name == name }
+        running.removeAll { $0.launch.name == name }
+        if !matching.isEmpty { deliberatelyStopped.insert(name) }
+        lock.unlock()
+        for item in matching {
+            switch item.handle {
+            case let .native(handle):
+                _ = lk_runtime_stop(handle)
+            case let .ultra(runtime):
+                runtime.stop()
+            }
+            TunnelLog.shared.write("runtime \(item.launch.name) stopped")
+        }
+    }
+
+    func statuses() -> [RuntimeStatus] {
+        lock.lock()
+        let items = running
+        lock.unlock()
+        return items.map(Self.status)
+    }
+
+    /// Status of the runtime with this name, or nil when it was never started.
+    func status(named name: String) -> RuntimeStatus? {
+        lock.lock()
+        let item = running.first { $0.launch.name == name }
+        lock.unlock()
+        return item.map(Self.status)
+    }
+
+    /// Restarts any tracked runtime whose handle reports it stopped on its own (never one that
+    /// `stop(named:)`/`stopAll` deliberately stopped). Called periodically by the tunnel's
+    /// watchdog; Android parity for the in-process runtimes the child-process guard covers
+    /// there. Returns the names that were restarted.
+    @discardableResult
+    func restartStoppedRuntimes() -> [String] {
+        var restarted: [String] = []
+        let now = Date()
+        var pending: [(launch: RuntimeLaunch, error: String?)] = []
+        lock.lock()
+        for (index, item) in running.enumerated().reversed() {
+            if deliberatelyStopped.contains(item.launch.name) { continue }
+            let state = Self.status(item)
+            if state.running { restartCounts[item.launch.name] = 0; continue }
+            // Bounded backoff between restarts of the same runtime (1s, 2s, ... capped 30s),
+            // reset by a healthy start.
+            let attempt = restartCounts[item.launch.name, default: 0]
+            let delay = min(30.0, pow(2.0, Double(attempt)))
+            if let last = lastRestartAt[item.launch.name], now.timeIntervalSince(last) < delay {
+                continue
+            }
+            lastRestartAt[item.launch.name] = now
+            restartCounts[item.launch.name] = attempt + 1
+            running.remove(at: index)
+            pending.append((item.launch, state.error))
+        }
+        lock.unlock()
+        for item in pending.reversed() {
+            TunnelLog.shared.write("runtime \(item.launch.name) exited on its own (\(item.error ?? "no error")); restarting it", level: 2)
+            do {
+                let handle = try Self.start(item.launch)
+                lock.lock()
+                running.append(Running(launch: item.launch, handle: handle))
+                lock.unlock()
+                restarted.append(item.launch.name)
+                TunnelLog.shared.write("runtime \(item.launch.name) restarted")
+            } catch {
+                TunnelLog.shared.write("runtime \(item.launch.name) restart failed: \(error.localizedDescription)", level: 2)
+            }
+        }
+        return restarted
+    }
+
+    private static func status(_ item: Running) -> RuntimeStatus {
+        switch item.handle {
+        case let .native(handle):
+            let state = lk_runtime_state(handle)
+            let error = state == LK_STATE_FAILED ? Self.lastError(handle) : nil
+            return RuntimeStatus(name: item.launch.name, kind: item.launch.kind, running: state == LK_STATE_RUNNING, error: error)
+        case let .ultra(runtime):
+            let error = runtime.lastError()
+            return RuntimeStatus(
+                name: item.launch.name,
+                kind: item.launch.kind,
+                running: runtime.running(),
+                error: error.isEmpty ? nil : error
+            )
+        }
+    }
+
+    private static func start(_ launch: RuntimeLaunch) throws -> Handle {
+        for file in launch.files {
+            let url = URL(fileURLWithPath: file.path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(file.contents.utf8).write(to: url, options: .atomic)
+        }
+        switch launch.kind {
+        case .ingress, .bond:
+            return .native(try startNative(kind: launch.kind.rawValue, arguments: launch.arguments, name: launch.name))
+        case .ultra:
+            guard let config = launch.configJSON else {
+                throw RuntimeHostError("runtime \(launch.name): missing ultra configuration")
+            }
+            var error: NSError?
+            let runtime = LkmobileStartUltra(config, &error)
+            if let error {
+                throw RuntimeHostError("runtime \(launch.name): \(error.localizedDescription)")
+            }
+            guard let runtime else {
+                throw RuntimeHostError("runtime \(launch.name): ultra did not start")
+            }
+            return .ultra(runtime)
+        }
+    }
+
+    private static func startNative(kind: String, arguments: [String], name: String) throws -> Int64 {
+        let cArguments = arguments.map { strdup($0) }
+        defer { cArguments.forEach { free($0) } }
+        let pointers: [UnsafePointer<CChar>?] = cArguments.map { UnsafePointer($0) }
+        var errorBuffer = [CChar](repeating: 0, count: 1024)
+        let errorCapacity = errorBuffer.count
+        let handle = pointers.withUnsafeBufferPointer { argv in
+            errorBuffer.withUnsafeMutableBufferPointer { errorPointer in
+                lk_runtime_start(kind, argv.baseAddress, arguments.count, errorPointer.baseAddress, errorCapacity)
+            }
+        }
+        if handle <= 0 {
+            let message = String(cString: errorBuffer)
+            throw RuntimeHostError("runtime \(name): \(message.isEmpty ? "failed to start" : message)")
+        }
+        return handle
+    }
+
+    private static func lastError(_ handle: Int64) -> String {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        let capacity = buffer.count
+        _ = buffer.withUnsafeMutableBufferPointer { pointer in
+            lk_runtime_last_error(handle, pointer.baseAddress, capacity)
+        }
+        return String(cString: buffer)
+    }
+}
+
+struct RuntimeHostError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+
+    var errorDescription: String? { message }
+}

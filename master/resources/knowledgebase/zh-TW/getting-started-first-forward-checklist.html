@@ -1,43 +1,43 @@
-<p>一條轉發就是你在面板上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
+<p>一條轉發就是你在控制台上畫的一條線：你的遊戲或服務在哪裡，以及本機用哪個連接埠去連它。</p>
 
 <h2>你將完成什麼</h2>
-<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一條指南要用這個連接埠，先記下來。</p>
+<p>一條儲存好的轉發，加上一個分配給你的本機連接埠。下一篇指南要用這個連接埠，先記下來。</p>
 
 <h2>開始前準備</h2>
 <ul>
-<li>一個有效方案，面板才允許儲存轉發。</li>
+<li>一個使用中的套餐，控制台才允許儲存轉發。</li>
 <li>你的遊戲或服務真正監聽的位址和連接埠。</li>
-<li>它需要哪種傳輸方式：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
+<li>它需要哪種協定：TCP、UDP 還是兩者都要。遊戲一般是 UDP。</li>
 </ul>
 
 <h2>操作步驟</h2>
 <ol>
-<li><strong>打開 Forwards，點 Create Forward。</strong></li>
-<li><strong>選擇 Forward Route。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
-<li><strong>填寫 Target Host 和 Target Port。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
-<li><strong>選擇 Transport</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
-<li><strong>儲存。</strong>Local Listen Port 用預設建議值就好，除非你有特別的理由要改。</li>
-<li><strong>記下分配給你的本機連接埠。</strong>幾秒後它會顯示在這一列上。</li>
+<li><strong>開啟「我的服務」，在套餐卡片上點「新建轉發」。</strong>在服務詳情頁裡點「新建轉發」也是同一個表單。</li>
+<li><strong>選擇線路。</strong>挑離目標最近的那條線路。所有線路都用 ultra，這裡不需要再決定別的。</li>
+<li><strong>填寫目標位址和目標連接埠。</strong>這裡要填遊戲自己連的位址，不是你下載遊戲的網站位址。</li>
+<li><strong>選擇協定</strong>，也就是你的服務需要的傳輸方式：TCP、UDP 或 TCP + UDP。</li>
+<li><strong>點「新建轉發」儲存。</strong>本機監聽連接埠留空就行，系統會自動分配，除非你有特別的理由要指定。</li>
+<li><strong>記下分配給你的本機連接埠。</strong>儲存後會回到服務詳情頁，新轉發出現在「轉發規則」表裡，「本機連接埠」一列就是它。</li>
 </ol>
 <pre class="mermaid">
 flowchart TD
 accTitle: 第一條轉發的表單路徑
-accDescr: 開啟有效方案，選擇轉發路由，填寫目標與傳輸方式，儲存後記下分配的本機連接埠
-A[開啟有效方案] --> B[選擇 Forward Route]
-B --> C[填寫 Target Host 和 Target Port]
-C --> D[選擇 Transport]
-D --> E[儲存]
-E --> F[等待轉發可用]
+accDescr: 開啟使用中的套餐，選擇線路，填寫目標和協定，儲存後記下分配的本機連接埠
+A[開啟我的服務] --> B[點新建轉發]
+B --> C[選擇線路]
+C --> D[填寫目標位址和目標連接埠]
+D --> E[選擇協定]
+E --> F[儲存]
 F --> G[記下分配的本機連接埠]
 </pre>
-<p>表單只問線路、目標、傳輸方式和本機連接埠，其餘都替你填好了。</p>
-<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form.png" width="1440" height="960" alt="Create Forward 表單，包含線路、目標主機、目標連接埠和傳輸方式"><figcaption>Create Forward 表單，真正要你決定的只有四個欄位。</figcaption></figure>
+<p>表單只問線路、目標、協定和本機連接埠，其餘都替你填好了。</p>
+<figure><img src="/assets/knowledgebase/screenshots/tenant/02-forward-form-zh-tw.png" width="1440" height="960" alt="新建轉發表單，包含線路、目標位址、目標連接埠、本機監聽連接埠和協定"><figcaption>「新建轉發」表單，真正要你決定的只有四個欄位。</figcaption></figure>
 
 <h2>如何確認成功</h2>
-<p>這一列會穩定停在已儲存狀態，而不是反覆顯示佈建中，並且本機連接埠已經填好。接著去 Clients 頁面，能看到準備承載這條轉發的裝置有最近同步時間。</p>
+<p>在「轉發規則」表裡，這一行的狀態是「執行中」，「本機連接埠」已經有數字，「節點狀態」不再一直顯示「正在分配節點」。接著去「用戶端」頁面，確認準備承載這條轉發的裝置出現在「線上裝置」裡。</p>
 
 <h2>如果沒有成功</h2>
-<p>面板不讓儲存時，<strong>請先停止</strong>，別反覆點。三個常見原因：方案已經失效；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓面板重新分配一個。</p>
+<p>控制台不讓儲存時，<strong>先停止</strong>，別反覆點。三個常見原因：套餐已經到期；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓系統重新分配一個。如果「線路」下拉框是空的，說明你的套餐還沒有開放線路，請聯絡客服。</p>
 
 <h2>相關指南</h2>
 <p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。</p>

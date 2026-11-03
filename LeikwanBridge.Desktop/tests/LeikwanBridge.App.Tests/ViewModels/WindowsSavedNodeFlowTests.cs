@@ -104,7 +104,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         suspended.ServiceStatus = "suspended";
         _vm.ApplyForwardSnapshot([suspended, Forward(60)], _ => false);
 
-        Assert.Equal(60, _vm.SelectedProxyForwardId);
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+        Assert.True(_vm.IsSelectedProxyForwardUnavailable);
         Assert.Single(_vm.ProxyForwardOptions);
     }
 
@@ -146,7 +147,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
         await SaveNodeAsync("node.example.test", 30526);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        // ProxyForwardStartException is an InvalidOperationException that also names the forward.
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
             _vm.StartProxyAsync(WindowsProxyMode.Http, _vm.SelectedProxyProfileId));
 
         Assert.False(host.IsRunning);
@@ -189,7 +191,7 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         Assert.False(runtime.Running);
         Assert.Equal(1, runtime.StopCalls);
         Assert.Equal(WindowsProxyConnectionState.Error, _vm.ProxySnapshot.State);
-        Assert.Equal("proxy_runtime_unavailable", _vm.ProxySnapshot.ErrorCode);
+        Assert.StartsWith("Connection lost. Reconnecting", _vm.ProxySnapshot.ErrorCode);
     }
 
     [Fact]
@@ -241,7 +243,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         await _vm.InitializeProxyAsync();
         _vm.ApplyForwardSnapshot([Forward(59)], _ => false);
 
-        await _vm.ImportProxyProfileAsync("ss://aes-256-gcm:import-secret@198.51.100.10:30526#imported");
+        // The Nodes page import (shared Core parser) is the only import path.
+        await _vm.ImportNodesAsync("ss://aes-256-gcm:import-secret@198.51.100.10:30526#imported");
 
         var saved = Assert.Single(_vm.ProxyProfiles);
         Assert.Equal(saved.Id, _vm.SelectedProxyProfileId);
@@ -269,17 +272,18 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
     }
 
     [Theory]
-    [InlineData("vless://11111111-1111-1111-1111-111111111111@198.51.100.10:443#not-ss")]
-    [InlineData("https://example.test/subscription")]
-    public async Task UriImportRejectsNonShadowsocksWithoutChangingDraftOrSavedNodes(string uri)
+    [InlineData("vmess://e30=", "node_protocol_unsupported")]
+    [InlineData("https://example.test/subscription", "node_protocol_unsupported")]
+    [InlineData("vless://not-a-uuid@198.51.100.10:443#bad", "node_uuid_invalid")]
+    public async Task UriImportRejectsUnsupportedLinksWithoutChangingDraftOrSavedNodes(string uri, string code)
     {
         await _vm.InitializeProxyAsync();
         _vm.ProxyEditor.Name = "unsaved-draft";
         _vm.ProxyEditor.Server = "192.0.2.10";
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => _vm.ImportProxyProfileAsync(uri));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => _vm.ImportNodesAsync(uri));
 
-        Assert.Equal("proxy_import_shadowsocks_only", error.Message);
+        Assert.Equal(code, error.Message);
         Assert.Equal("unsaved-draft", _vm.ProxyEditor.Name);
         Assert.Equal("192.0.2.10", _vm.ProxyEditor.Server);
         Assert.Empty(_vm.ProxyProfiles);
@@ -420,6 +424,29 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
     }
 
     [Fact]
+    public async Task ChosenForwardIsNotReplacedWhenItBecomesUnavailable()
+    {
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([Forward(59), Forward(60)], _ => false);
+        Assert.Equal(59, _vm.SelectedProxyForwardId);
+        _vm.SelectedProxyForwardId = 60;
+
+        var suspended = Forward(60);
+        suspended.ServiceStatus = "suspended";
+        _vm.ApplyForwardSnapshot([Forward(59), suspended], _ => false);
+
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+        Assert.True(_vm.IsSelectedProxyForwardUnavailable);
+        Assert.Equal(60, _vm.Config.ProxySelectedForwardId);
+        _vm.ApplyForwardSnapshot([Forward(59)], _ => false);
+        Assert.Equal(0, _vm.SelectedProxyForwardId);
+
+        _vm.ApplyForwardSnapshot([Forward(59), Forward(60)], _ => false);
+        Assert.Equal(60, _vm.SelectedProxyForwardId);
+        Assert.False(_vm.IsSelectedProxyForwardUnavailable);
+    }
+
+    [Fact]
     public async Task StaleProfilePairStaysUnboundWithoutFallback()
     {
         await _vm.InitializeProxyAsync();
@@ -456,6 +483,114 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         await row.DisconnectAsync();
         Assert.False(host.IsRunning);
         Assert.False(row.IsActive);
+    }
+
+    [Fact]
+    public async Task RowConnectUsesTheChosenProxyMode()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host);
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("one.example.test", 30526);
+        _vm.Config.ProxyActiveMode = nameof(WindowsProxyMode.Tun);
+        _vm.Config.ProxyModeChosen = true;
+
+        await _vm.ProxyForwardRows[0].ConnectAsync();
+
+        Assert.Equal(WindowsProxyMode.Tun, _vm.ProxySnapshot.Mode);
+        using var document = JsonDocument.Parse(host.LastConfig);
+        Assert.Equal("tun", document.RootElement.GetProperty("inbounds")[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task UnexpectedProxyExitReconnectsWithTheSameForwardAndMode()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host);
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward, Forward(60)], _ => false);
+        await SaveNodeAsync("one.example.test", 30526);
+        var delays = UseRecordedRecoveryDelays();
+        await _vm.StartProxyAsync(WindowsProxyMode.Http, _vm.SelectedProxyProfileId);
+        Assert.Equal(1, host.StartCalls);
+
+        host.Crash();
+        await WaitUntilAsync(() => host.StartCalls == 2 && _vm.ProxySnapshot.State == WindowsProxyConnectionState.Connected);
+
+        Assert.Equal([TimeSpan.FromSeconds(2)], delays);
+        Assert.Equal(WindowsProxyMode.Http, _vm.ProxySnapshot.Mode);
+        Assert.Equal(59, runtime.LastStartedForwardId);
+        Assert.True(_vm.ProxyForwardRows[0].IsActive);
+    }
+
+    [Fact]
+    public async Task ProxyRecoveryBacksOffAndGivesUpWithAVisibleError()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host);
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("one.example.test", 30526);
+        var delays = UseRecordedRecoveryDelays();
+        await _vm.StartProxyAsync(WindowsProxyMode.Http, _vm.SelectedProxyProfileId);
+        host.StartFailure = new InvalidOperationException("proxy_process_start_failed");
+
+        host.Crash();
+        await WaitUntilAsync(() => delays.Count == MainViewModel.MaxProxyRecoveryAttempts
+            && GetField<Task?>("_proxyRecoveryTask") is { IsCompleted: true });
+
+        Assert.Equal(new[] { 2, 4, 8, 16, 32, 60, 60, 60 }, delays.Select(delay => (int)delay.TotalSeconds));
+        Assert.Equal(1 + MainViewModel.MaxProxyRecoveryAttempts, host.StartCalls);
+        Assert.Equal(WindowsProxyConnectionState.Error, _vm.ProxySnapshot.State);
+        Assert.Contains("Could not reconnect", _vm.ProxySnapshot.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UserStopForgetsTheSessionSoNothingReconnects()
+    {
+        var host = new ProxyProcessHost();
+        using var runtime = InstallRuntime(host);
+        await _vm.InitializeProxyAsync();
+        _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
+        await SaveNodeAsync("one.example.test", 30526);
+        var delays = UseRecordedRecoveryDelays();
+        await _vm.StartProxyAsync(WindowsProxyMode.Http, _vm.SelectedProxyProfileId);
+        await _vm.StopProxyAsync();
+
+        host.Crash();
+        await Task.Delay(100);
+
+        Assert.Empty(delays);
+        Assert.Equal(1, host.StartCalls);
+        Assert.Equal(WindowsProxyConnectionState.Disconnected, _vm.ProxySnapshot.State);
+    }
+
+    private List<TimeSpan> UseRecordedRecoveryDelays()
+    {
+        var delays = new List<TimeSpan>();
+        Func<TimeSpan, CancellationToken, Task> delay = (value, ct) =>
+        {
+            if (value != TimeSpan.FromSeconds(3))
+                lock (delays) delays.Add(value);
+            return Task.Delay(1, ct);
+        };
+        typeof(MainViewModel).GetField("_proxyRecoveryDelay", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(_vm, delay);
+        return delays;
+    }
+
+    private T GetField<T>(string name)
+        => (T)typeof(MainViewModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(_vm)!;
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "condition was not reached in time");
+            await Task.Delay(10);
+        }
     }
 
     [Fact]
@@ -617,7 +752,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
     private sealed class ListenerRuntime : ForwardRuntimeManager
     {
         private readonly ListenerSupervisor _supervisor;
-        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private TcpListener _listener = new(IPAddress.Loopback, 0);
+        private bool _listening;
         public ForwardConfig Forward { get; }
         public int StartCalls { get; private set; }
         public int LastStartedForwardId { get; private set; }
@@ -629,6 +765,7 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         {
             _supervisor = supervisor;
             _listener.Start();
+            _listening = true;
             Forward = new ForwardConfig { ForwardId = 59, ListenPort = ((IPEndPoint)_listener.LocalEndpoint).Port,
                 Target = "198.51.100.8:443", Transport = "tcp" };
         }
@@ -637,6 +774,12 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         {
             LastStartedForwardId = forward.ForwardId;
             StartCalls++;
+            if (!_listening)
+            {
+                _listener = new TcpListener(IPAddress.Loopback, Forward.ListenPort);
+                _listener.Start();
+                _listening = true;
+            }
             StartListener();
         }
         public override void StopForward(int forwardId)
@@ -644,6 +787,7 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
             StopCalls++;
             _supervisor.Running = false;
             _listener.Stop();
+            _listening = false;
         }
         public new void Dispose()
         {
@@ -659,7 +803,7 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         public Func<bool> ForwardReady { get; set; } = () => false;
         public bool SawForwardReady { get; private set; }
         public string LastConfig { get; private set; } = string.Empty;
-        public Exception? StartFailure { get; init; }
+        public Exception? StartFailure { get; set; }
         public Task? StartRelease { get; init; }
         public TaskCompletionSource StartEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int StartCalls { get; private set; }
@@ -690,6 +834,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         public Task<bool> WaitForListenerAsync(int port, CancellationToken ct = default) => Task.FromResult(IsRunning);
         public Task StopAsync(CancellationToken ct = default) { IsRunning = false; return Task.CompletedTask; }
         public ValueTask DisposeAsync() { IsRunning = false; return ValueTask.CompletedTask; }
+        public event Action<int>? UnexpectedExit;
+        public void Crash() { IsRunning = false; UnexpectedExit?.Invoke(1); }
     }
 
     private sealed class SystemProxy : IWindowsSystemProxyManager

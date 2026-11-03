@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the LeiKwan Bridge main executable under the hardened runtime.
+
+  The app is a self-contained .NET 8 (CoreCLR) process. CoreCLR generates native
+  code at run time (JIT), which the hardened runtime blocks unless the process
+  holds allow-jit; the JIT also maps writable-then-executable pages, which needs
+  allow-unsigned-executable-memory. Both are required for the managed app to start
+  and are scoped to the main executable only. Nested dylibs and the Rust/Go/sing-box
+  helpers are signed without entitlements.
+
+  Deliberately NOT included:
+  - disable-library-validation: every bundled dylib is re-signed with the same
+    Developer ID identity, so library validation already passes.
+  - network/user-selected/keychain entitlements: they are sandbox-only and the app
+    is not sandboxed.
+  - com.apple.security.get-task-allow: a debugging entitlement that must not ship.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>

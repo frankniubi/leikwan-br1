@@ -167,7 +167,10 @@ public sealed class MacConnectionProcessHostTests
             readinessProbe: (_, _, _) => Task.FromResult(true),
             signalReload: _ => { signals++; return true; },
             tunMtuProbe: _ => Task.FromResult(liveMtu),
-            reloadTimeout: TimeSpan.FromMilliseconds(500));
+            reloadTimeout: TimeSpan.FromMilliseconds(500),
+            // The direct-start helper reloads on a signal; on macOS a VPN helper runs
+            // privileged and reloads through the marker file instead.
+            isMacOs: () => false);
 
         await host.StartAsync("helper", config, MacConnectionMode.Vpn, CancellationToken.None);
 

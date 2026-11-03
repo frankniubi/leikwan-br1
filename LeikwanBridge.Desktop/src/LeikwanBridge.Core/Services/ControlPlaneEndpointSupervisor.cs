@@ -9,7 +9,9 @@ namespace LeikwanBridge.Core.Services;
 /// </summary>
 public sealed class ControlPlaneEndpointSupervisor
 {
-    private static readonly HttpClient SharedHttpClient = new();
+    // Proxy-free, physical-NIC client; only used by the convenience
+    // constructor (MasterApiClient passes its own send delegate).
+    private static readonly Lazy<HttpClient> SharedHttpClient = new(LeikwanHttpClientFactory.CreateDefault);
     private static readonly TimeSpan[] Backoff =
     [
         TimeSpan.FromMilliseconds(50),
@@ -26,7 +28,7 @@ public sealed class ControlPlaneEndpointSupervisor
     private DateTimeOffset _primaryProbeAfterUtc;
 
     public ControlPlaneEndpointSupervisor(string primary, IReadOnlyList<string> fallback)
-        : this(primary, fallback, static (request, ct) => SharedHttpClient.SendAsync(request, ct))
+        : this(primary, fallback, static (request, ct) => SharedHttpClient.Value.SendAsync(request, ct))
     {
     }
 

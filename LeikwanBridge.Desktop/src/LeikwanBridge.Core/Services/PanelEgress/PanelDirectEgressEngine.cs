@@ -55,6 +55,7 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
     private long _snapshotTicks;
     private int _refreshInProgress;
     private int _disposed;
+    private string _preferredInterfaceName = string.Empty;
 
     public PanelDirectEgressEngine(
         ILeikwanDnsResolver resolver,
@@ -102,6 +103,21 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
         if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             return;
         RegisterHost(uri.IdnHost);
+    }
+
+    public void SetPreferredInterface(string? interfaceName)
+    {
+        if (_disposed != 0)
+            return;
+        Volatile.Write(ref _preferredInterfaceName, interfaceName?.Trim() ?? string.Empty);
+        _interfaceProvider.SetPreferredInterface(interfaceName);
+        lock (_snapshotLock)
+        {
+            _snapshotV4 = null;
+            _snapshotV6 = null;
+            _snapshotTicks = 0;
+        }
+        ReplanRoutes();
     }
 
     public bool IsDirectEgressHost(string host)
@@ -219,7 +235,11 @@ public sealed class PanelDirectEgressEngine : IPanelDirectEgressCoordinator, IPa
 
         var egress = GetInterfaceSnapshot(family);
         if (egress is null || egress.Index <= 0)
+        {
+            if (!string.IsNullOrWhiteSpace(Volatile.Read(ref _preferredInterfaceName)))
+                throw new InvalidOperationException("egress_interface_unavailable");
             return;
+        }
         var request = PanelSocketOptionBuilder.Build(
             PanelSocketOptionBuilder.CurrentPlatform, family, egress.Index);
         if (request is null)

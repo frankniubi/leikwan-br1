@@ -3,13 +3,14 @@ param(
     [string]$Version = "2026.09.11.4",
     [string]$ShortSha = "",
     [string]$OutputRoot = "",
-    [ValidateSet("arm64", "amd64")]
-    [string]$Architectures = "arm64,amd64",
+    # The macOS client ships for Apple Silicon only; darwin/amd64 is no longer built.
+    [ValidateSet("arm64")]
+    [string]$Architectures = "arm64",
     [switch]$SkipReproducibilityCheck
 )
 
 # Build the darwin ultra-client runtime with the exact 2026.09.11.4 flag set
-# used for the linux/windows runtimes (garble v0.17.0 -literals -tiny,
+# used for the linux/windows runtimes (garble v0.17.0 -literals,
 # CGO_ENABLED=0, -buildmode=pie, same-origin seed derivation) plus the
 # -X main.runtimeBuildVersion=<version>.<shortsha> injection recorded in
 # docs/reports/2026-09-11-ultra-runtime-2026.09.11.3-release.md.
@@ -76,9 +77,37 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
 }
 
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
+    & $garblePath -literals "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble darwin build failed"
+    }
+}
+
+# Obfuscation guard. A plain `go build -ldflags '-s -w'` strips the symbol table
+# but NOT the pclntab, so every tools/ultra-client function name (main.parseTarget,
+# main.credentialChecksum, ...) and -literals-eligible string (leikwan-ultra-policy-v2)
+# still ships in cleartext. garble renames those to random identifiers and encrypts
+# the literals, so their absence is a reliable proof the Mach-O really went through
+# garble rather than a silent fall-through to `go build`. The -X-injected
+# runtimeBuildVersion is intentionally NOT in this list: garble preserves it so the
+# panel attestation (ultra_runtime_fingerprint / self_sha256) keeps working.
+$script:ObfuscationMarkers = @(
+    "leikwan-ultra-policy-v2",
+    "parseTarget",
+    "credentialChecksum",
+    "runtimeAttestation",
+    "copyInbound",
+    "selfExecutableHash",
+    "ParseNativeRoutePolicy"
+)
+function Assert-RuntimeObfuscated([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $leaks = foreach ($marker in $script:ObfuscationMarkers) {
+        if ($ascii.Contains($marker)) { $marker }
+    }
+    if ($leaks) {
+        throw "runtime still contains unobfuscated symbols ($($leaks -join ', ')); garble did not run - refusing to ship a plain go build"
     }
 }
 
@@ -98,7 +127,7 @@ $results = @()
 foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) {
     $archConfig = switch ($architecture) {
         "arm64" { [pscustomobject]@{ GoArch = "arm64"; Cpu = 0x100000c; ArtifactName = "ultra-client_macos_arm64" } }
-        "amd64" { [pscustomobject]@{ GoArch = "amd64"; Cpu = 0x1000007; ArtifactName = "ultra-client_macos_amd64" } }
+        "amd64" { throw "darwin/amd64 is no longer built: the macOS client supports Apple Silicon (arm64) only" }
         default { throw "unsupported darwin architecture: $architecture" }
     }
     $outputPath = Join-Path $OutputRoot $archConfig.ArtifactName
@@ -113,9 +142,11 @@ foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim()
         try {
             Invoke-GarbleBuild $candidatePath
             Assert-MachO $candidatePath $archConfig.Cpu
+            Assert-RuntimeObfuscated $candidatePath
             if (-not $SkipReproducibilityCheck) {
                 Invoke-GarbleBuild $reproPath
                 Assert-MachO $reproPath $archConfig.Cpu
+                Assert-RuntimeObfuscated $reproPath
                 $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
                 $reproHash = (Get-FileHash -LiteralPath $reproPath -Algorithm SHA256).Hash
                 if ($candidateHash -ne $reproHash) {

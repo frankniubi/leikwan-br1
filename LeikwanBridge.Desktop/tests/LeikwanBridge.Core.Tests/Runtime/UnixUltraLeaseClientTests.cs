@@ -11,6 +11,37 @@ namespace LeikwanBridge.Core.Tests.Runtime;
 public sealed class UnixUltraLeaseClientTests
 {
     [Fact]
+    public async Task SingleLeaseWaitsForVerificationAcknowledgement()
+    {
+        var path = TemporarySocketPath();
+        try
+        {
+            using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            listener.Bind(new UnixDomainSocketEndPoint(path));
+            listener.Listen(1);
+            using var lease = CreateLease();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var send = new UnixUltraLeaseClient().SendAsync(path, lease.ForwardId, lease, deadline.Token);
+            using var connection = await listener.AcceptAsync(deadline.Token);
+            var header = new byte[4];
+            await ReadExactlyAsync(connection, header).WaitAsync(deadline.Token);
+            var body = new byte[BinaryPrimitives.ReadUInt32BigEndian(header)];
+            await ReadExactlyAsync(connection, body).WaitAsync(deadline.Token);
+            await Task.Delay(TimeSpan.FromSeconds(2.3), deadline.Token);
+            Assert.False(send.IsCompleted, "single lease abandoned before runtime verification ACK");
+            var ack = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                ok = true, forward_id = lease.ForwardId, policy_generation = lease.PolicyGeneration,
+            });
+            BinaryPrimitives.WriteUInt32BigEndian(header, (uint)ack.Length);
+            await connection.SendAsync(header);
+            await connection.SendAsync(ack);
+            Assert.True(await send);
+        }
+        finally { TryDelete(path); }
+    }
+
+    [Fact]
     public async Task SendAsync_DoesNotDependOnCallingSynchronizationContext()
     {
         var path = TemporarySocketPath();

@@ -151,4 +151,19 @@ try {
     removeMacArtifactFixture($root);
 }
 
+// Intel macOS is retired: the live x64 entries are pinned at the final 1.0.56
+// build so shipped Intel clients see "up to date" instead of an
+// update_manifest_architecture_missing failure on every launch.
+$liveManifest = json_decode((string) file_get_contents(dirname(__DIR__, 2) . '/artifacts/versions.json'), true);
+foreach (['macos_client_app_x64', 'macos_client_update_x64', 'ultra_client_runtime_macos_x64'] as $retiredKey) {
+    $retiredEntry = is_array($liveManifest) ? ($liveManifest[$retiredKey] ?? null) : null;
+    $pinnedVersion = $retiredKey === 'ultra_client_runtime_macos_x64' ? '2026.10.12.1' : '1.0.56';
+    if (!is_array($retiredEntry)
+        || ($retiredEntry['version'] ?? '') !== $pinnedVersion
+        || !is_string($retiredEntry['retired'] ?? null)
+        || ($retiredKey !== 'ultra_client_runtime_macos_x64' && ($retiredEntry['architecture'] ?? '') !== 'x86_64')) {
+        fwrite(STDERR, "retired Intel macOS entry is not pinned: {$retiredKey}\n");
+        exit(1);
+    }
+}
 echo "ok\n";

@@ -20,7 +20,8 @@ import zipfile
 from pathlib import Path
 
 APP_NAME = "LeiKwan Bridge.app"
-CPU = {"arm64": 0x0100000C, "x86_64": 0x01000007}
+# The macOS client ships for Apple Silicon only.
+CPU = {"arm64": 0x0100000C}
 
 
 def sha256(path: Path) -> str:
@@ -36,7 +37,8 @@ def main() -> int:
     parser.add_argument("zip_path", type=Path)
     parser.add_argument("--runtime-artifact", required=True, type=Path)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--architecture", required=True, choices=("arm64", "x86_64"))
+    parser.add_argument("--architecture", required=True, choices=("arm64",),
+                        help="arm64 only: the macOS client supports Apple Silicon only")
     args = parser.parse_args()
 
     import tempfile

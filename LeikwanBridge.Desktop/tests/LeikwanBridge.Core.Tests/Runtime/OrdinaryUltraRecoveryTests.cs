@@ -18,7 +18,12 @@ public sealed class OrdinaryUltraRecoveryTests
         using var api = new MasterApiClient("http://127.0.0.1:1", "synthetic", httpClientFactory: () => http, ownsHttpClient: false);
         var state = new StateManager(temp.Path);
         using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path }, new ProcessSupervisor(), state);
-        var service = new ConfigPollingService(api, runtime, state);
+        // A failed pull now backs off (5 s .. 60 s with jitter in production);
+        // shrink the sequence so the test still observes the retry quickly.
+        var service = new ConfigPollingService(api, runtime, state, null, TimeProvider.System,
+            new ControlPlaneBackoff(initial: TimeSpan.FromMilliseconds(200), cap: TimeSpan.FromMilliseconds(400),
+                minimumDelay: TimeSpan.FromMilliseconds(50)),
+            leaseBackoff: null);
         var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
         service.SyncError += failures.Enqueue;
         try
@@ -151,7 +156,195 @@ public sealed class OrdinaryUltraRecoveryTests
         Assert.True(host.Ready);
     }
 
-    private static ForwardConfig CreateUltraForward(int forwardId = 880, int listenPort = 11880)
+    [Fact]
+    public void AutomaticStartupFailure_IsPerForwardAndBacksOffAcrossPolls()
+    {
+        using var temp = new TempStateDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var host = new FailingStartupHost();
+        using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path },
+            new ProcessSupervisor(), new StateManager(temp.Path), ultraRuntimeHost: host, startupRetryClock: () => now);
+        var first = CreateUltraForward();
+        var firstLease = first.RuntimeLease!;
+        runtime.ApplyForward(first, "contract-a", "config_sync");
+        for (var second = 1; second < 30; second++)
+        {
+            now = now.AddSeconds(1);
+            var retry = CreateUltraForward();
+            var retryLease = retry.RuntimeLease!;
+            runtime.ApplyForward(retry, "contract-a", "config_sync");
+            Assert.Null(retry.RuntimeLease);
+            Assert.Empty(retryLease.LeaseId);
+        }
+        Assert.Equal(1, host.Starts.GetValueOrDefault(880));
+        Assert.Empty(firstLease.LeaseId);
+        host.FailingForwardIds.Remove(881);
+        runtime.ApplyForward(CreateUltraForward(881, 11881), "sibling-contract", "config_sync");
+        Assert.Equal(1, host.Starts.GetValueOrDefault(881));
+        Assert.DoesNotContain(881, host.Stopped);
+
+        now = now.AddSeconds(1);
+        runtime.ApplyForward(CreateUltraForward(), "contract-a", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+        now = now.AddSeconds(59);
+        runtime.ApplyForward(CreateUltraForward(), "contract-a", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+        now = now.AddSeconds(1);
+        runtime.ApplyForward(CreateUltraForward(), "contract-a", "config_sync");
+        Assert.Equal(3, host.Starts[880]);
+    }
+
+    [Fact]
+    public void StartupCooldown_ContractChangeAndManualRetryResetIt()
+    {
+        using var temp = new TempStateDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var host = new FailingStartupHost();
+        using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path },
+            new ProcessSupervisor(), new StateManager(temp.Path), ultraRuntimeHost: host, startupRetryClock: () => now);
+        runtime.ApplyForward(CreateUltraForward(), "contract-a", "config_sync");
+        runtime.ApplyForward(CreateUltraForward(), "contract-b", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+        runtime.ApplyForward(CreateUltraForward(), "contract-b", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+        runtime.ApplyForward(CreateUltraForward(), "contract-b", "manual_apply");
+        Assert.Equal(3, host.Starts[880]);
+
+        // A UI/catalog retry has no one-shot lease, but still clears the retry
+        // gate before the requested fresh-lease reconciliation.
+        var catalog = CreateUltraForward();
+        catalog.RuntimeLease!.Dispose();
+        catalog.RuntimeLease = null;
+        runtime.RestartForward(catalog, force: true, reason: "manual_apply");
+        runtime.ApplyForward(CreateUltraForward(), "contract-b", "config_sync");
+        Assert.Equal(4, host.Starts[880]);
+    }
+
+    [Fact]
+    public void AutomaticEnsureFromCatalog_DoesNotResetStartupCooldown()
+    {
+        using var temp = new TempStateDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var host = new FailingStartupHost();
+        using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path },
+            new ProcessSupervisor(), new StateManager(temp.Path), ultraRuntimeHost: host, startupRetryClock: () => now);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        now = now.AddSeconds(15);
+        var catalog = CreateUltraForward();
+        catalog.RuntimeLease!.Dispose();
+        catalog.RuntimeLease = null;
+        var reasons = new List<string>();
+        runtime.UltraRecoveryRequested += (_, reason) => reasons.Add(reason);
+        runtime.RestartForward(catalog, force: true, reason: "automatic_ensure");
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Equal(["automatic_ensure"], reasons);
+        Assert.Equal(1, host.Starts[880]);
+        now = now.AddSeconds(15);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+    }
+
+    [Fact]
+    public void SuccessfulStartup_ClearsFailureBackoff()
+    {
+        using var temp = new TempStateDirectory();
+        var now = DateTimeOffset.UtcNow;
+        var host = new FailingStartupHost();
+        using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path },
+            new ProcessSupervisor(), new StateManager(temp.Path), ultraRuntimeHost: host, startupRetryClock: () => now);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        now = now.AddSeconds(30);
+        host.FailingForwardIds.Clear();
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Equal(2, host.Starts[880]);
+        host.FailingForwardIds.Add(880);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Equal(3, host.Starts[880]);
+        now = now.AddSeconds(30);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Equal(4, host.Starts[880]);
+    }
+
+    [Fact]
+    public void StartupCooldown_DoesNotSuppressPolicyRejection()
+    {
+        using var temp = new TempStateDirectory();
+        var host = new FailingStartupHost();
+        using var runtime = new ForwardRuntimeManager(new AgentConfig { StateDir = temp.Path },
+            new ProcessSupervisor(), new StateManager(temp.Path), ultraRuntimeHost: host);
+        runtime.ApplyForward(CreateUltraForward(), "contract", "config_sync");
+        Assert.Single(host.Stopped);
+        var revoked = CreateUltraForward(serviceState: "suspended");
+        runtime.ApplyForward(revoked, "contract", "config_sync");
+        Assert.Equal(1, host.Starts[880]);
+        Assert.Equal(2, host.Stopped.Count);
+        Assert.Null(revoked.RuntimeLease);
+    }
+
+    [Fact]
+    public void StaleLeaseExpiry_StopsUnverifiedRuntimeAndRequestsFreshPolicy()
+    {
+        using var temp = new TempStateDirectory();
+        using var supervisor = new AlwaysRunningSupervisor();
+        var host = new BlockingHost { Ready = true };
+        var state = new StateManager(temp.Path);
+        using var runtime = new ForwardRuntimeManager(
+            new AgentConfig { StateDir = temp.Path },
+            supervisor,
+            state,
+            portListeningProbe: _ => true,
+            ultraRuntimeHost: host);
+        var forward = CreateUltraForward();
+        var policy = forward.UltraAccess!;
+        forward.RuntimeLease!.Dispose();
+        forward.RuntimeLease = new UltraLease
+        {
+            Protocol = UltraPolicy.Protocol,
+            LeaseId = "lease-newer-than-cached-policy",
+            SessionTicket = policy.SessionTicket,
+            ForwardId = forward.ForwardId,
+            PolicyGeneration = policy.PolicyGeneration,
+            TargetDigest = policy.TargetDigest,
+            ExpiresAt = policy.ExpiresAt.AddSeconds(30),
+            Transport = policy.Transport,
+            RateLimitMbps = 20,
+            QuotaRemainingBytes = 1024 * 1024,
+            SelectionRef = new string('r', 43),
+            SelectionTier = UltraLease.SelectionTierPaid,
+            NonceHash = new string('b', 64),
+            ProviderIp = "203.0.113.20",
+            ProviderPort = 5438,
+            User = "line-user"u8.ToArray(),
+            Password = "line-password"u8.ToArray(),
+        };
+        var requests = new List<(int Id, string Reason)>();
+        runtime.UltraRecoveryRequested += (id, reason) => requests.Add((id, reason));
+
+        runtime.ApplyForward(forward, "contract-stale-expiry", "config_sync");
+
+        Assert.Equal([(forward.ForwardId, "stale_policy_or_lease")], requests);
+        Assert.Equal(0, host.Starts);
+        Assert.Equal(1, host.Stops);
+        Assert.False(host.Ready);
+        Assert.Null(forward.RuntimeLease);
+    }
+
+    private sealed class FailingStartupHost : IUltraRuntimeHost
+    {
+        public Dictionary<int, int> Starts { get; } = [];
+        public List<int> Stopped { get; } = [];
+        public HashSet<int> FailingForwardIds { get; } = [880, 881];
+        public void Start(ForwardConfig forward, UltraLease lease, string signature, string reason)
+        {
+            Starts[forward.ForwardId] = Starts.GetValueOrDefault(forward.ForwardId) + 1;
+            if (FailingForwardIds.Contains(forward.ForwardId))
+                throw new InvalidOperationException("synthetic_start_failure");
+        }
+        public bool Refresh(ForwardConfig forward, UltraLease lease) => true;
+        public void Stop(int id) => Stopped.Add(id);
+    }
+
+    private static ForwardConfig CreateUltraForward(int forwardId = 880, int listenPort = 11880, string serviceState = "active")
     {
         var now = DateTimeOffset.UtcNow;
         const string target = "198.51.100.10:443";
@@ -179,7 +372,7 @@ public sealed class OrdinaryUltraRecoveryTests
                 IssuedAt = now,
                 RenewAfter = now.AddMinutes(2),
                 ExpiresAt = now.AddMinutes(4),
-                ServiceState = "active",
+                ServiceState = serviceState,
                 Transport = "tcp",
                 RateLimitMbps = 20,
                 QuotaRemainingBytes = 1024 * 1024,

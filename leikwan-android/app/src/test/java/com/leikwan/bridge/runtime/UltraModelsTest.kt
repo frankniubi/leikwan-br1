@@ -67,6 +67,73 @@ class UltraModelsTest {
         assertNull(UltraLease.from(invalid, policy, now))
     }
 
+    @Test
+    fun `policy carries the panel tcp first flight with every direction candidate`() {
+        val hashes = (1..7).map { it.toString().repeat(64) }
+        fun firstFlight(target: String = "origin.example:443", generation: String = "a".repeat(64)) =
+            policyJson().deepCopy().apply {
+                add("tcp_first_flight", JsonParser.parseString(
+                    """{"target":"$target","policy_generation":"$generation","expires_at":"2026-08-27T00:04:00Z",
+                       "candidate_hashes":${hashes.joinToString(",", "[", "]") { "\"$it\"" }},"prefix_bytes":4,"delay_ms":300}"""
+                ).asJsonObject)
+            }
+
+        val accepted = UltraPolicy.from(sampleForward(firstFlight()), now)!!.tcpFirstFlight!!
+        assertEquals(hashes, accepted.candidateHashes)
+        assertEquals(4, accepted.prefixBytes)
+        assertEquals(300, accepted.delayMillis)
+        val bootstrap = accepted.toBootstrapJson()
+        assertEquals(7, bootstrap.getAsJsonArray("candidate_hashes").size())
+        assertNull(bootstrap.get("policy_generation"))
+
+        // Bound to this forward's target and this grant's generation; the policy
+        // itself stays valid when the compatibility block does not apply.
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(target = "other.example:443")), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(firstFlight(generation = "d".repeat(64))), now)!!.tcpFirstFlight)
+        assertNull(UltraPolicy.from(sampleForward(policyJson()), now)!!.tcpFirstFlight)
+    }
+
+    @Test
+    fun `policy accepts a 30 minute offline grant and the 3600 s ceiling`() {
+        val offline = sampleForward(policyJson(expiresAt = "2026-08-27T00:30:00Z"))
+        val ceiling = sampleForward(policyJson(expiresAt = "2026-08-27T01:00:00Z"))
+
+        assertEquals("2026-08-27T00:30:00Z", UltraPolicy.from(offline, now)!!.expiresAt.toString())
+        assertNotNull(UltraPolicy.from(ceiling, now))
+    }
+
+    @Test
+    fun `policy still rejects a grant beyond the 3600 s ceiling`() {
+        val tooLong = sampleForward(policyJson(expiresAt = "2026-08-27T01:00:01Z"))
+
+        assertNull(UltraPolicy.from(tooLong, now))
+    }
+
+    @Test
+    fun `policy keeps its other validation with a long grant`() {
+        val badDigest = sampleForward(
+            policyJson(expiresAt = "2026-08-27T00:30:00Z", targetDigest = "b".repeat(64)),
+        )
+        // renew_after (00:02) must stay before expires_at; a grant that expires first is invalid.
+        val expiresBeforeRenew = sampleForward(policyJson(expiresAt = "2026-08-27T00:01:00Z"))
+
+        assertNull(UltraPolicy.from(badDigest, now))
+        assertNull(UltraPolicy.from(expiresBeforeRenew, now))
+    }
+
+    @Test
+    fun `lease may run to a long policy expiry but never past it`() {
+        val policy = UltraPolicy.from(sampleForward(policyJson(expiresAt = "2026-08-27T00:30:00Z")), now)!!
+        val longLease = leaseJson().apply { addProperty("expires_at", "2026-08-27T00:30:00Z") }
+        val pastPolicy = leaseJson().apply { addProperty("expires_at", "2026-08-27T00:30:02Z") }
+
+        val lease = UltraLease.from(longLease, policy, now)
+        assertNotNull(lease)
+        assertEquals("2026-08-27T00:30:00Z", lease!!.expiresAt.toString())
+        lease.wipe()
+        assertNull(UltraLease.from(pastPolicy, policy, now))
+    }
+
     private fun sampleForward(access: JsonObject): ForwardContract = ForwardContract(
         forwardId = 42L,
         serviceName = "Ultra test",

@@ -1,0 +1,338 @@
+name: iOS client
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ios-client.yml"
+      - "ios/**"
+      - "tools/ultra-client/**"
+      - "opengfw/analyzer/**"
+      - "wstunnel-main/leikwan-bond/**"
+      - "wstunnel-main/leikwan-ingress/**"
+  push:
+    branches:
+      - master
+      - main
+      - "ci/ios-*"
+      - "feat/ios-*"
+    paths:
+      - ".github/workflows/ios-client.yml"
+      - "ios/**"
+      - "tools/ultra-client/**"
+      - "opengfw/analyzer/**"
+      - "wstunnel-main/leikwan-bond/**"
+      - "wstunnel-main/leikwan-ingress/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-client-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SING_BOX_VERSION: v1.13.12
+  GOMOBILE_VERSION: v0.1.12
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
+jobs:
+  core-tests:
+    name: Core package tests
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test LeikwanIOSCore
+        working-directory: ios/Core
+        run: swift test --parallel
+
+  runtime-tests:
+    name: Runtime host tests (Rust + Go)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: tools/ultra-client/go.sum
+      - name: Rust runtime host tests
+        run: cargo test --manifest-path ios/runtime/rust/Cargo.toml --locked
+      - name: leikwan-bond tests
+        run: cargo test --manifest-path wstunnel-main/leikwan-bond/Cargo.toml
+      - name: Ultra runtime tests
+        working-directory: tools/ultra-client
+        run: |
+          go vet .
+          GOOS=darwin go vet -tags ios .
+          go test -count=1 -run 'Config|Normalize|Control|Policy|Lease|Attest' .
+
+  frameworks:
+    name: Build iOS runtime frameworks
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+      - name: Restore Libbox.xcframework
+        id: libbox-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ios/Frameworks/Libbox.xcframework
+          key: libbox-${{ env.SING_BOX_VERSION }}-${{ hashFiles('ios/scripts/build-go-mobile.sh', 'ios/runtime/go/**', 'tools/ultra-client/*.go', 'opengfw/analyzer/**') }}
+      - name: Build Libbox.xcframework (sing-box + ultra)
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: bash ios/scripts/build-go-mobile.sh
+        env:
+          ULTRA_VERSION: ios-${{ github.sha }}
+      - name: Save Libbox.xcframework
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ios/Frameworks/Libbox.xcframework
+          key: ${{ steps.libbox-cache.outputs.cache-primary-key }}
+      - name: Restore LeikwanRuntime.xcframework
+        id: runtime-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ios/Frameworks/LeikwanRuntime.xcframework
+          key: lkruntime-${{ hashFiles('ios/scripts/build-rust-runtime.sh', 'ios/runtime/rust/**', 'wstunnel-main/leikwan-bond/**', 'wstunnel-main/leikwan-ingress/**') }}
+      - name: Build LeikwanRuntime.xcframework (ingress + bond)
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        run: bash ios/scripts/build-rust-runtime.sh
+      - name: Save LeikwanRuntime.xcframework
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ios/Frameworks/LeikwanRuntime.xcframework
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+      - name: Framework sizes
+        run: du -sh ios/Frameworks/*.xcframework
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+          retention-days: 7
+
+  app:
+    name: Build app (simulator + unsigned device ipa)
+    # iPhone Duo: an app built with an SDK older than iOS 27.1 runs letterboxed on it, and the
+    # fold APIs (reserved regions) exist only from Xcode 27.1 on.
+    runs-on: xcode-27
+    needs: [frameworks]
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+      - name: Require the iOS 27.1 SDK
+        run: bash ios/scripts/check-sdk.sh
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild build \
+            -project Bridge.xcodeproj -scheme Bridge \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim \
+            CODE_SIGNING_ALLOWED=NO > build/sim.log 2>&1 || { grep -E ' error: |error: ' build/sim.log | head -80; tail -60 build/sim.log; exit 1; }
+      - name: Build for iOS device (unsigned)
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild build \
+            -project Bridge.xcodeproj -scheme Bridge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" > build/device.log 2>&1 || { grep -E ' error: |error: ' build/device.log | head -80; tail -60 build/device.log; exit 1; }
+      - name: Package unsigned ipa
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          app="build/device/Build/Products/Release-iphoneos/Bridge.app"
+          test -d "$app/PlugIns/PacketTunnel.appex"
+          test -s "$app/PlugIns/PacketTunnel.appex/RuleSets/SHA256SUMS"
+          # Visible metadata carries no brand, built-in server or third-party host.
+          for plist in "$app/Info.plist" "$app/PlugIns/PacketTunnel.appex/Info.plist"; do
+            if plutil -p "$plist" | grep -i -E 'nbwly|githubusercontent|ip\.sb|cdn-cgi|leikwanhost'; then
+              echo "branded or external value in $plist" >&2
+              exit 1
+            fi
+          done
+          mkdir -p build/ipa/Payload
+          cp -R "$app" build/ipa/Payload/
+          (cd build/ipa && zip -qry ../Bridge-unsigned.ipa Payload)
+          ls -lh build/Bridge-unsigned.ipa
+          echo "### Unsigned build" >> "$GITHUB_STEP_SUMMARY"
+          du -sh "$app" "$app/PlugIns/PacketTunnel.appex" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bridge-unsigned-ipa
+          path: ios/build/Bridge-unsigned.ipa
+          retention-days: 14
+      # Boots an iPhone Duo, folds it through closed, half, book and open, and keeps a screenshot of
+      # each display for the privacy cover, the sign-in screen and the dashboard.
+      - name: iPhone Duo simulator screenshots
+        working-directory: ios
+        run: bash scripts/duo-posture-screenshots.sh build/sim/Build/Products/Debug-iphonesimulator/Bridge.app build/duo
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-duo-screenshots
+          path: ios/build/duo
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Uploads every non-PR run once the secrets exist; build number = run number.
+  testflight:
+    name: Signed build to TestFlight
+    # Xcode 27.1 / iOS 27.1 SDK: App Store Connect refuses older SDKs, and anything older than
+    # 27.1 runs letterboxed on iPhone Duo.
+    runs-on: xcode-27
+    needs: [frameworks, core-tests]
+    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      MANUAL_P12_BASE64: ${{ secrets.MANUAL_P12_BASE64 }}
+      MANUAL_P12_PASSWORD: ${{ secrets.MANUAL_P12_PASSWORD }}
+      MANUAL_PROFILE_APP_BASE64: ${{ secrets.MANUAL_PROFILE_APP_BASE64 }}
+      MANUAL_PROFILE_TUNNEL_BASE64: ${{ secrets.MANUAL_PROFILE_TUNNEL_BASE64 }}
+    steps:
+      - name: Check signing secrets
+        id: secrets
+        run: |
+          if [ -n "$APPLE_TEAM_ID" ] && [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "### TestFlight skipped: signing secrets are not set (see ios/scripts/apple_setup.py)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$MANUAL_P12_BASE64" ] && [ -n "$MANUAL_PROFILE_APP_BASE64" ] && [ -n "$MANUAL_PROFILE_TUNNEL_BASE64" ]; then
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "manual=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: actions/download-artifact@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          name: ios-frameworks
+          path: ios/Frameworks
+      - name: Require the iOS 27.1 SDK
+        if: steps.secrets.outputs.ready == 'true'
+        run: bash ios/scripts/check-sdk.sh
+      - name: Install XcodeGen
+        if: steps.secrets.outputs.ready == 'true'
+        run: brew install xcodegen
+      - name: Write the API key
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc/AuthKey_$ASC_KEY_ID.p8" >> "$GITHUB_ENV"
+      - name: Import the distribution certificate and profiles
+        if: steps.secrets.outputs.ready == 'true' && steps.secrets.outputs.manual == 'true'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 16)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MANUAL_P12_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$keychain" -P "$MANUAL_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          profiles="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles"
+          printf '%s' "$MANUAL_PROFILE_APP_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$MANUAL_PROFILE_TUNNEL_BASE64" | openssl base64 -d -A -out "$RUNNER_TEMP/tunnel.mobileprovision"
+          cp "$RUNNER_TEMP/app.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          cp "$RUNNER_TEMP/tunnel.mobileprovision" "$profiles/$(uuidgen).mobileprovision"
+          security find-identity -v -p codesigning "$keychain"
+      - name: Generate project
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: xcodegen generate
+      # Manual, App Store profiles when the CI secrets carry them (a distribution profile
+      # needs no device UDIDs); automatic signing as a last resort.
+      - name: Archive
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          mkdir -p build
+          signing=()
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then
+            signing=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="Apple Distribution"
+              BRIDGE_APP_PROFILE="Bridge App Store"
+              BRIDGE_TUNNEL_PROFILE="Bridge Tunnel App Store"
+            )
+          else
+            signing=(CODE_SIGN_STYLE=Automatic)
+          fi
+          xcodebuild archive \
+            -project Bridge.xcodeproj -scheme Bridge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Bridge.xcarchive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            "${signing[@]}" > build/archive.log 2>&1 \
+            || { grep -E 'error:|Provisioning|provisioning|Signing' build/archive.log | head -60; tail -40 build/archive.log; exit 1; }
+      - name: Export and upload to TestFlight
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          style=automatic
+          if [ "${{ steps.secrets.outputs.manual }}" = "true" ]; then style=manual; fi
+          # Bundle ids contain dots, which plutil key paths cannot express.
+          STYLE="$style" python3 scripts/export_options.py build/ExportOptions.plist
+          xcodebuild -exportArchive \
+            -archivePath build/Bridge.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > build/export.log 2>&1 \
+            || { grep -E 'error:|Error|ITMS-' build/export.log | head -60; tail -40 build/export.log; exit 1; }
+          # The upload result lives only in this log; surface it in the job output.
+          grep -E 'Upload|upload|ITMS|Progress|No errors' build/export.log | tail -30 || true
+          echo "### Uploaded build ${{ github.run_number }} to TestFlight" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the API key and signing assets
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP"/app.mobileprovision "$RUNNER_TEMP"/tunnel.mobileprovision
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

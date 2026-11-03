@@ -89,6 +89,8 @@ data class ForwardContract(
     val mptcp: MptcpContract?,
     val ultraAccess: JsonObject? = null,
     val routeRuleHelperOnly: Boolean = false,
+    /** A native outbound rule: the panel generates its target, so it never carries a user node. */
+    val nativeOutbound: Boolean = false,
 ) {
     fun toListItem(methodDisplay: String = "Host", runtimeMode: ForwardMode = mode): ForwardListItem {
         return ForwardListItem(
@@ -113,6 +115,7 @@ data class ForwardContract(
             serviceStatus = serviceStatus,
             endpointMode = endpointMode,
             speedLimitMbps = speedLimitMbps,
+            nativeOutbound = nativeOutbound,
         )
     }
 
@@ -141,6 +144,7 @@ data class ForwardListItem(
     val targetContract: String = "",
     val sidecarRequired: Boolean = false,
     val bondSidecarPointId: Long? = null,
+    val nativeOutbound: Boolean = false,
 )
 
 data class ForwardCatalog(
@@ -208,6 +212,7 @@ object ForwardContractParser {
             mptcp = obj.objectOrNull("mptcp")?.toMptcpContract(),
             ultraAccess = obj.objectOrNull("ultra_access")?.deepCopy(),
             routeRuleHelperOnly = obj.boolOrNull("route_rule_helper_only") ?: false,
+            nativeOutbound = obj.boolOrNull("native_outbound") ?: false,
         )
     }
 }

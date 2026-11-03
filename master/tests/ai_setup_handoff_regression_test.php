@@ -17,7 +17,7 @@ foreach ([
     '/tenant/getting-started',
     '/tenant/clients',
     '/tenant/forwards',
-    '下载 installer',
+    '下载安装包',
     '复制命令',
     '最大在线',
     '127.0.0.1',

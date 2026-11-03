@@ -81,10 +81,42 @@ foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
 
+# Do not add garble's tiny mode: the 2026.10.02.1 runtime built with it (v0.17.0,
+# Go 1.26) died under sustained external-UoT UDP load (exit 2, once SIGSEGV
+# with the instruction pointer in a data page) every 15-90 s; the same source
+# built with -literals alone ran clean. Tiny mode also hides every panic message.
 function Invoke-GarbleBuild([string]$Destination) {
-    & $garblePath -literals -tiny "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
+    & $garblePath -literals "-seed=$seed" build -buildmode=pie -trimpath -buildvcs=false "-ldflags=-s -w -buildid= -X main.runtimeBuildVersion=$FullVersion" -o $Destination .
     if ($LASTEXITCODE -ne 0) {
         throw "garble build failed"
+    }
+}
+
+# Obfuscation guard. A plain `go build -ldflags '-s -w'` strips the symbol table
+# but NOT the pclntab, so every tools/ultra-client function name (main.parseTarget,
+# main.credentialChecksum, ...) and -literals-eligible string (leikwan-ultra-policy-v2)
+# still ships in cleartext. garble renames those to random identifiers and encrypts
+# the literals, so their absence is a reliable proof the binary really went through
+# garble rather than a silent fall-through to `go build`. The -X-injected
+# runtimeBuildVersion is intentionally NOT in this list: garble preserves it so the
+# panel attestation (ultra_runtime_fingerprint / self_sha256) keeps working.
+$script:ObfuscationMarkers = @(
+    "leikwan-ultra-policy-v2",
+    "parseTarget",
+    "credentialChecksum",
+    "runtimeAttestation",
+    "copyInbound",
+    "selfExecutableHash",
+    "ParseNativeRoutePolicy"
+)
+function Assert-RuntimeObfuscated([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $leaks = foreach ($marker in $script:ObfuscationMarkers) {
+        if ($ascii.Contains($marker)) { $marker }
+    }
+    if ($leaks) {
+        throw "runtime still contains unobfuscated symbols ($($leaks -join ', ')); garble did not run - refusing to ship a plain go build"
     }
 }
 
@@ -95,8 +127,10 @@ try {
     Push-Location $sourceRoot
     try {
         Invoke-GarbleBuild $candidatePath
+        Assert-RuntimeObfuscated $candidatePath
         if (-not $SkipReproducibilityCheck) {
             Invoke-GarbleBuild $reproPath
+            Assert-RuntimeObfuscated $reproPath
             $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
             $reproHash = (Get-FileHash -LiteralPath $reproPath -Algorithm SHA256).Hash
             if ($candidateHash -ne $reproHash) {
