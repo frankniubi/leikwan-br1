@@ -1687,11 +1687,11 @@ final class TenantController extends BaseController
             $amd64Command = 'opkg update && opkg install '
                 . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.6-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.6-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
                 . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
             // .ipk files: those routers install .apk packages instead. apk
             // also refuses plain HTTPS URLs as arguments — it treats them as
@@ -1701,7 +1701,7 @@ final class TenantController extends BaseController
             // local paths. The panel's download is hash-pinned and served
             // over HTTPS; --allow-untrusted only skips feed-index signing,
             // which a local file install does not have anyway.
-            $amd64ApkFiles = ['leikwand-1.2.6-r1.apk', 'leikwan-runtime-1.2.6-r1.apk', 'luci-app-leikwan-1.1.0-r1.apk'];
+            $amd64ApkFiles = ['leikwand-1.2.6-r1.apk', 'leikwan-runtime-1.2.6-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
             $arm64ApkFiles = $amd64ApkFiles;
             $amd64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/amd64', $amd64ApkFiles) . $register;
             $arm64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/arm64', $arm64ApkFiles) . $register;

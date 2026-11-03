@@ -76,7 +76,7 @@ namespace {
     }
     // Both apk architecture variants must carry the runtime and LuCI packages too.
     foreach (['/apk/amd64/leikwan-runtime-1.2.6-r1.apk', '/apk/arm64/leikwan-runtime-1.2.6-r1.apk',
-        '/apk/amd64/luci-app-leikwan-1.1.0-r1.apk', '/apk/arm64/luci-app-leikwan-1.1.0-r1.apk'] as $needle) {
+        '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk', '/apk/arm64/luci-app-leikwan-1.1.1-r1.apk'] as $needle) {
         if (!str_contains($html, $needle)) {
             failOpenwrtCard("missing package URL: $needle");
         }
