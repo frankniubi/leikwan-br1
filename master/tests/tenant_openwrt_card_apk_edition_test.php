@@ -95,6 +95,20 @@ namespace {
     if (strpos($html, 'data-openwrt-universal') > strpos($html, 'OpenWrt 25.12+（apk 包管理器）')) {
         failOpenwrtCard('the one-line installer must render before the per-version commands');
     }
+    // The version report sits next to the installer and needs no credentials:
+    // it is the same answer on every router, whatever the firmware. The
+    // anonymous-card assertions live with the other $anon checks below.
+    foreach ([
+        'data-openwrt-versions' => 'version report block',
+        '/artifacts/openwrt-versions.sh' => 'version report URL',
+        'leikwan-versions.sh --panel' => 'version report run with the panel address',
+        '--check' => 'the version report documents --check',
+    ] as $needle => $why) {
+        if (!str_contains($html, $needle)) {
+            failOpenwrtCard("missing $why: $needle");
+        }
+    }
+
     // Both apk architecture variants must carry the runtime and LuCI packages too.
     foreach (['/apk/amd64/leikwan-runtime-1.2.6-r1.apk', '/apk/arm64/leikwan-runtime-1.2.6-r1.apk',
         '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk', '/apk/arm64/luci-app-leikwan-1.1.1-r1.apk'] as $needle) {
@@ -134,6 +148,9 @@ namespace {
     if (!str_contains($anon, $universal) || str_contains($anon, '--client-id')) {
         failOpenwrtCard('the anonymous card must offer the installer without credentials');
     }
+    if (!str_contains($anon, '/artifacts/openwrt-versions.sh') || !str_contains($anon, 'leikwan-versions.sh --panel')) {
+        failOpenwrtCard('the anonymous card must offer the version report too');
+    }
 
     // The installer and its manifest are served by the panel, uncached.
     $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
@@ -141,6 +158,18 @@ namespace {
         if (!str_contains($bootstrap, "'" . $route . "'")) {
             failOpenwrtCard("route missing: $route");
         }
+    }
+    // The version report is served the same way, so a router can run it with
+    // the panel URL it already knows.
+    if (!str_contains($bootstrap, "'/artifacts/openwrt-versions.sh'")) {
+        failOpenwrtCard('route missing: /artifacts/openwrt-versions.sh');
+    }
+    $versionsController = (string) file_get_contents(__DIR__ . '/../src/Controllers/ArtifactController.php');
+    if (!str_contains($versionsController, "'install/openwrt-versions.sh'")) {
+        failOpenwrtCard('the versions route does not serve install/openwrt-versions.sh');
+    }
+    if (!is_file(__DIR__ . '/../../install/openwrt-versions.sh')) {
+        failOpenwrtCard('install/openwrt-versions.sh is missing from the tree the route serves');
     }
     // Every format x architecture x package has exactly one manifest entry,
     // which is what the installer requires.

@@ -253,6 +253,7 @@ if [ -n "$ARM64_DIR" ]; then
 	done
 fi
 cp "$REPO/install/install-openwrt.sh" "$WORK/www/artifacts/install-openwrt.sh"
+cp "$REPO/install/openwrt-versions.sh" "$WORK/www/artifacts/openwrt-versions.sh"
 python3 -m http.server "$ART_PORT" --bind 0.0.0.0 --directory "$WORK/www" >"$WORK/art.log" 2>&1 &
 ART_PID=$!
 echo "192.168.1.2:$ECHO_PORT" > "$WORK/panel-state/target"
@@ -372,6 +373,29 @@ echo "$INSTALLED" | grep -q 'runtime-ok' && ok "forwarding runtime installed" ||
 echo "$INSTALLED" | grep -q 'init.d/leikwand' && ok "init script installed" || bad "init script missing: $INSTALLED"
 SELFTEST=$(vm 'leikwand selftest' )
 echo "$SELFTEST" | grep -q 'all checks passed' && ok "leikwand selftest passes on the router" || bad "selftest: $SELFTEST"
+
+step "the version report detects what was installed"
+# Same detection rules as the installer, on a real image: it must agree with
+# what was just installed and report the manifest's own package as current.
+VER_CMD="wget -qO /tmp/leikwan-versions.sh '$PANEL_LOCAL/artifacts/openwrt-versions.sh' && sh /tmp/leikwan-versions.sh --panel '$PANEL_LOCAL'"
+VER=$(run_remote "$VER_CMD")
+echo "$VER" | sed 's/^/    | /'
+echo "$VER" | grep -q "package manager *$EDITION (." && ok "report detects the $EDITION package manager" || bad "report package manager: $VER"
+echo "$VER" | grep -q "x86_64 -> amd64 build (package arch x86_64)" && ok "report resolves arch and package arch" || bad "report arch"
+echo "$VER" | grep -qE "leikwand +1\.2\.6(-r1)? +1\.2\.6" && ok "report shows the installed and running leikwand version" || bad "report leikwand row"
+echo "$VER" | grep -q "up to date" && ok "report finds nothing to update after the install" || bad "report state: $VER"
+echo "$VER" | grep -q "Nothing to change" && ok "report closes with nothing to change" || bad "report closing"
+TGT=$(run_remote "sh /tmp/leikwan-versions.sh --panel '$PANEL_LOCAL' --target")
+case "$TGT" in
+	apk/amd64/leikwand-*.apk|amd64/leikwand_*_x86_64.ipk) ok "report names the package file this router installs ($TGT)" ;;
+	*) bad "report --target: $TGT" ;;
+esac
+# --check's exit status is the point of the flag, and run_remote returns ssh's
+# status, so it has to be read on the router.
+CHECK_RC=$(run_remote "sh /tmp/leikwan-versions.sh --panel '$PANEL_LOCAL' --check; echo check-exit=\$?")
+echo "$CHECK_RC" | grep -q 'check-exit=0' && ok "report --check exits 0 when the router is current" || bad "report --check: $CHECK_RC"
+JSON=$(run_remote "sh /tmp/leikwan-versions.sh --panel '$PANEL_LOCAL' --json")
+echo "$JSON" | grep -q '"update_available":false' && ok "report --json says up to date" || bad "report json: $JSON"
 
 step "procd owns the daemon"
 # postinst enables and starts the service; the status must come from procd,

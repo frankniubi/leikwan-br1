@@ -1736,6 +1736,13 @@ final class TenantController extends BaseController
         if ($hasClient) {
             $universalCommand .= ' --client-id ' . $clientId . ' --agent-token ' . $this->shellQuote($agentToken);
         }
+        // The same script also reports every version on the router and the one
+        // published for it, so an operator can answer "am I current?" without
+        // guessing at the firmware/arch combination.
+        $versionsUrl = $this->installerScriptUrl('openwrt_versions', '/artifacts/openwrt-versions.sh');
+        $versionsCommand = '{ wget -qO /tmp/leikwan-versions.sh ' . $this->shellQuote($versionsUrl)
+            . ' || curl -fsSL -o /tmp/leikwan-versions.sh ' . $this->shellQuote($versionsUrl) . '; }'
+            . ' && sh /tmp/leikwan-versions.sh --panel ' . $this->shellQuote($artifactBase);
 
         $description = $hasClient
             ? '在路由器 SSH 里运行下面这一条命令即可：脚本自动识别固件版本（apk / opkg）、CPU 架构（x86_64 / arm64）以及是否带 LuCI，校验软件包哈希后安装，并直接绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
@@ -1751,6 +1758,11 @@ final class TenantController extends BaseController
             . '<div class="actions">'
             . $this->renderCopyButton('复制安装命令', $universalCommand, 'secondary', '已复制', '复制失败')
             . '<a class="button secondary" href="' . $this->escape($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh')) . '">安装脚本</a>'
+            . '</div>'
+            . '<div class="muted" style="margin:10px 0 4px;">查看版本（已安装 / 正在运行 / 面板已发布，自动识别固件与架构；<code>--check</code> 有更新时退出码为 1）：</div>'
+            . '<pre class="tenant-client-install__command" data-openwrt-versions>' . $this->escape($versionsCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制版本命令', $versionsCommand, 'secondary', '已复制', '复制失败')
             . '</div>'
             . '<details style="margin-top:10px;"><summary>手动安装（按固件版本选择命令）</summary>'
             . '<div class="muted" style="margin:6px 0;">一键脚本不可用时使用。OpenWrt 25.12 及以后用 apk 命令；23.05–24.10 用 opkg 命令；每组适用于 x86_64 软路由与 arm64 设备。'

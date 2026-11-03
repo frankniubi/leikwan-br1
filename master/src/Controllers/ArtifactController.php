@@ -400,6 +400,13 @@ final class ArtifactController extends BaseController
         ]);
     }
 
+    public function openwrtVersions(Request $request, array $params): Response
+    {
+        return $this->serveRepoFile('install/openwrt-versions.sh', 'text/plain; charset=utf-8', $request, [
+            'Cache-Control' => 'no-cache, max-age=0',
+        ]);
+    }
+
     public function dockerClientCompose(Request $request, array $params): Response
     {
         return $this->serveRepoFile('deploy/docker-client/docker-compose.yml', 'text/plain; charset=utf-8', $request);
