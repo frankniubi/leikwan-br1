@@ -58,9 +58,12 @@ namespace {
     // The command blocks are HTML-escaped, so && renders as &amp;&amp;.
     $html = $render($controller, ['id' => 7, 'agent_token' => 'tok-123']);
     foreach ([
+        'cd /tmp &amp;&amp; { command -v curl &gt;/dev/null &amp;&amp; curl -fsSL' => 'apk download stage (apk cannot take HTTPS URLs directly)',
+        '|| wget -q ' => 'wget fallback for images without curl',
         'apk add --allow-untrusted' => 'apk install command',
         '/apk/amd64/leikwand-1.2.6-r1.apk' => 'amd64 apk file URL',
         '/apk/arm64/leikwand-1.2.6-r1.apk' => 'arm64 apk file URL',
+        'apk add --allow-untrusted &#039;leikwand-1.2.6-r1.apk&#039;' => 'apk installs the local file names, not URLs',
         'opkg update &amp;&amp; opkg install' => 'opkg install command',
         '/amd64/leikwand_1.2.6-r1_x86_64.ipk' => 'amd64 ipk file URL',
         '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk' => 'arm64 ipk file URL',

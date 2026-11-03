@@ -1693,18 +1693,18 @@ final class TenantController extends BaseController
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
             // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
-            // .ipk files: those routers install .apk packages instead. The
-            // panel's own download is hash-pinned and served over HTTPS, so
-            // --allow-untrusted only skips feed-index signing, which a
-            // direct file install does not have anyway.
-            $amd64ApkCommand = 'apk add --allow-untrusted '
-                . $this->shellQuote($ipkBase . '/apk/amd64/leikwand-1.2.6-r1.apk') . ' '
-                . $this->shellQuote($ipkBase . '/apk/amd64/leikwan-runtime-1.2.6-r1.apk') . ' '
-                . $this->shellQuote($ipkBase . '/apk/amd64/luci-app-leikwan-1.1.0-r1.apk') . $register;
-            $arm64ApkCommand = 'apk add --allow-untrusted '
-                . $this->shellQuote($ipkBase . '/apk/arm64/leikwand-1.2.6-r1.apk') . ' '
-                . $this->shellQuote($ipkBase . '/apk/arm64/leikwan-runtime-1.2.6-r1.apk') . ' '
-                . $this->shellQuote($ipkBase . '/apk/arm64/luci-app-leikwan-1.1.0-r1.apk') . $register;
+            // .ipk files: those routers install .apk packages instead. apk
+            // also refuses plain HTTPS URLs as arguments — it treats them as
+            // repository package names — so the command downloads the three
+            // files to /tmp with curl (shipped with ImmortalWrt/OpenWrt;
+            // wget exists everywhere as the fallback) and hands apk the
+            // local paths. The panel's download is hash-pinned and served
+            // over HTTPS; --allow-untrusted only skips feed-index signing,
+            // which a local file install does not have anyway.
+            $amd64ApkFiles = ['leikwand-1.2.6-r1.apk', 'leikwan-runtime-1.2.6-r1.apk', 'luci-app-leikwan-1.1.0-r1.apk'];
+            $arm64ApkFiles = $amd64ApkFiles;
+            $amd64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/amd64', $amd64ApkFiles) . $register;
+            $arm64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/arm64', $arm64ApkFiles) . $register;
             // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
             // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
             // backend). Old devices get the core packages only — the SSH
@@ -1767,6 +1767,32 @@ final class TenantController extends BaseController
             . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
             . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
             . '</section>';
+    }
+
+    /**
+     * One-line apk install for OpenWrt 25.12+ routers: download the packages
+     * to /tmp, then install the local files.
+     *
+     * apk rejects plain HTTPS URL arguments (it resolves them as repository
+     * package names, "no such package"), so a remote file install has to go
+     * through a local copy first. curl is used when present — it is on
+     * ImmortalWrt and most 25.12 images — and wget otherwise, so the command
+     * stays a single copy-paste on stock OpenWrt too.
+     *
+     * @param list<string> $files
+     */
+    private function apkInstallCommand(string $dirUrl, array $files): string
+    {
+        $urls = [];
+        foreach ($files as $file) {
+            $urls[] = $dirUrl . '/' . $file;
+        }
+        $quotedFiles = implode(' ', array_map([$this, 'shellQuote'], $files));
+        $quotedUrls = implode(' ', array_map([$this, 'shellQuote'], $urls));
+        return 'cd /tmp && '
+            . '{ command -v curl >/dev/null && curl -fsSL ' . $quotedUrls . ' -O'
+            . ' || wget -q ' . $quotedUrls . '; } && '
+            . 'apk add --allow-untrusted ' . $quotedFiles;
     }
 
     /**
