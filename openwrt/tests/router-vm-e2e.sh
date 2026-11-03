@@ -230,8 +230,14 @@ export FAKE_RELAY_LOG="$WORK/relay2.streams"
 python3 "$REPO/tools/leikwand/integration/fake_relay.py" "$RELAY2_PORT" "$ECHO_PORT" >"$WORK/relay2.log" 2>&1 &
 RELAY2_PID=$!
 unset FAKE_RELAY_LOG
-mkdir -p "$WORK/www/artifacts/files/openwrt/$EDITION/amd64"
-for f in $PKG_FILES; do cp "$IMAGE_DIR/$f" "$WORK/www/artifacts/files/openwrt/$EDITION/amd64/"; done
+# The panel's layout: ipks under <arch>/, apks under apk/<arch>/, a manifest
+# at /artifacts/openwrt-packages.txt and the installer next to it.
+if [ "$EDITION" = "apk" ]; then PKG_SUBDIR="apk/amd64"; else PKG_SUBDIR="amd64"; fi
+mkdir -p "$WORK/www/artifacts/files/openwrt/$PKG_SUBDIR"
+for f in $PKG_FILES; do cp "$IMAGE_DIR/$f" "$WORK/www/artifacts/files/openwrt/$PKG_SUBDIR/"; done
+(cd "$WORK/www/artifacts/files/openwrt" && for f in $PKG_FILES; do sha256sum "$PKG_SUBDIR/$f"; done) \
+	> "$WORK/www/artifacts/openwrt-packages.txt"
+cp "$REPO/install/install-openwrt.sh" "$WORK/www/artifacts/install-openwrt.sh"
 python3 -m http.server "$ART_PORT" --bind 0.0.0.0 --directory "$WORK/www" >"$WORK/art.log" 2>&1 &
 ART_PID=$!
 echo "192.168.1.2:$ECHO_PORT" > "$WORK/panel-state/target"
@@ -330,25 +336,21 @@ ok "firmware $FW, package manager $PKGMGR"
 if [ "$EDITION" = "apk" ] && ! echo "$PKGMGR" | grep -q apk; then bad "expected apk on 25.12+"; fi
 if [ "$EDITION" = "opkg" ] && ! echo "$PKGMGR" | grep -q opkg; then bad "expected opkg on 24.10"; fi
 
-step "the panel's install command installs on the stock image"
-# The real card downloads each file with curl or wget and hands apk the local
-# names; reproduce it exactly against the local artifact server.
-FILES=$PKG_FILES
-CMD="cd /tmp && "
-for f in $FILES; do
-	CMD="$CMD { command -v curl >/dev/null && curl -fsSL -o '$f' 'http://192.168.1.2:$ART_PORT/artifacts/files/openwrt/$EDITION/amd64/$f' || wget -q -O '$f' 'http://192.168.1.2:$ART_PORT/artifacts/files/openwrt/$EDITION/amd64/$f'; } && "
-done
-if [ "$EDITION" = "apk" ]; then
-	CMD="${CMD}apk add --allow-untrusted $(printf "'%s' " $FILES)"
-else
-	CMD="${CMD}opkg install $(printf "'%s' " $FILES)"
-fi
-OUT=$(run_remote "$CMD")
-if [ -n "$OUT" ] && ! echo "$OUT" | grep -qi 'error\|not found\|failed'; then
-	ok "install command succeeded"
-else
-	bad "install command failed: $OUT"
-fi
+step "the one-line installer detects the firmware and installs"
+# The card's command: fetch install-openwrt.sh with wget (curl as fallback) and
+# run it against the panel. It must pick the package manager, the build and the
+# LuCI app on its own, and verify every file against the manifest. No
+# credentials here: the router still points at the production panel until the
+# next step, and a CI run must never send a test token there.
+PANEL_LOCAL="http://$GUEST_HOST:$ART_PORT"
+INSTALLER_CMD="{ wget -qO /tmp/leikwan-install.sh '$PANEL_LOCAL/artifacts/install-openwrt.sh' || curl -fsSL -o /tmp/leikwan-install.sh '$PANEL_LOCAL/artifacts/install-openwrt.sh'; } && sh /tmp/leikwan-install.sh --panel '$PANEL_LOCAL'; echo installer-exit=\$?"
+OUT=$(run_remote "$INSTALLER_CMD")
+echo "$OUT" | sed 's/^/    | /'
+echo "$OUT" | grep -q 'installer-exit=0' && ok "installer finished successfully" || bad "installer failed"
+echo "$OUT" | grep -q "package manager: $EDITION, build: amd64, LuCI app: yes" \
+	&& ok "installer detected $EDITION, amd64 and LuCI" || bad "wrong detection"
+LUCI_FILE=$(vm 'test -x /usr/libexec/rpcd/luci.leikwand && echo present')
+[ "$LUCI_FILE" = "present" ] && ok "LuCI app installed" || bad "LuCI app missing"
 INSTALLED=$(vm 'command -v leikwand; test -x /usr/libexec/leikwan/ultra-client && echo runtime-ok; ls /etc/init.d/leikwand')
 echo "$INSTALLED" | grep -q '/usr/bin/leikwand' && ok "leikwand binary installed" || bad "leikwand binary missing: $INSTALLED"
 echo "$INSTALLED" | grep -q 'runtime-ok' && ok "forwarding runtime installed" || bad "runtime missing: $INSTALLED"
@@ -614,6 +616,42 @@ fi
 echo "$UNINSTALL" | grep -q 'exit=0' && ok "packages removed" || bad "uninstall failed: $UNINSTALL"
 vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && bad "daemon still running after removal" || ok "daemon stopped with the package"
 vm 'test -e /usr/bin/leikwand && echo present' | grep -q present && bad "binary left behind" || ok "binary removed"
+
+step "a firmware with a CPU-specific architecture"
+# Most aarch64 routers declare aarch64_cortex-a53 (or similar) while the arm64
+# packages are aarch64_generic. Reproduce that here: the firmware's arch list
+# loses x86_64, and the installer must still install by accepting the package
+# architecture for its one transaction.
+if [ "$EDITION" = "apk" ]; then
+	vm 'cp /etc/apk/arch /tmp/apk-arch.keep && echo x86_64_cpu > /etc/apk/arch'
+	SIM=$(vm 'cat /etc/apk/arch')
+	[ "$SIM" = "x86_64_cpu" ] && ok "firmware arch is now CPU-specific ($SIM)" || bad "could not change /etc/apk/arch"
+else
+	vm_script <<'ARCHSIM'
+cp /etc/opkg.conf /tmp/opkg.conf.keep
+sed -i '/^arch /d' /etc/opkg.conf
+printf 'arch all 1\narch noarch 1\narch x86_64_cpu 10\n' >> /etc/opkg.conf
+ARCHSIM
+	SIM=$(vm 'opkg print-architecture')
+	echo "$SIM" | grep -q 'x86_64_cpu' && ! echo "$SIM" | grep -qw 'x86_64' \
+		&& ok "firmware arch is now CPU-specific" || bad "could not change the opkg arch list: $SIM"
+fi
+# /tmp was wiped by the reboot, so this fetches the installer again.
+OUT=$(run_remote "$INSTALLER_CMD")
+echo "$OUT" | sed 's/^/    | /'
+echo "$OUT" | grep -q 'installer-exit=0' && ok "installer succeeded on the CPU-specific firmware" || bad "installer failed on the CPU-specific firmware"
+echo "$OUT" | grep -q 'accepting package architecture x86_64' && ok "installer accepted the package architecture" || bad "no architecture override was applied"
+vm 'test -x /usr/bin/leikwand && echo present' | grep -q present && ok "leikwand installed through the override" || bad "leikwand not installed"
+for _ in $(seq 1 20); do
+	vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && break
+	sleep 2
+done
+vm 'ubus call service list "{\"name\":\"leikwand\"}"' | grep -q '"running": *true' && ok "service runs after the override install" || bad "service not running"
+if [ "$EDITION" = "apk" ]; then
+	vm 'cp /tmp/apk-arch.keep /etc/apk/arch; apk del luci-app-leikwan >/dev/null 2>&1; apk del leikwand leikwan-runtime >/dev/null 2>&1'
+else
+	vm 'cp /tmp/opkg.conf.keep /etc/opkg.conf; opkg remove luci-app-leikwan >/dev/null 2>&1; opkg remove leikwand leikwan-runtime >/dev/null 2>&1'
+fi
 
 step "result"
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

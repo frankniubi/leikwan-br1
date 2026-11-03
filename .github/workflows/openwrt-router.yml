@@ -37,6 +37,8 @@ jobs:
         run: node openwrt/luci-app-leikwan/tests/run-tests.cjs
       - name: LuCI mutation check
         run: node openwrt/luci-app-leikwan/tests/mutation-check.cjs
+      - name: One-line installer (install-openwrt.sh) unit test
+        run: bash install/tests/test_install_openwrt.sh
 
   integration:
     name: End-to-end integration (real daemon + real runtime)
