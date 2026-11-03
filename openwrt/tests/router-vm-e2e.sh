@@ -414,6 +414,22 @@ esac
 TOKEN_SEEN=$(vm "grep -c it-agent-token $DATA_DIR/secret.json")
 [ "$TOKEN_SEEN" = "1" ] && ok "token stored once in the credential file" || bad "token not stored as expected"
 
+step "the panel's register command line"
+# The install card ends with `leikwand ctl register client_id=N agent_token=...`,
+# which is a different path from the ubus call above: it goes through the CLI
+# and the control socket's shared secret. Sign out first so the command has to
+# enrol for real rather than finding credentials already in place.
+vm 'leikwand ctl sign_out' >/dev/null 2>&1
+sleep 2
+SIGNED_OUT=$(router_status "d.get('enrolled')")
+[ "$SIGNED_OUT" = "False" ] && ok "sign_out cleared the credential" || bad "sign_out left the device enrolled ($SIGNED_OUT)"
+CLI_REG=$(vm 'leikwand ctl register client_id=42 agent_token=it-agent-token')
+echo "$CLI_REG" | grep -q '"ok":true' && ok "ctl register accepted the card's command" || bad "ctl register failed: $CLI_REG"
+CLI_ENROLLED=$(router_status "d.get('enrolled')")
+[ "$CLI_ENROLLED" = "True" ] && ok "device is enrolled after the CLI register" || bad "not enrolled after ctl register ($CLI_ENROLLED)"
+CLI_CLIENT=$(router_status "d.get('client_id')")
+[ "$CLI_CLIENT" = "42" ] && ok "ctl register adopted the client id" || bad "client id is $CLI_CLIENT"
+
 step "configuration pull and forward"
 for _ in $(seq 1 60); do
 	FORWARDS=$(vm 'leikwand ctl forwards')
@@ -588,7 +604,7 @@ step "clean uninstall"
 # while a dependent is installed is correctly refused by opkg, and asking for
 # the impossible would only assert the package manager's error message.
 if [ "$EDITION" = "apk" ]; then
-	UNINSTALL=$(vm 'apk del luci-app-leikwan && apk del leikwand luci-app-leikwan 2>&1; echo exit=$?')
+	UNINSTALL=$(vm 'apk del luci-app-leikwan && apk del leikwand leikwan-runtime 2>&1; echo exit=$?')
 else
 	UNINSTALL=$(vm 'opkg remove luci-app-leikwan && opkg remove leikwand leikwan-runtime 2>&1; echo exit=$?')
 fi

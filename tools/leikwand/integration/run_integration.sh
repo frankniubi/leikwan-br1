@@ -39,7 +39,7 @@ cleanup() {
 	for f in daemon.log panel.log relay.log echo.log usage.jsonl usage_totals.json; do
 		[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$ART/$f"
 	done
-	for f in status.json status2.json forwards.json forwards2.json diag.json; do
+	for f in status.json status2.json status3.json status4.json forwards.json forwards2.json diag.json; do
 		[ -f "$ROOT/$f" ] && cp "$ROOT/$f" "$ART/$f"
 	done
 	[ -n "$DAEMON_PID" ] && kill "$DAEMON_PID" 2>/dev/null
@@ -209,6 +209,25 @@ done
 [ "$ENROLLED" = "1" ] && ok "agent picked up the credential file" || bad "agent never adopted the token"
 [ "$(jsonq "$ROOT/status2.json" "d['data']['enrolled']")" = "True" ] && ok "agent reports enrolled" || bad "agent did not pick up the token"
 [ "$(jsonq "$ROOT/status2.json" "d['data']['client_id']")" = "42" ] && ok "panel client id adopted" || bad "client id not adopted"
+
+step "the panel's register command line"
+ctl sign_out > "$ROOT/signout.json" 2>/dev/null
+SIGNED_OUT=0
+for _ in $(seq 1 20); do
+	ctl status > "$ROOT/status3.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status3.json" "d['data']['enrolled']")" = "False" ]; then SIGNED_OUT=1; break; fi
+	sleep 1
+done
+[ "$SIGNED_OUT" = "1" ] && ok "sign_out cleared the credential" || bad "sign_out left the device enrolled"
+CLI_REG=$(ctl register client_id=42 agent_token=it-agent-token 2>&1)
+echo "$CLI_REG" | grep -q '"ok":true' && ok "ctl register accepted the card's command" || bad "ctl register failed: $CLI_REG"
+ENROLLED_AGAIN=0
+for _ in $(seq 1 20); do
+	ctl status > "$ROOT/status4.json" 2>/dev/null
+	if [ "$(jsonq "$ROOT/status4.json" "d['data']['enrolled']")" = "True" ]; then ENROLLED_AGAIN=1; break; fi
+	sleep 1
+done
+[ "$ENROLLED_AGAIN" = "1" ] && ok "device is enrolled after the CLI register" || bad "not enrolled after ctl register"
 
 step "runtime supervision"
 wait_for 40 port_open "$LISTEN_PORT" && ok "forward listen port $LISTEN_PORT is serving" || bad "forward port never became ready"
