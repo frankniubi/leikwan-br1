@@ -332,20 +332,20 @@ for line in open(sys.argv[1]):
 print(dupes)" "$STATE/usage.jsonl" 2>/dev/null)
 [ "${DUPES:-0}" = "0" ] && ok "no usage snapshot was billed twice" || bad "$DUPES duplicate usage snapshots"
 
-step "configuration sync: a line rotation reaches the runtime"
-# A new policy generation is the panel's line rotation. The agent must ask for
-# fresh leases under it, and traffic must keep flowing across the change.
+step "configuration sync: a line rotation reaches the panel"
+# A new policy generation is the panel's line rotation. The router must pull it
+# on its next poll; the leases that follow it are only requested when the
+# current grant nears renewal (LeaseRenewLeadSecs), which is minutes away for a
+# grant that was just installed — so the pull is what proves delivery here.
+# The VM suite makes the same distinction for the same reason.
 NEWGEN=$(printf 'b%.0s' $(seq 1 64))
 echo "$NEWGEN" > "$STATE/policy_generation"
 ROTATED=0
 for _ in $(seq 1 40); do
-	# Every request is appended: the "last" file is overwritten by the next
-	# refresh, which is why the generation has to be searched for, not read
-	# from one snapshot.
-	if grep -q "\"policy_generation\": \"$NEWGEN\"" "$STATE/lease_requests.jsonl" 2>/dev/null; then ROTATED=1; break; fi
+	if grep -q "$NEWGEN" "$STATE/generations.jsonl" 2>/dev/null; then ROTATED=1; break; fi
 	sleep 1
 done
-[ "$ROTATED" = "1" ] && ok "agent requested leases under the new generation" || bad "rotation never reached the panel"
+[ "$ROTATED" = "1" ] && ok "agent pulled the new generation" || bad "rotation never reached the panel"
 RESP=$(forward_echo "$LISTEN_PORT" "after-rotation")
 case "$RESP" in echo:*) ok "traffic kept flowing across the rotation" ;; *) bad "traffic broke on rotation ($RESP)" ;; esac
 

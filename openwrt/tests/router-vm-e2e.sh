@@ -481,6 +481,9 @@ else
 fi
 
 step "synchronisation: a line rotation reaches the router"
+# The panel publishes a new generation and the router must pull it on its next
+# poll. The lease request under it follows only when the current grant nears
+# renewal, so the pull is the delivery signal.
 # The panel publishes a new policy generation, which is how a line rotation
 # reaches the router. Wait for the router's next pull to carry it, rather than
 # assuming a sleep is long enough.
