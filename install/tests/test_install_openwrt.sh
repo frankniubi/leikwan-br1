@@ -21,11 +21,11 @@ PANEL="$T/panel"
 FILES_DIR="$PANEL/artifacts/files/openwrt"
 mkdir -p "$FILES_DIR"/{amd64,arm64,apk/amd64,apk/arm64}
 for path in \
-	amd64/leikwand_1.2.6-r1_x86_64.ipk amd64/leikwan-runtime_1.2.6-r1_x86_64.ipk amd64/luci-app-leikwan_1.1.1-r1_all.ipk \
-	arm64/leikwand_1.2.6-r1_aarch64_generic.ipk arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk arm64/luci-app-leikwan_1.1.1-r1_all.ipk \
+	amd64/leikwand_1.2.7-r1_x86_64.ipk amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk amd64/luci-app-leikwan_1.1.1-r1_all.ipk \
+	arm64/leikwand_1.2.7-r1_aarch64_generic.ipk arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk arm64/luci-app-leikwan_1.1.1-r1_all.ipk \
 	amd64/leikwand_1.2.5-r1_x86_64.ipk \
-	apk/amd64/leikwand-1.2.6-r1.apk apk/amd64/leikwan-runtime-1.2.6-r1.apk apk/amd64/luci-app-leikwan-1.1.1-r1.apk \
-	apk/arm64/leikwand-1.2.6-r1.apk apk/arm64/leikwan-runtime-1.2.6-r1.apk apk/arm64/luci-app-leikwan-1.1.1-r1.apk; do
+	apk/amd64/leikwand-1.2.7-r1.apk apk/amd64/leikwan-runtime-1.2.7-r1.apk apk/amd64/luci-app-leikwan-1.1.1-r1.apk \
+	apk/arm64/leikwand-1.2.7-r1.apk apk/arm64/leikwan-runtime-1.2.7-r1.apk apk/arm64/luci-app-leikwan-1.1.1-r1.apk; do
 	echo "payload $path" > "$FILES_DIR/$path"
 done
 make_manifest() { # the 1.2.5 file is on disk but not in the manifest
@@ -54,7 +54,7 @@ EOF
 #!/bin/sh
 echo "leikwand \$*" >> "$CALLS"
 case "\$1" in
-	version) echo "leikwand 1.2.6" ;;
+	version) echo "leikwand 1.2.7" ;;
 	ctl) echo '{"ok":true,"data":{"client_id":7}}' ;;
 esac
 EOF
@@ -98,7 +98,7 @@ echo x86_64 > "$ROOT/etc/apk/arch"
 ln -s /bin/true "$BIN/ucode"
 STUB_LUCI_BASE=1 run x86_64 --client-id 7 --agent-token 'tok 1'
 [ "$RC" = 0 ] && ok "exit 0" || bad "exit $RC: $OUT"
-called "apk add --allow-untrusted .*/leikwand-1.2.6-r1.apk .*/leikwan-runtime-1.2.6-r1.apk .*/luci-app-leikwan-1.1.1-r1.apk" \
+called "apk add --allow-untrusted .*/leikwand-1.2.7-r1.apk .*/leikwan-runtime-1.2.7-r1.apk .*/luci-app-leikwan-1.1.1-r1.apk" \
 	&& ok "apk installs the three amd64 apks" || bad "apk call: $(cat "$CALLS")"
 called "--arch" && bad "no architecture override when the arch matches" || ok "no architecture override when the arch matches"
 called "leikwand ctl register client_id=7 agent_token=tok 1" && ok "registers with the given credentials" || bad "register: $(cat "$CALLS")"
@@ -108,7 +108,7 @@ echo "== opkg, aarch64, no ucode (21.02/22.03 style), CPU-specific arch"
 new_root opkg-arm opkg
 STUB_ARCHES="all noarch aarch64_cortex-a53" run aarch64
 [ "$RC" = 0 ] && ok "exit 0" || bad "exit $RC: $OUT"
-called "opkg install .*/leikwand_1.2.6-r1_aarch64_generic.ipk .*/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk$" \
+called "opkg install .*/leikwand_1.2.7-r1_aarch64_generic.ipk .*/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk$" \
 	&& ok "opkg installs the arm64 core ipks" || bad "opkg call: $(cat "$CALLS")"
 called "add-arch" && bad "never --add-arch: it replaces the firmware's list" || ok "no --add-arch"
 CONF="$ROOT/etc/opkg/leikwan-arch.conf"
@@ -126,7 +126,7 @@ echo "== apk, aarch64, CPU-specific arch"
 new_root apk-arm apk
 echo aarch64_cortex-a53 > "$ROOT/etc/apk/arch"
 run aarch64
-called "apk add --allow-untrusted .*leikwand-1.2.6-r1.apk" && ! called "--arch" \
+called "apk add --allow-untrusted .*leikwand-1.2.7-r1.apk" && ! called "--arch" \
 	&& ok "apk installs the arm64 apks" || bad "apk call: $(cat "$CALLS")"
 [ "$(cat "$ROOT/etc/apk/arch")" = "aarch64_cortex-a53"$'\n'"aarch64_generic" ] \
 	&& ok "/etc/apk/arch keeps the firmware arch and adds aarch64_generic" || bad "apk arch: $(cat "$ROOT/etc/apk/arch")"
@@ -136,15 +136,15 @@ run aarch64
 echo "== the manifest picks the current version, not an older file on disk"
 new_root opkg-x86 opkg
 STUB_ARCHES="all noarch x86_64" run x86_64
-called "leikwand_1.2.6-r1_x86_64.ipk" && ! called "1.2.5" && ok "installs 1.2.6 only" || bad "opkg call: $(cat "$CALLS")"
+called "leikwand_1.2.7-r1_x86_64.ipk" && ! called "1.2.5" && ok "installs 1.2.7 only" || bad "opkg call: $(cat "$CALLS")"
 
 echo "== checksum mismatch aborts before installing"
 new_root apk-bad apk
 echo x86_64 > "$ROOT/etc/apk/arch"
-cp "$FILES_DIR/apk/amd64/leikwand-1.2.6-r1.apk" "$T/keep"
-echo tampered > "$FILES_DIR/apk/amd64/leikwand-1.2.6-r1.apk"
+cp "$FILES_DIR/apk/amd64/leikwand-1.2.7-r1.apk" "$T/keep"
+echo tampered > "$FILES_DIR/apk/amd64/leikwand-1.2.7-r1.apk"
 run x86_64
-cp "$T/keep" "$FILES_DIR/apk/amd64/leikwand-1.2.6-r1.apk"
+cp "$T/keep" "$FILES_DIR/apk/amd64/leikwand-1.2.7-r1.apk"
 [ "$RC" != 0 ] && ok "non-zero exit" || bad "tampered package accepted"
 echo "$OUT" | grep -q "checksum mismatch" && ok "says checksum mismatch" || bad "message: $OUT"
 called "apk add" && bad "installed despite the mismatch" || ok "nothing installed"
@@ -158,7 +158,7 @@ echo "== dry run changes nothing"
 new_root apk-dry apk
 echo x86_64 > "$ROOT/etc/apk/arch"
 run x86_64 --dry-run
-[ "$RC" = 0 ] && echo "$OUT" | grep -q "would install apk/amd64/leikwand-1.2.6-r1.apk" && ! called "apk add" \
+[ "$RC" = 0 ] && echo "$OUT" | grep -q "would install apk/amd64/leikwand-1.2.7-r1.apk" && ! called "apk add" \
 	&& ok "plan printed, nothing installed" || bad "dry run: $OUT / $(cat "$CALLS")"
 
 echo "== refusals"
@@ -176,7 +176,7 @@ echo "== ambiguous manifest is refused"
 new_root apk-dup apk
 echo x86_64 > "$ROOT/etc/apk/arch"
 cp "$PANEL/artifacts/openwrt-packages.txt" "$T/manifest.keep"
-grep "apk/amd64/leikwand-" "$T/manifest.keep" | sed 's#1.2.6#1.2.7#' >> "$PANEL/artifacts/openwrt-packages.txt"
+grep "apk/amd64/leikwand-" "$T/manifest.keep" | sed 's#1.2.7#1.2.8#' >> "$PANEL/artifacts/openwrt-packages.txt"
 run x86_64
 cp "$T/manifest.keep" "$PANEL/artifacts/openwrt-packages.txt"
 [ "$RC" != 0 ] && echo "$OUT" | grep -q "no single apk entry for leikwand" && ok "two leikwand entries refused" || bad "ambiguous: $OUT"

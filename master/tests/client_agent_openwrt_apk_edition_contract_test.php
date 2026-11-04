@@ -145,15 +145,15 @@ $probe = Closure::bind(
 );
 
 $apkX64 = $probe($controller, 'openwrt', 'apk', 'amd64');
-if (($apkX64['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/amd64/leikwand-1.2.6-r1.apk') {
+if (($apkX64['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/amd64/leikwand-1.2.7-r1.apk') {
     failOpenWrtApkEdition('apk flavour + amd64 must serve the apk edition, got ' . json_encode($apkX64));
 }
 $apkArm = $probe($controller, 'openwrt', 'apk', 'arm64');
-if (($apkArm['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/arm64/leikwand-1.2.6-r1.apk') {
+if (($apkArm['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/arm64/leikwand-1.2.7-r1.apk') {
     failOpenWrtApkEdition('apk flavour + arm64 must serve the apk edition, got ' . json_encode($apkArm));
 }
 $opkg = $probe($controller, 'openwrt', '', 'amd64');
-if (($opkg['artifact_url'] ?? '') !== '/artifacts/files/openwrt/amd64/leikwand_1.2.6-r1_x86_64.ipk') {
+if (($opkg['artifact_url'] ?? '') !== '/artifacts/files/openwrt/amd64/leikwand_1.2.7-r1_x86_64.ipk') {
     failOpenWrtApkEdition('no flavour must keep the opkg edition, got ' . json_encode($opkg));
 }
     $bogus = $probe($controller, 'openwrt', 'ipk', 'amd64');
