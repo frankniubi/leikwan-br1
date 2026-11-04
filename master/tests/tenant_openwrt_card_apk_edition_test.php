@@ -133,6 +133,19 @@ namespace {
             failOpenwrtCard("missing package URL: $needle");
         }
     }
+    // Every download URL carries the version as a query parameter. The CDN in
+    // front of the panel caches a package for a year, and an edge that fetched
+    // one mid-upload kept serving the truncated copy after the origin was
+    // fixed (1.2.7, apk/amd64). A published file never changes, so a distinct
+    // URL per version is free and keeps a poisoned edge entry from breaking
+    // an install.
+    foreach (['/apk/amd64/leikwand-1.2.7-r1.apk?v=1.2.7-r1', '/apk/arm64/leikwand-1.2.7-r1.apk?v=1.2.7-r1',
+        '/apk/amd64/leikwan-runtime-1.2.7-r1.apk?v=1.2.7-r1',
+        '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk?v=1.1.1-r1'] as $needle) {
+        if (!str_contains($html, $needle)) {
+            failOpenwrtCard("apk download is not cache-busted: $needle");
+        }
+    }
 
     // The sections are ordered newest firmware first: 25.12+ apk, then
     // 23.05-24.10 opkg, then the 21.02/22.03 legacy CLI-only line.

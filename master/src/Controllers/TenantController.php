@@ -1825,9 +1825,14 @@ final class TenantController extends BaseController
         // One download per file: `curl -O` names only the URL that follows it,
         // so a single curl call with several URLs leaves all but the last file
         // unsaved. Each file is fetched in its own step instead.
+        //
+        // The version is part of the URL: the CDN in front of the panel caches
+        // a package for a year, and an edge that fetched one mid-upload keeps
+        // serving the truncated copy after the origin is fixed. A published
+        // file never changes, so a distinct URL per version is free.
         $downloads = [];
         foreach ($files as $file) {
-            $url = $this->shellQuote($dirUrl . '/' . $file);
+            $url = $this->shellQuote($dirUrl . '/' . $file . '?v=' . rawurlencode($this->versionInFileName($file)));
             $downloads[] = '{ command -v curl >/dev/null && curl -fsSL -o ' . $this->shellQuote($file) . ' ' . $url
                 . ' || wget -q -O ' . $this->shellQuote($file) . ' ' . $url . '; }';
         }
@@ -1835,6 +1840,15 @@ final class TenantController extends BaseController
         return 'cd /tmp && '
             . implode(' && ', $downloads) . ' && '
             . 'apk add --allow-untrusted ' . $quotedFiles;
+    }
+
+    /** The "<version>-r<rev>" part of a package file name, for cache-busting. */
+    private function versionInFileName(string $file): string
+    {
+        if (preg_match('/(\d+\.\d+\.\d+-r\d+)/', $file, $m) === 1) {
+            return $m[1];
+        }
+        return '1';
     }
 
     /**
