@@ -3,15 +3,15 @@
 # Exactly one entry per package name, format and architecture: the installer
 # refuses an ambiguous manifest. Update this file together with the uploaded
 # packages on every release (leikwand / leikwan-runtime / luci-app-leikwan).
-9d78fb9f3e163774c94f47eb844b4e68d8b9012aed5fa44bfde75aaf8d8b112d  amd64/leikwand_1.2.6-r1_x86_64.ipk
-94213d8143f96a5cda276a95b3c1bc675c22807c53f14a1e2b18251fd7fe5b75  amd64/leikwan-runtime_1.2.6-r1_x86_64.ipk
+be22501de3053c79cefa77e349d1c5c1e7b2f45df3720812732ae8c69bc790ce  amd64/leikwand_1.2.7-r1_x86_64.ipk
+100a731fe21f8998a64d34cf0a8453e067353e35a378c5a77a252f64fd5508d3  amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk
 519541e6c2da58e0a9b3c5bc88107186ef341f431d71bf62585a092290064ddf  amd64/luci-app-leikwan_1.1.1-r1_all.ipk
-ce64bd7f2f0904e9ce790b4065a7b89e3649e418de7440dd897c876c8909bb7b  arm64/leikwand_1.2.6-r1_aarch64_generic.ipk
-f279a42bf515e32ec31e9fae88b099d0e2f0a7f2593fce1698db6f6e170f9ccb  arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk
+735cf38ff43d68294eed81b50ff9e01d4af64455c53500705f72d346136db07b  arm64/leikwand_1.2.7-r1_aarch64_generic.ipk
+ffab90e4eff98cf96d711e3598a5e3782cd7178fd9e831e7698a5925bbb3691f  arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk
 519541e6c2da58e0a9b3c5bc88107186ef341f431d71bf62585a092290064ddf  arm64/luci-app-leikwan_1.1.1-r1_all.ipk
-92f1556b15a975d51e49a9cf8fee5a0f34e7f7ef6a75a0fad018220e3598d8c0  apk/amd64/leikwand-1.2.6-r1.apk
-5e95a252b4e5b26380a192d8d5582a54816989932dbb96bd0e4481e6202c9586  apk/amd64/leikwan-runtime-1.2.6-r1.apk
+8acc3f10f85bd2d33d3a71c0d4077b9020ef0699ad70bdbffbd2e76eb8a85080  apk/amd64/leikwand-1.2.7-r1.apk
+36ec7246feae7151f5191aff6f517f3329c637d8a89da24fdfe349ce6a3b14c7  apk/amd64/leikwan-runtime-1.2.7-r1.apk
 ae6e37be4f2a1f45c9c7e0f8f2033a7ec17f0c6aaa46ff175a16d9d5729fe8de  apk/amd64/luci-app-leikwan-1.1.1-r1.apk
-d96c26ebf43e54f9752509a797e735b7ba556fb856c8e695600074b9baa2a9d5  apk/arm64/leikwand-1.2.6-r1.apk
-5a1a5991a7b2fc2b91c852dc9255400c8172e5416abe86c2b0f3803e0b115023  apk/arm64/leikwan-runtime-1.2.6-r1.apk
+6936b03c0309439dbd7210b0166f806b2a81ee1488964c01b545ab54eb21ea1b  apk/arm64/leikwand-1.2.7-r1.apk
+2a12223c2983f49244a206e655ff29c57e4ada5bc8ce9aeed94cf91eb77580fe  apk/arm64/leikwan-runtime-1.2.7-r1.apk
 ae6e37be4f2a1f45c9c7e0f8f2033a7ec17f0c6aaa46ff175a16d9d5729fe8de  apk/arm64/luci-app-leikwan-1.1.1-r1.apk
