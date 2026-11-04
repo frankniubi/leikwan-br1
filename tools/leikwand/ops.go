@@ -126,6 +126,11 @@ func (a *Agent) diagnose() DiagnosticReport {
 	for _, view := range a.forwardViews() {
 		add("forward_"+itoa(view.ForwardID), view.Status == "running" && view.Health != "unavailable",
 			view.Status+" / "+view.Health)
+		// A forward can be "running" while the Panel never grants it a
+		// lease: the runtime is up but holds no line. Report the lease plane
+		// on its own, or a router that cannot lease passes every check.
+		add("forward_"+itoa(view.ForwardID)+"_lease", view.LeaseError == "" && view.LeaseExpiry != "",
+			firstNonEmpty(view.LeaseError, leaseCheckDetail(view)))
 	}
 	if gateway := a.gatewayView(); gateway.NativeGranted {
 		add("native_relay", gateway.Running, firstNonEmpty(gateway.LastError,
@@ -135,6 +140,14 @@ func (a *Agent) diagnose() DiagnosticReport {
 			firstNonEmpty(gateway.LeaseError, fmt.Sprintf("%d candidates, expires %s", gateway.Candidates, gateway.LeaseExpiry)))
 	}
 	return report
+}
+
+// leaseCheckDetail describes a forward's lease for the diagnostics report.
+func leaseCheckDetail(view ForwardView) string {
+	if view.LeaseExpiry == "" {
+		return "no lease yet"
+	}
+	return fmt.Sprintf("%d candidates, expires %s", view.Candidates, view.LeaseExpiry)
 }
 
 // submitDiagnostics answers a Panel diagnostics request. The response body is

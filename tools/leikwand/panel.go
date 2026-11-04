@@ -210,6 +210,37 @@ func (c *PanelClient) headers(req *http.Request) {
 	}
 }
 
+// fallbackReserve is the part of a caller's budget held back for each endpoint
+// after the current one. The current endpoint gets everything else, so a
+// healthy Panel answering a 20s long poll inside a 40s pull keeps 30s and is
+// never cut off; only a dead one is abandoned early enough to try the next.
+const fallbackReserve = 10 * time.Second
+
+// minAttemptBudget is the least an endpoint attempt is given. Below it a
+// healthy but distant Panel (TLS over a lossy uplink takes seconds) would be
+// cut off on every request.
+const minAttemptBudget = 8 * time.Second
+
+// attemptContext bounds one endpoint attempt so that, of what is left of ctx's
+// deadline, fallbackReserve remains for each of the remaining-1 endpoints
+// after this one. The last endpoint, a ctx without a deadline, or a budget too
+// small to reserve anything get ctx unchanged.
+func attemptContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok || remaining <= 1 {
+		return context.WithCancel(ctx)
+	}
+	left := time.Until(deadline)
+	share := left - fallbackReserve*time.Duration(remaining-1)
+	if share < minAttemptBudget {
+		share = minAttemptBudget
+	}
+	if share >= left {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, share)
+}
+
 // do performs a request against the active endpoint and transparently retries
 // the next endpoint on transport failure.
 func (c *PanelClient) do(ctx context.Context, method, path string, body any, out any) error {
@@ -217,6 +248,12 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 }
 
 // doWithHeaders is do with additional request headers for this call only.
+//
+// Every endpoint attempt gets its own share of the caller's budget. Without
+// it a primary that accepts the connection and never answers (a blackholed
+// CDN edge) spends the whole deadline, the fallback is reached with a dead
+// context, and a short-budget call such as the 30s lease can never succeed
+// while the longer pull fails over fine.
 func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extra map[string]string) error {
 	if c.baseURL() == "" {
 		return errNoEndpoint
@@ -227,6 +264,11 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			// The caller's budget is spent. Another attempt would fail at once
+			// and its error would name an endpoint that was never tried.
+			break
+		}
 		base := c.baseURL()
 		var reader io.Reader
 		if body != nil {
@@ -236,8 +278,10 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 			}
 			reader = bytes.NewReader(encoded)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
+		attemptCtx, cancelAttempt := attemptContext(ctx, attempts-attempt)
+		req, err := http.NewRequestWithContext(attemptCtx, method, base+path, reader)
 		if err != nil {
+			cancelAttempt()
 			return err
 		}
 		c.headers(req)
@@ -249,8 +293,15 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
+			cancelAttempt()
 			lastErr = err
 			c.noteError(err)
+			if ctx.Err() != nil {
+				// The caller gave up, not the endpoint: a cancelled pull or a
+				// spent lease budget says nothing about this endpoint, and
+				// rotating would move every other request off a working one.
+				break
+			}
 			if !c.rotateEndpoint() {
 				break
 			}
@@ -258,6 +309,7 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 		}
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
+		cancelAttempt()
 		if readErr != nil {
 			lastErr = readErr
 			c.noteError(readErr)
