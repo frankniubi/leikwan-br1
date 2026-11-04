@@ -46,9 +46,9 @@ func TestLeaseFailsOverWithinItsBudgetWhenThePrimaryBlackholes(t *testing.T) {
 	cfg.FallbackURL = mirror.URL
 	client := newPanelClient(cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
 
-	// 2 x minAttemptBudget: the primary gets its share and the fallback the
-	// rest, exactly as the 30s lease budget splits across the two endpoints.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*minAttemptBudget+time.Second)
+	// The primary keeps all but fallbackReserve; the fallback gets the
+	// reserve. Scaled-down version of the 30s lease: 20s primary + 10s.
+	ctx, cancel := context.WithTimeout(context.Background(), fallbackReserve+minAttemptBudget)
 	defer cancel()
 	start := time.Now()
 	response, err := client.Lease(ctx, LeaseRequest{DeviceID: "dev-1"})
@@ -136,34 +136,39 @@ func TestCallerCancellationDoesNotRotateTheEndpoint(t *testing.T) {
 	}
 }
 
-func TestAttemptContextSplitsTheRemainingBudget(t *testing.T) {
-	parent, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func TestAttemptContextReservesTimeForTheFallback(t *testing.T) {
+	// The lease budget: the primary gets 20s, 10s stay for the fallback.
+	lease, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	first, cancelFirst := attemptContext(parent, 2)
+	first, cancelFirst := attemptContext(lease, 2)
 	defer cancelFirst()
-	deadline, ok := first.Deadline()
-	if !ok {
-		t.Fatal("attempt has no deadline")
-	}
-	if got := time.Until(deadline); got > 16*time.Second || got < 14*time.Second {
-		t.Fatalf("first of two attempts gets %v, want about 15s", got)
+	if got := time.Until(mustDeadline(t, first)); got > 21*time.Second || got < 19*time.Second {
+		t.Fatalf("lease primary attempt gets %v, want about 20s", got)
 	}
 
-	last, cancelLast := attemptContext(parent, 1)
+	// The pull budget: a healthy primary answering the 20s long poll must
+	// not be cut off, so it keeps 30s of the 40s.
+	pull, cancelPull := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancelPull()
+	pullFirst, cancelPullFirst := attemptContext(pull, 2)
+	defer cancelPullFirst()
+	if got := time.Until(mustDeadline(t, pullFirst)); got < 29*time.Second {
+		t.Fatalf("pull primary attempt gets %v; a 20s long poll would be cut off", got)
+	}
+
+	last, cancelLast := attemptContext(lease, 1)
 	defer cancelLast()
-	if d, _ := last.Deadline(); !d.Equal(mustDeadline(t, parent)) {
+	if !mustDeadline(t, last).Equal(mustDeadline(t, lease)) {
 		t.Fatal("the last attempt must get everything that is left")
 	}
 
-	// A share below the floor is not imposed: the caller's deadline already
-	// is the tighter bound, and a slow but healthy Panel keeps its chance.
-	short, cancelShort := context.WithTimeout(context.Background(), 10*time.Second)
+	// Too little to reserve anything: the caller's own deadline applies.
+	short, cancelShort := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancelShort()
 	floor, cancelFloor := attemptContext(short, 2)
 	defer cancelFloor()
-	if d, _ := floor.Deadline(); !d.Equal(mustDeadline(t, short)) {
-		t.Fatalf("share below %v must fall back to the caller deadline", minAttemptBudget)
+	if !mustDeadline(t, floor).Equal(mustDeadline(t, short)) {
+		t.Fatal("a budget below the floor must fall back to the caller deadline")
 	}
 
 	// No deadline: unbounded attempts stay unbounded (the http.Client
@@ -172,6 +177,39 @@ func TestAttemptContextSplitsTheRemainingBudget(t *testing.T) {
 	defer cancelFree()
 	if _, ok := free.Deadline(); ok {
 		t.Fatal("a caller without a deadline must not get one")
+	}
+}
+
+// The pull long-polls for 20s. A primary that is healthy but holds the poll
+// open must answer through it, not be failed over at the attempt boundary.
+func TestPullLongPollOnAHealthyPrimaryIsNotFailedOver(t *testing.T) {
+	var primaryHits, mirrorHits int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&primaryHits, 1)
+		time.Sleep(1500 * time.Millisecond) // the long poll, scaled down
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer primary.Close()
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&mirrorHits, 1)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer mirror.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = primary.URL
+	cfg.FallbackURL = mirror.URL
+	client := newPanelClient(cfg, SecretState{AgentToken: "token"}, "dev-1", "router")
+
+	// fallbackReserve + 2.5s: the primary attempt keeps 2.5s, longer than
+	// the 1.5s poll, the way the 40s pull keeps 30s for a 20s poll.
+	ctx, cancel := context.WithTimeout(context.Background(), fallbackReserve+2500*time.Millisecond)
+	defer cancel()
+	if _, err := client.Pull(ctx, "rev", 20); err != errNotModified {
+		t.Fatalf("pull = %v, want not modified from the primary", err)
+	}
+	if atomic.LoadInt32(&mirrorHits) != 0 || client.baseURL() != strings.TrimRight(primary.URL, "/") {
+		t.Fatalf("a healthy long poll was failed over (mirror hits=%d, active=%s)", mirrorHits, client.baseURL())
 	}
 }
 

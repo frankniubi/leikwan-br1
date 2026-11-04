@@ -210,22 +210,32 @@ func (c *PanelClient) headers(req *http.Request) {
 	}
 }
 
-// minAttemptBudget is the least an endpoint attempt is given when the caller's
-// budget is split across the pool. Below it a healthy but distant Panel (TLS
-// over a lossy uplink takes seconds) would be cut off on every request.
+// fallbackReserve is the part of a caller's budget held back for each endpoint
+// after the current one. The current endpoint gets everything else, so a
+// healthy Panel answering a 20s long poll inside a 40s pull keeps 30s and is
+// never cut off; only a dead one is abandoned early enough to try the next.
+const fallbackReserve = 10 * time.Second
+
+// minAttemptBudget is the least an endpoint attempt is given. Below it a
+// healthy but distant Panel (TLS over a lossy uplink takes seconds) would be
+// cut off on every request.
 const minAttemptBudget = 8 * time.Second
 
-// attemptContext bounds one endpoint attempt to an even share of what is left
-// of ctx's deadline across the remaining endpoints. A ctx without a deadline
-// is passed through; so is a share that would drop under minAttemptBudget,
-// because then the caller's own deadline is the tighter bound anyway.
+// attemptContext bounds one endpoint attempt so that, of what is left of ctx's
+// deadline, fallbackReserve remains for each of the remaining-1 endpoints
+// after this one. The last endpoint, a ctx without a deadline, or a budget too
+// small to reserve anything get ctx unchanged.
 func attemptContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
 	deadline, ok := ctx.Deadline()
 	if !ok || remaining <= 1 {
 		return context.WithCancel(ctx)
 	}
-	share := time.Until(deadline) / time.Duration(remaining)
+	left := time.Until(deadline)
+	share := left - fallbackReserve*time.Duration(remaining-1)
 	if share < minAttemptBudget {
+		share = minAttemptBudget
+	}
+	if share >= left {
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, share)
