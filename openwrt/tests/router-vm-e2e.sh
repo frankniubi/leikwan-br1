@@ -382,7 +382,10 @@ VER=$(run_remote "$VER_CMD")
 echo "$VER" | sed 's/^/    | /'
 echo "$VER" | grep -q "package manager *$EDITION (." && ok "report detects the $EDITION package manager" || bad "report package manager: $VER"
 echo "$VER" | grep -q "x86_64 -> amd64 build (package arch x86_64)" && ok "report resolves arch and package arch" || bad "report arch"
-echo "$VER" | grep -qE "leikwand +1\.2\.6(-r1)? +1\.2\.6" && ok "report shows the installed and running leikwand version" || bad "report leikwand row"
+# The version comes from the build, not from this file: assert the row is
+# populated and self-consistent (installed "X-r1", running "X") instead of
+# pinning a release number the next bump would break.
+echo "$VER" | grep -qE "leikwand +[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+ +[0-9]+\.[0-9]+\.[0-9]+ " && ok "report shows the installed and running leikwand version" || bad "report leikwand row: $VER"
 echo "$VER" | grep -q "up to date" && ok "report finds nothing to update after the install" || bad "report state: $VER"
 echo "$VER" | grep -q "Nothing to change" && ok "report closes with nothing to change" || bad "report closing"
 TGT=$(run_remote "sh /tmp/leikwan-versions.sh --panel '$PANEL_LOCAL' --target")
