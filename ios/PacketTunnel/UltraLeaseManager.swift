@@ -38,6 +38,7 @@ final class UltraLeaseManager {
     private let forwards: [UltraForwardLaunch]
     private let essentialForwardIDs: Set<Int64>
     private let onUnusable: UnusableHandler
+    private let restartBootstrap: (UltraForwardLaunch, ExternalUotGrant?) throws -> Void
     private let wakeup = LoopWakeup()
     private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.ultra-lease", attributes: .concurrent)
     private let lock = NSLock()
@@ -46,11 +47,12 @@ final class UltraLeaseManager {
     /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
     private var candidateEndpoints: [Int64: [String: String]] = [:]
 
-    init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, onUnusable: @escaping UnusableHandler) {
+    init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, restartBootstrap: @escaping (UltraForwardLaunch, ExternalUotGrant?) throws -> Void, onUnusable: @escaping UnusableHandler) {
         self.client = client
         self.forwards = forwards
         self.essentialForwardIDs = essentialForwardIDs
         self.onUnusable = onUnusable
+        self.restartBootstrap = restartBootstrap
     }
 
     /// Problem the app should show (no usable lease for a forward), if any.
@@ -110,6 +112,7 @@ final class UltraLeaseManager {
     private func run(_ forward: UltraForwardLaunch) async {
         var backoff = ControlPlaneBackoff()
         var active: Active?
+        var installedSidecar = Self.plannedPolicy(forward)?.externalUot?.fingerprint
         var pullFirst = false
         var first = true
         var failedAttempts = 0
@@ -139,6 +142,11 @@ final class UltraLeaseManager {
             do {
                 let policy = try await resolvePolicy(forward, preferLaunch: first && !pullFirst)
                 first = false
+                if installedSidecar != policy.externalUot?.fingerprint {
+                    // The sidecar/token are bootstrap-only. Keep TUN and other runtimes alive.
+                    try restartBootstrap(forward, policy.externalUot)
+                    installedSidecar = policy.externalUot?.fingerprint
+                }
                 let accepted = try await deliverLeases(forward, policy: policy)
                 if Task.isCancelled { return }
                 if !accepted { throw UltraLeaseError("ultra_lease_rejected_by_runtime") }

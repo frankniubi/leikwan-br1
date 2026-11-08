@@ -17,6 +17,21 @@ final class UltraTests: XCTestCase {
         XCTAssertNil(p.tcpFirstFlight)
     }
 
+    func testSidecarBootstrapDoesNotDisappear() throws {
+        var access = Fixtures.ultraAccess()
+        access["external_uot"] = ["enabled": true, "sidecar_target": "standby.test:7443",
+                                  "token": "fixture", "delivery_mode": "reliable_datagram_v1"]
+        let forward = Fixtures.ultraForward(access: access)
+        let policy = try XCTUnwrap(UltraPolicy.from(forward, now: Fixtures.now))
+        let paths = UltraRuntimePaths.make(directory: "/var/ultra", forwardId: 12, policyGeneration: Fixtures.generation)
+        let plan = try UltraRuntimeConfigBuilder.buildPlan(forward: forward, policy: policy, paths: paths)
+        let sidecar = try XCTUnwrap(Fixtures.parseJSON(plan.configJSON)["external_uot"] as? [String: Any])
+        XCTAssertEqual(sidecar["sidecar_target"] as? String, "standby.test:7443")
+        XCTAssertEqual(sidecar["delivery_mode"] as? String, "reliable_datagram_v1")
+        access["external_uot"] = ["enabled": true, "sidecar_target": "standby.test:7443", "token": ""]
+        XCTAssertNil(UltraPolicy.from(Fixtures.ultraForward(access: access), now: Fixtures.now))
+    }
+
     func testPolicyRejections() {
         XCTAssertNil(UltraPolicy.from(Fixtures.ultraForward(access: nil), now: Fixtures.now))
         XCTAssertNil(UltraPolicy.from(Fixtures.ultraForward(access: Fixtures.ultraAccess(forwardId: 13)), now: Fixtures.now))

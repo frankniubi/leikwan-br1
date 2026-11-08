@@ -1061,7 +1061,10 @@ class TunnelOrchestrator internal constructor(
                 // from its own VPN, so the runtime reaches any relay directly. Tearing the VPN
                 // down here dropped every Android tunnel each few renewals, and for good when a
                 // step of the rebuild failed.
-                val accepted = !active.runtimeRestartPending && if (leases.size == 1) {
+                // Sidecar address/token are bootstrap-only, unlike provider leases.
+                // Replace just this runtime, not the VPN/TUN or unrelated forwards.
+                val bootstrapChanged = nextPolicy.externalUot?.fingerprint != active.policy.externalUot?.fingerprint
+                val accepted = !bootstrapChanged && !active.runtimeRestartPending && if (leases.size == 1) {
                     ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
                 } else {
                     ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
@@ -1076,7 +1079,7 @@ class TunnelOrchestrator internal constructor(
                     )
                     return false
                 }
-                if (!active.runtimeRestartPending && nextProtectedConnectivity == active.protectedConnectivity) {
+                if (!bootstrapChanged && !active.runtimeRestartPending && nextProtectedConnectivity == active.protectedConnectivity) {
                     throw IllegalStateException("ultra_lease_refresh_rejected")
                 }
                 // The runtime will not move one policy generation to a relay set that lacks its

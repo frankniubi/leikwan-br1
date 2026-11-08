@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.08.27.1",
+    [string]$Version = "",
     [string]$OutputPath = "",
     [ValidateSet("arm64-v8a", "x86_64")]
     [string]$Abi = "arm64-v8a",
@@ -24,6 +24,12 @@ if ([string]::IsNullOrWhiteSpace($shortSha)) {
 }
 if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
 $FullVersion = "$Version.$shortSha"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $identity = (& python (Join-Path $PSScriptRoot "runtime-build-identity.py")) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $identity.fingerprint) { throw "runtime identity generation failed" }
+    $Version = $identity.version
+    $FullVersion = $identity.fingerprint
+}
 if (-not [string]::IsNullOrWhiteSpace($Architectures)) {
     foreach ($architecture in $Architectures.Split(',') | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ }) {
         $mappedAbi = switch ($architecture) {

@@ -71,6 +71,7 @@ object UltraForwardRunner {
             addProperty("location_cache_path", locationCacheFile.absolutePath)
             addProperty("location_lock_path", locationLockFile.absolutePath)
             addProperty("status_path", statusFile.absolutePath)
+            if (!nativeSocks5) policy.externalUot?.let { add("external_uot", it.toBootstrapJson()) }
             addProperty("probe_timeout_ms", 800)
             // TCP first-flight is a plain host pass-through: the runtime applies
             // it per stream to the listed authenticated candidates only.
