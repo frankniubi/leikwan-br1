@@ -479,6 +479,9 @@ func (a *Agent) config() Config {
 // speaks the Ultra protocol only, so forwards that need the bond/MPTCP/sidecar
 // data path are declined here rather than silently mis-served.
 func acceptForward(forward ForwardConfig) bool {
+	if forward.UltraAccess != nil && !forward.UltraAccess.ExternalUoT.valid() {
+		return false
+	}
 	if forward.ForwardID <= 0 || forward.NativeOutboundEnabled {
 		return false
 	}
@@ -663,6 +666,7 @@ func contractSignature(forward ForwardConfig) string {
 		strings.TrimSpace(forward.Target),
 		strings.ToLower(strings.TrimSpace(forward.Transport)),
 		strings.ToLower(strings.TrimSpace(forward.BackendMode)),
+		externalGrant(forward.UltraAccess).fingerprint(),
 	})
 	return sha256Hex(string(payload))
 }

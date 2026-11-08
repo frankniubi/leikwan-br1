@@ -33,6 +33,7 @@ data class UltraPolicy(
     val targetDigest: String,
     /** Optional TCP first-flight compatibility the panel attached to this grant. */
     val tcpFirstFlight: UltraTcpFirstFlight? = null,
+    val externalUot: ExternalUotGrant? = null,
 ) {
     companion object {
         fun from(forward: ForwardContract, now: Instant = Instant.now()): UltraPolicy? {
@@ -70,7 +71,17 @@ data class UltraPolicy(
                 || quota !in 1L..ULTRA_MAX_QUOTA_BYTES) {
                 return null
             }
+            val externalUot = access.get("external_uot")?.let { wire ->
+                if (!wire.isJsonObject) return null
+                val digest = wire.asJsonObject.get("target_digest")
+                if (digest != null && (!digest.isJsonPrimitive || !digest.asJsonPrimitive.isString ||
+                    digest.asString != policyTargetDigest)) return null
+                val enabled = wire.asJsonObject.get("enabled")
+                if (enabled?.toString() == "false") null
+                else runCatching { ExternalUotGrant.from(wire.asJsonObject) }.getOrElse { return null }
+            }
             return UltraPolicy(
+                externalUot = externalUot,
                 forwardId = forwardId,
                 sessionTicket = ticket,
                 policyGeneration = generation,

@@ -13,7 +13,7 @@ set -euo pipefail
 SING_BOX_VERSION="${SING_BOX_VERSION:-v1.13.12}"
 GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.1.12}"
 GOMOBILE_TARGETS="${GOMOBILE_TARGETS:-ios,iossimulator}"
-ULTRA_VERSION="${ULTRA_VERSION:-ios-development}"
+ULTRA_VERSION="${ULTRA_VERSION:-$(python3 "$(dirname "$0")/../../scripts/runtime-build-identity.py" --field fingerprint)}"
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="${WORK_DIR:-$repo_root/ios/.build/go-mobile}"

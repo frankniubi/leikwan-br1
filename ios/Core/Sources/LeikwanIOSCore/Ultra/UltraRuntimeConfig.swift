@@ -80,6 +80,9 @@ public enum UltraRuntimeConfigBuilder {
             "status_path": paths.statusPath,
             "probe_timeout_ms": 800,
         ]
+        if let external = policy.externalUot {
+            config["external_uot"] = external.bootstrapJSON()
+        }
         if let firstFlight = policy.tcpFirstFlight {
             config["tcp_first_flight"] = firstFlight.bootstrapJSON()
         }
