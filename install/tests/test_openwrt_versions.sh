@@ -36,7 +36,7 @@ write_manifest() { # write_manifest <leikwand-version> [runtime-version] [luci-v
 		echo "6666666666666666666666666666666666666666666666666666666666666666  apk/arm64/luci-app-leikwan-${3:-1.1.1-r1}.apk"
 	} > "$MANIFEST"
 }
-write_manifest 1.2.6-r1
+write_manifest 1.2.7-r1
 
 # --- stub commands ---------------------------------------------------------
 # new_root <name> <pm> <installed-leikwand-version-or-empty>
@@ -56,7 +56,7 @@ esac
 EOF
 	cat > "$ROOT/usr/bin/leikwand" <<'EOF'
 #!/bin/sh
-case "$1" in version) echo "${STUB_BIN_VERSION:-1.2.6}" ;; esac
+case "$1" in version) echo "${STUB_BIN_VERSION:-1.2.7}" ;; esac
 EOF
 	cp "$ROOT/usr/bin/leikwand" "$ROOT/usr/libexec/leikwan/ultra-client"
 	# The version script probes the runtime with `version` too; the real
@@ -109,14 +109,14 @@ run() { # run <machine> [args...]  -> $OUT, $RC
 		STUB_INSTALLED_leikwand="${STUB_INSTALLED_leikwand:-}" \
 		STUB_INSTALLED_leikwan_runtime="${STUB_INSTALLED_leikwan_runtime:-}" \
 		STUB_INSTALLED_luci_app_leikwan="${STUB_INSTALLED_luci_app_leikwan:-}" \
-		STUB_BIN_VERSION="${STUB_BIN_VERSION:-1.2.6}" \
+		STUB_BIN_VERSION="${STUB_BIN_VERSION:-1.2.7}" \
 		sh "$SCRIPT" --panel "file://$PANEL" "$@" 2>&1)
 	RC=$?
 }
 
 echo "== opkg, up to date"
 new_root opkg-ok opkg
-STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 \
+STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64
 [ "$RC" = 0 ] && ok "exit 0 when nothing is pending" || bad "exit $RC: $OUT"
 echo "$OUT" | grep -q "opkg (.ipk" && ok "detects opkg" || bad "package manager: $OUT"
@@ -130,41 +130,41 @@ new_root opkg-old opkg
 STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.5-r1 STUB_INSTALLED_leikwan_runtime=1.2.5-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64
 [ "$RC" = 0 ] && ok "the report still exits 0" || bad "exit $RC: $OUT"
-echo "$OUT" | grep -q "UPDATE -> amd64/leikwand_1.2.6-r1_x86_64.ipk" && ok "reports the pending leikwand update" || bad "update: $OUT"
+echo "$OUT" | grep -q "UPDATE -> amd64/leikwand_1.2.7-r1_x86_64.ipk" && ok "reports the pending leikwand update" || bad "update: $OUT"
 echo "$OUT" | grep -q "sh install-openwrt.sh" && ok "suggests the installer" || bad "hint missing: $OUT"
 STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.5-r1 STUB_INSTALLED_leikwan_runtime=1.2.5-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64 --check
 [ "$RC" = 1 ] && ok "--check exits 1 when an update is published" || bad "--check exit $RC: $OUT"
-echo "$OUT" | grep -q "leikwand 1.2.5-r1 -> 1.2.6-r1" && ok "--check names the versions" || bad "--check output: $OUT"
-STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 \
+echo "$OUT" | grep -q "leikwand 1.2.5-r1 -> 1.2.7-r1" && ok "--check names the versions" || bad "--check output: $OUT"
+STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64 --check
 [ "$RC" = 0 ] && ok "--check exits 0 when current" || bad "--check exit $RC"
 
 echo "== nothing installed yet"
 new_root opkg-empty opkg
 STUB_LUCI_BASE=1 run x86_64
-echo "$OUT" | grep -q "UPDATE -> amd64/leikwand_1.2.6-r1_x86_64.ipk" && ok "an unreported package counts as an update" || bad "empty: $OUT"
+echo "$OUT" | grep -q "UPDATE -> amd64/leikwand_1.2.7-r1_x86_64.ipk" && ok "an unreported package counts as an update" || bad "empty: $OUT"
 
 echo "== the ipk version survives an arch name with underscores"
 new_root opkg-arch-underscore opkg
-STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 \
+STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64 --json
-echo "$OUT" | grep -q '"published":"1.2.6-r1","file":"amd64/leikwand_1.2.6-r1_x86_64.ipk"' \
+echo "$OUT" | grep -q '"published":"1.2.7-r1","file":"amd64/leikwand_1.2.7-r1_x86_64.ipk"' \
 	&& ok "x86_64 is not mistaken for part of the version" || bad "json: $OUT"
 
 echo "== apk, up to date (the apk stub resolves versions too)"
 new_root apk-ok apk
 echo x86_64 > "$ROOT/etc/apk/arch"
-STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 \
+STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64 --check
 [ "$RC" = 0 ] && ok "apk: --check exits 0 when current" || bad "apk check: rc=$RC $OUT"
 
 echo "== apk, aarch64, CPU-specific firmware"
 new_root apk-arm apk
 echo aarch64_cortex-a53 > "$ROOT/etc/apk/arch"
-STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 run aarch64
+STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 run aarch64
 echo "$OUT" | grep -q "arm64 build (package arch aarch64_generic)" && ok "resolves the package arch" || bad "arch: $OUT"
-echo "$OUT" | grep -q "this router installs: apk/arm64/leikwand-1.2.6-r1.apk" && ok "names the apk it would install" || bad "target: $OUT"
+echo "$OUT" | grep -q "this router installs: apk/arm64/leikwand-1.2.7-r1.apk" && ok "names the apk it would install" || bad "target: $OUT"
 echo "$OUT" | grep -q "not applicable (no ucode LuCI)" && ok "LuCI not applicable without ucode" || bad "luci: $OUT"
 [ "$(cat "$ROOT/etc/apk/arch")" = "aarch64_cortex-a53" ] && ok "does not touch /etc/apk/arch (report only)" || bad "arch file changed"
 
@@ -172,7 +172,7 @@ echo "== --detect"
 new_root apk-x86 apk
 echo x86_64 > "$ROOT/etc/apk/arch"
 ln -s /bin/true "$BIN/ucode"
-STUB_LUCI_BASE=1 STUB_INSTALLED_luci_base=1 STUB_INSTALLED_leikwand=1.2.6-r1 run x86_64 --detect
+STUB_LUCI_BASE=1 STUB_INSTALLED_luci_base=1 STUB_INSTALLED_leikwand=1.2.7-r1 run x86_64 --detect
 echo "$OUT" | grep -qx "package_manager=apk" && echo "$OUT" | grep -qx "format=apk" \
 	&& echo "$OUT" | grep -qx "arch=amd64" && echo "$OUT" | grep -qx "luci=yes" \
 	&& ok "--detect prints key=value detection" || bad "detect: $OUT"
@@ -180,15 +180,15 @@ echo "$OUT" | grep -qx "package_manager=apk" && echo "$OUT" | grep -qx "format=a
 echo "== --target"
 new_root opkg-tgt opkg
 run x86_64 --target
-[ "$RC" = 0 ] && [ "$OUT" = "amd64/leikwand_1.2.6-r1_x86_64.ipk" ] && ok "--target prints the manifest path" || bad "target: rc=$RC $OUT"
+[ "$RC" = 0 ] && [ "$OUT" = "amd64/leikwand_1.2.7-r1_x86_64.ipk" ] && ok "--target prints the manifest path" || bad "target: rc=$RC $OUT"
 
 echo "== --json is valid JSON"
 new_root json apk
 echo x86_64 > "$ROOT/etc/apk/arch"
-STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 \
+STUB_LUCI_BASE=1 STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 \
 	STUB_INSTALLED_luci_app_leikwan=1.1.1-r1 run x86_64 --json
 if command -v python3 >/dev/null 2>&1; then
-	echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["update_available"] is False; assert d["packages"]["leikwand"]["installed"]=="1.2.6-r1"' 2>/dev/null \
+	echo "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["update_available"] is False; assert d["packages"]["leikwand"]["installed"]=="1.2.7-r1"' 2>/dev/null \
 		&& ok "the JSON parses and holds the expected values" || bad "json parse: $OUT"
 else
 	echo "$OUT" | grep -q '"update_available":false' && ok "the JSON holds the expected values" || bad "json: $OUT"
@@ -205,13 +205,13 @@ fi
 
 echo "== --offline never contacts the panel"
 new_root offline opkg
-STUB_INSTALLED_leikwand=1.2.6-r1 run x86_64 --offline
+STUB_INSTALLED_leikwand=1.2.7-r1 run x86_64 --offline
 [ "$RC" = 0 ] && echo "$OUT" | grep -q "not queried (--offline)" && ok "says the panel was not queried" || bad "offline: $OUT"
 echo "$OUT" | grep -q "Only the local side is known" && ok "does not claim up to date" || bad "offline closing: $OUT"
 
 echo "== an unreachable panel is reported, not guessed"
 new_root unreachable opkg
-STUB_INSTALLED_leikwand=1.2.6-r1 run x86_64 --panel "file://$T/does-not-exist" --check
+STUB_INSTALLED_leikwand=1.2.7-r1 run x86_64 --panel "file://$T/does-not-exist" --check
 [ "$RC" = 2 ] && echo "$OUT" | grep -q "cannot compare" && ok "--check exits 2 without a manifest" || bad "unreachable: rc=$RC $OUT"
 
 echo "== an ambiguous manifest is reported, not silently resolved"
@@ -226,7 +226,7 @@ cp "$T/manifest.keep" "$MANIFEST"
 echo "== a package new to the manifest is not a downgrade"
 new_root newluci apk
 echo x86_64 > "$ROOT/etc/apk/arch"
-STUB_INSTALLED_leikwand=1.2.6-r1 STUB_INSTALLED_leikwan_runtime=1.2.6-r1 run x86_64 --check
+STUB_INSTALLED_leikwand=1.2.7-r1 STUB_INSTALLED_leikwan_runtime=1.2.7-r1 run x86_64 --check
 [ "$RC" = 1 ] && ok "an installed-core/absent-luci router is told an update is available" || bad "newpackage: rc=$RC $OUT"
 
 echo

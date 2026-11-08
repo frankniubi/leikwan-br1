@@ -189,7 +189,12 @@ for name in $PACKAGES; do
 		continue
 	fi
 	log "downloading $file"
-	fetch "$PANEL/artifacts/files/openwrt/$path" "$WORK/$file" || die "download failed: $path"
+	# A package is immutable once published, but the CDN in front of the panel
+	# caches for a year and an edge that fetched a file mid-upload keeps
+	# serving the truncated copy long after the origin is fixed. The hash is
+	# pinned by the manifest, so asking for a distinct URL costs nothing and
+	# keeps a poisoned edge entry from breaking the install.
+	fetch "$PANEL/artifacts/files/openwrt/$path?v=$sum" "$WORK/$file" || die "download failed: $path"
 	got=$(sha256_of "$WORK/$file")
 	[ "$got" = "$sum" ] || die "checksum mismatch for $file (expected $sum, got $got)"
 	FILES="$FILES $WORK/$file"

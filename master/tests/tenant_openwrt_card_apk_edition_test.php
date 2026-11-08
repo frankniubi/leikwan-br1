@@ -60,16 +60,16 @@ namespace {
     foreach ([
         'cd /tmp &amp;&amp; { command -v curl &gt;/dev/null &amp;&amp; curl -fsSL' => 'apk download stage (apk cannot take HTTPS URLs directly)',
         '|| wget -q -O ' => 'wget fallback for images without curl',
-        "-o &#039;leikwand-1.2.6-r1.apk&#039; " => 'each file is saved under its own name',
-        "-o &#039;leikwan-runtime-1.2.6-r1.apk&#039; " => 'runtime is saved under its own name',
+        "-o &#039;leikwand-1.2.7-r1.apk&#039; " => 'each file is saved under its own name',
+        "-o &#039;leikwan-runtime-1.2.7-r1.apk&#039; " => 'runtime is saved under its own name',
         "-o &#039;luci-app-leikwan-1.1.1-r1.apk&#039; " => 'luci app is saved under its own name',
         'apk add --allow-untrusted' => 'apk install command',
-        '/apk/amd64/leikwand-1.2.6-r1.apk' => 'amd64 apk file URL',
-        '/apk/arm64/leikwand-1.2.6-r1.apk' => 'arm64 apk file URL',
-        'apk add --allow-untrusted &#039;leikwand-1.2.6-r1.apk&#039;' => 'apk installs the local file names, not URLs',
+        '/apk/amd64/leikwand-1.2.7-r1.apk' => 'amd64 apk file URL',
+        '/apk/arm64/leikwand-1.2.7-r1.apk' => 'arm64 apk file URL',
+        'apk add --allow-untrusted &#039;leikwand-1.2.7-r1.apk&#039;' => 'apk installs the local file names, not URLs',
         'opkg update &amp;&amp; opkg install' => 'opkg install command',
-        '/amd64/leikwand_1.2.6-r1_x86_64.ipk' => 'amd64 ipk file URL',
-        '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk' => 'arm64 ipk file URL',
+        '/amd64/leikwand_1.2.7-r1_x86_64.ipk' => 'amd64 ipk file URL',
+        '/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk' => 'arm64 ipk file URL',
         'leikwand ctl register client_id=7' => 'register command carrying the client identity',
         'OpenWrt 21.02 / 22.03' => 'legacy card retained',
     ] as $needle => $why) {
@@ -127,10 +127,23 @@ namespace {
     }
 
     // Both apk architecture variants must carry the runtime and LuCI packages too.
-    foreach (['/apk/amd64/leikwan-runtime-1.2.6-r1.apk', '/apk/arm64/leikwan-runtime-1.2.6-r1.apk',
+    foreach (['/apk/amd64/leikwan-runtime-1.2.7-r1.apk', '/apk/arm64/leikwan-runtime-1.2.7-r1.apk',
         '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk', '/apk/arm64/luci-app-leikwan-1.1.1-r1.apk'] as $needle) {
         if (!str_contains($html, $needle)) {
             failOpenwrtCard("missing package URL: $needle");
+        }
+    }
+    // Every download URL carries the version as a query parameter. The CDN in
+    // front of the panel caches a package for a year, and an edge that fetched
+    // one mid-upload kept serving the truncated copy after the origin was
+    // fixed (1.2.7, apk/amd64). A published file never changes, so a distinct
+    // URL per version is free and keeps a poisoned edge entry from breaking
+    // an install.
+    foreach (['/apk/amd64/leikwand-1.2.7-r1.apk?v=1.2.7-r1', '/apk/arm64/leikwand-1.2.7-r1.apk?v=1.2.7-r1',
+        '/apk/amd64/leikwan-runtime-1.2.7-r1.apk?v=1.2.7-r1',
+        '/apk/amd64/luci-app-leikwan-1.1.1-r1.apk?v=1.1.1-r1'] as $needle) {
+        if (!str_contains($html, $needle)) {
+            failOpenwrtCard("apk download is not cache-busted: $needle");
         }
     }
 

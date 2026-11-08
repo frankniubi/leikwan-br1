@@ -1658,7 +1658,7 @@ final class TenantController extends BaseController
     /**
      * OpenWrt card for the app center.
      *
-     * The router edition (leikwand 1.2.6) onboards exactly like the headless
+     * The router edition (leikwand 1.2.7) onboards exactly like the headless
      * clients: paste the panel-issued client id and agent token into LuCI (or
      * run `leikwand ctl register` over SSH). The card renders the install
      * command for the router's architecture, firmware generation and a
@@ -1687,12 +1687,12 @@ final class TenantController extends BaseController
         if ($hasClient) {
             $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
             $amd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.6-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.6-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.7-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
             // .ipk files: those routers install .apk packages instead. apk
@@ -1703,7 +1703,7 @@ final class TenantController extends BaseController
             // local paths. The panel's download is hash-pinned and served
             // over HTTPS; --allow-untrusted only skips feed-index signing,
             // which a local file install does not have anyway.
-            $amd64ApkFiles = ['leikwand-1.2.6-r1.apk', 'leikwan-runtime-1.2.6-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
+            $amd64ApkFiles = ['leikwand-1.2.7-r1.apk', 'leikwan-runtime-1.2.7-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
             $arm64ApkFiles = $amd64ApkFiles;
             $amd64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/amd64', $amd64ApkFiles) . $register;
             $arm64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/arm64', $arm64ApkFiles) . $register;
@@ -1712,11 +1712,11 @@ final class TenantController extends BaseController
             // backend). Old devices get the core packages only — the SSH
             // command-line journey (register/forwards/logs) works everywhere.
             $legacyAmd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.6-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.6-r1_x86_64.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.7-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk') . $register;
             $legacyArm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.6-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.6-r1_aarch64_generic.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk') . $register;
         } else {
             $amd64Command = $ipkBase . '/amd64/';
             $arm64Command = $ipkBase . '/arm64/';
@@ -1750,7 +1750,7 @@ final class TenantController extends BaseController
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
-            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.6)', 'openwrt_leikwand')) . '</strong>'
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.7)', 'openwrt_leikwand')) . '</strong>'
             // Collapsed like the other platforms: the title stays visible, every
             // command opens on demand.
             . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
@@ -1825,9 +1825,14 @@ final class TenantController extends BaseController
         // One download per file: `curl -O` names only the URL that follows it,
         // so a single curl call with several URLs leaves all but the last file
         // unsaved. Each file is fetched in its own step instead.
+        //
+        // The version is part of the URL: the CDN in front of the panel caches
+        // a package for a year, and an edge that fetched one mid-upload keeps
+        // serving the truncated copy after the origin is fixed. A published
+        // file never changes, so a distinct URL per version is free.
         $downloads = [];
         foreach ($files as $file) {
-            $url = $this->shellQuote($dirUrl . '/' . $file);
+            $url = $this->shellQuote($dirUrl . '/' . $file . '?v=' . rawurlencode($this->versionInFileName($file)));
             $downloads[] = '{ command -v curl >/dev/null && curl -fsSL -o ' . $this->shellQuote($file) . ' ' . $url
                 . ' || wget -q -O ' . $this->shellQuote($file) . ' ' . $url . '; }';
         }
@@ -1835,6 +1840,15 @@ final class TenantController extends BaseController
         return 'cd /tmp && '
             . implode(' && ', $downloads) . ' && '
             . 'apk add --allow-untrusted ' . $quotedFiles;
+    }
+
+    /** The "<version>-r<rev>" part of a package file name, for cache-busting. */
+    private function versionInFileName(string $file): string
+    {
+        if (preg_match('/(\d+\.\d+\.\d+-r\d+)/', $file, $m) === 1) {
+            return $m[1];
+        }
+        return '1';
     }
 
     /**

@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// credentialRejectedReason is the class and candidate-feedback reason for a relay
+// that refused the lease credential (05 02 ...). The Panel records it without a
+// failure strike.
+const credentialRejectedReason = "credential_rejected"
+
 func haErrorClass(err error) string {
 	switch {
 	case err == nil:
@@ -54,10 +59,17 @@ func haErrorClass(err error) string {
 		// explicitly so it is not indistinguishable from a generic io_error in
 		// ha_events, and so it never counts as path-loss evidence.
 		return "target_connect_rejected"
+	case errors.Is(err, errStreamAuthenticationRejected):
+		return credentialRejectedReason
+	case errors.Is(err, errStreamPreludeRejected):
+		return "prelude_rejected"
 	}
 	var n net.Error
 	if errors.As(err, &n) && n.Timeout() {
 		return "timeout"
+	}
+	if errors.Is(err, errProviderDial) {
+		return "relay_unreachable"
 	}
 	return "io_error"
 }
