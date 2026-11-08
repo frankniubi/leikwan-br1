@@ -98,6 +98,16 @@ ULTRA_POLICY_STATES = {"active", "awaiting", "lapsed", "revoked"}
 # churns while the panel is unreachable.
 ULTRA_IDLE_POLICY_STATES = {"awaiting", "lapsed"}
 ULTRA_LEGACY_POLICY_ERRORS = {"awaiting_policy": "awaiting", "policy_lapsed": "lapsed"}
+# Network grace: how far past its own expiry an installed lease may keep serving
+# while no fresh one can be fetched. The runtime enforces the same absolute bound
+# (maxLeaseGrace in tools/ultra-client/policy.go) and rejects anything beyond it,
+# so this value only keeps the request inside what the runtime would accept.
+ULTRA_NETWORK_GRACE_SECONDS = 600.0
+ULTRA_GRACE_RENEW_LEAD_SECONDS = 60.0
+
+
+class UltraLeaseDeliveryError(RuntimeError):
+    """The runtime did not receive a usable Ultra lease (message kept for callers)."""
 
 
 def agent_artifact_path() -> pathlib.Path:
@@ -3949,6 +3959,9 @@ class ClientAgent:
                         reason,
                         runtime_present,
                     )
+                    if runtime_present:
+                        self._ultra_apply_failures[forward_id] = "lease_refresh_failed" if refresh_failed else "lease_grant_unavailable"
+                        self.extend_ultra_grace(forward_id)
                     desired_ids.add(forward_id)
                     continue
                 skipped_invalid_forward_ids.append(forward_id)
@@ -4051,6 +4064,17 @@ class ClientAgent:
                 forward_id, mode, transport, endpoint_count = apply_futures[future]
                 try:
                     future.result()
+                    self._ultra_apply_failures.pop(forward_id, None)
+                except UltraLeaseDeliveryError as exc:
+                    self._ultra_apply_failures[forward_id] = "lease_delivery_failed"
+                    logging.exception(
+                        "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
+                        forward_id,
+                        mode,
+                        transport,
+                        endpoint_count,
+                        exc,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logging.exception(
                         "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
@@ -4086,7 +4110,7 @@ class ClientAgent:
         local_clock = self.time_sync_state()
         helper_hashes = self.helper_artifact_hashes()
         # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
-        ultra_status = collect_ultra_status()
+        ultra_status = self.mark_ultra_apply_failures(collect_ultra_status(), desired_ids)
         heartbeat_response = self.control_plane_request(
             "POST",
             "/api/client/heartbeat",
@@ -4700,6 +4724,12 @@ class ClientAgent:
         previous_leases: list[dict],
     ) -> None:
         """Restore the last known-good Ultra runtime after a failed handoff."""
+        # The apply that is being undone recorded its new content in
+        # WRITTEN_RUNTIME_CONTENT. Left there, the next attempt compares the new
+        # content with itself, sees nothing restart-relevant and never restarts,
+        # so a forward whose target changed stays stuck on the restored files.
+        # Mark first: even a rollback that fails half way must force the restart.
+        self._ultra_restart_once.add(int(forward_id))
         try:
             for service_name in sorted(current_service_names):
                 subprocess.run(f"systemctl stop {service_name}.service", shell=True, check=False)
@@ -4710,12 +4740,20 @@ class ClientAgent:
                         path.unlink()
                 except OSError:
                     logging.warning("failed to remove rolled-back runtime path %s", path, exc_info=True)
+                WRITTEN_RUNTIME_CONTENT.pop(raw_path, None)
             for raw_path, (exists, content, mode) in file_snapshot.items():
                 path = pathlib.Path(raw_path)
                 if exists:
                     self._restore_runtime_file(path, content, mode)
+                    try:
+                        WRITTEN_RUNTIME_CONTENT[raw_path] = path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        WRITTEN_RUNTIME_CONTENT.pop(raw_path, None)
                 elif path.exists() or path.is_symlink():
                     path.unlink()
+                    WRITTEN_RUNTIME_CONTENT.pop(raw_path, None)
+                else:
+                    WRITTEN_RUNTIME_CONTENT.pop(raw_path, None)
 
             subprocess.run("systemctl daemon-reload", shell=True, check=False)
             if previous_runtime_present:
@@ -4742,6 +4780,13 @@ class ClientAgent:
         from install_forward_runtime import render_forward_runtime  # local helper
 
         forward_id = int(forward["forward_id"])
+        if (
+            forward_id in self._ultra_restart_once
+            and str(forward.get("backend_mode", "") or "").strip().lower() == "ultra"
+        ):
+            # A rollback put the old files back; the service still runs whatever
+            # it was last started with, so restart it once on this apply.
+            force_runtime_restart = True
         mode = self.normalize_mode(forward.get("mode", "single"))
         transport = str(forward.get("transport", "tcp+udp") or "tcp+udp").strip().lower()
         endpoints = [endpoint for endpoint in forward.get("endpoints", []) if isinstance(endpoint, dict)]
@@ -4820,7 +4865,7 @@ class ClientAgent:
             if str(render_forward.get("backend_mode", "") or "").strip().lower() == "ultra":
                 leases = ultra_lease_candidates(render_forward)
                 if not leases or not self.send_ultra_leases(forward_id, leases):
-                    raise RuntimeError("ultra lease delivery failed")
+                    raise UltraLeaseDeliveryError("ultra lease delivery failed")
                 self.persist_forward_apply_signatures(forward_id, contract_signature, rendered_signature)
                 logging.debug(
                     "forward %s static runtime unchanged%s; delivered fresh Ultra lease",
@@ -4846,7 +4891,7 @@ class ClientAgent:
             if previous_runtime_present or isinstance(previous, dict) and previous:
                 logging.warning("forward %s Ultra lease unavailable; preserving current runtime before apply", forward_id)
                 return
-            raise RuntimeError("ultra lease delivery failed")
+            raise UltraLeaseDeliveryError("ultra lease delivery failed")
 
         previous_leases = self.cached_ultra_leases(forward_id) if ultra_runtime else []
         fresh_leases = ultra_lease_candidates(render_forward) if ultra_runtime else []
@@ -4995,6 +5040,9 @@ class ClientAgent:
                 subprocess.run("systemctl daemon-reload", shell=True, check=False)
                 subprocess.run(f"systemctl enable {service_name}.service", shell=True, check=False)
                 subprocess.run(f"systemctl restart {service_name}.service", shell=True, check=False)
+                # The restart the rollback asked for has happened. A later
+                # failed lease delivery rolls back again and re-arms it.
+                self._ultra_restart_once.discard(forward_id)
 
             persisted_units.append(
                 {
@@ -5033,7 +5081,7 @@ class ClientAgent:
                     runtime_file_snapshot,
                     previous_leases,
                 )
-                raise RuntimeError("ultra lease delivery failed")
+                raise UltraLeaseDeliveryError("ultra lease delivery failed")
 
         current_managed_paths = {path for unit in persisted_units for path in unit["managed_paths"]}
         stale_path_removed = False
@@ -5095,6 +5143,113 @@ class ClientAgent:
 
     def send_ultra_lease(self, forward_id: int, lease: dict) -> bool:
         return self.send_ultra_leases(forward_id, [lease])
+
+    # Per-agent Ultra recovery state. Created on first use because several callers
+    # build the agent without running __init__.
+    @property
+    def _ultra_restart_once(self) -> set[int]:
+        """Forwards whose files were rolled back; the next apply restarts them once."""
+        return self.__dict__.setdefault("_ultra_restart_once_state", set())
+
+    @property
+    def _ultra_apply_failures(self) -> dict[int, str]:
+        """forward_id -> error_code for forwards that could not get a fresh lease."""
+        return self.__dict__.setdefault("_ultra_apply_failures_state", {})
+
+    @property
+    def _ultra_grace_until(self) -> dict[int, tuple[str, float]]:
+        """forward_id -> (policy_generation, until_epoch) of the last grace asked for."""
+        return self.__dict__.setdefault("_ultra_grace_until_state", {})
+
+    def mark_ultra_apply_failures(self, statuses: list[dict], desired_ids: set[int]) -> list[dict]:
+        """Report a forward that could not get a fresh lease as degraded.
+
+        The runtime's own status file keeps saying ``ready`` while it serves an
+        aging lease, so without this the panel sees a healthy forward right up to
+        the moment the lease lapses.
+        """
+        for forward_id in list(self._ultra_apply_failures):
+            if forward_id not in desired_ids:
+                self._ultra_apply_failures.pop(forward_id, None)
+        result: list[dict] = []
+        for entry in statuses:
+            if not isinstance(entry, dict):
+                continue
+            code = self._ultra_apply_failures.get(int(entry.get("forward_id", 0) or 0))
+            if code and entry.get("state") == "ready":
+                entry = dict(entry)
+                entry["state"] = "degraded"
+                if not entry.get("error_code"):
+                    entry["error_code"] = code
+            result.append(entry)
+        return result
+
+    @staticmethod
+    def send_ultra_control_command(forward_id: int, command: dict, timeout: float = 5.0) -> bool:
+        """Send one out-of-band command (extend_grace / stop_grace) to a runtime."""
+        socket_path = pathlib.Path(f"/run/ultra/forward-{int(forward_id)}.control.sock")
+        encoded = json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        try:
+            if not socket_path.exists():
+                return False
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(timeout)
+                connection.connect(str(socket_path))
+                connection.sendall(struct.pack(">I", len(encoded)) + encoded)
+                header = connection.recv(4)
+                if len(header) != 4:
+                    return False
+                size = struct.unpack(">I", header)[0]
+                if not 1 <= size <= 65536:
+                    return False
+                response = b""
+                while len(response) < size:
+                    chunk = connection.recv(size - len(response))
+                    if not chunk:
+                        return False
+                    response += chunk
+            decoded = json.loads(response.decode("utf-8"))
+            return isinstance(decoded, dict) and decoded.get("ok") is True
+        except (OSError, ValueError):
+            return False
+
+    def extend_ultra_grace(self, forward_id: int, *, now: float | None = None) -> bool:
+        """Keep an installed lease serving through a short panel outage.
+
+        Ported from the OpenWrt agent (tools/leikwand/lease_grace.go). Only acts
+        for a lease this agent delivered, only inside the renewal lead time, and
+        never asks for more than ULTRA_NETWORK_GRACE_SECONDS past that lease's own
+        expiry; the runtime enforces the same absolute bound and rejects more.
+        """
+        now = time.time() if now is None else now
+        leases = self.cached_ultra_leases(forward_id)
+        if not leases:
+            return False
+        generation = str(leases[0].get("policy_generation", "") or "")
+        expiries = [parse_rfc3339(lease.get("expires_at")) for lease in leases if isinstance(lease, dict)]
+        if not generation or not expiries or any(expiry is None for expiry in expiries):
+            return False
+        base = min(expiries)
+        if now < base - ULTRA_GRACE_RENEW_LEAD_SECONDS or now >= base + ULTRA_NETWORK_GRACE_SECONDS:
+            return False
+        until = base + ULTRA_NETWORK_GRACE_SECONDS
+        previous = self._ultra_grace_until.get(int(forward_id))
+        if previous is not None and previous[0] == generation and until <= previous[1]:
+            return False
+        sent = self.send_ultra_control_command(
+            forward_id,
+            {"op": "extend_grace", "policy_generation": generation, "grace_until": format_rfc3339(until)},
+        )
+        if not sent:
+            logging.warning("forward %s could not extend the Ultra lease while the panel is unreachable", forward_id)
+            return False
+        self._ultra_grace_until[int(forward_id)] = (generation, until)
+        logging.warning(
+            "forward %s panel unreachable near lease expiry; keeping the installed lease serving until %s (bounded)",
+            forward_id,
+            format_rfc3339(until),
+        )
+        return True
 
     def send_ultra_leases(self, forward_id: int, leases: list[dict]) -> bool:
         if forward_id <= 0 or not isinstance(leases, list) or not 1 <= len(leases) <= 4:
@@ -5170,6 +5325,7 @@ class ClientAgent:
                         if delivered is None:
                             delivered = self._ultra_lease_delivered_at = {}
                         delivered[int(forward_id)] = time.time()
+                        self._ultra_grace_until.pop(int(forward_id), None)
                         return True
                 except (OSError, json.JSONDecodeError, ValueError) as exc:
                     if attempt == 2 or time.monotonic() >= total_deadline:
