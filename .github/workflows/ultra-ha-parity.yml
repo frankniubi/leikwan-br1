@@ -69,8 +69,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
-      - name: Core contract and recovery tests
+      - name: Core contract and recovery tests (Windows)
+        if: runner.os == 'Windows'
         run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests --logger "trx;LogFileName=core.trx"
+      - name: Core contract and recovery tests (macOS)
+        if: runner.os == 'macOS'
+        run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests --filter "Platform!=Windows" --logger "trx;LogFileName=core.trx"
       - name: macOS host tests
         if: runner.os == 'macOS'
         run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests --logger "trx;LogFileName=mac.trx"
@@ -97,7 +101,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - name: Android contract, failover and service tests
         run: |
           cd leikwan-android

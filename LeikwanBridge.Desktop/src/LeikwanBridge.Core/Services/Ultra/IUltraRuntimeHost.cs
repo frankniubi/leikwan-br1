@@ -22,6 +22,7 @@ public interface IUltraRuntimeHost
     }
 
     void Stop(int forwardId);
+    bool SendControl(int forwardId, object command) => false;
 
     /// <summary>
     /// Path of the status snapshot the running runtime for <paramref name="forwardId"/>
