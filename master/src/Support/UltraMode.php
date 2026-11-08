@@ -74,6 +74,13 @@ final class UltraMode
      * a forward's grant may be, as long as another line of the forward has more.
      */
     public const MATERIAL_EXPIRING_MARGIN_SECONDS = 120;
+    /**
+     * A refresh of a line's material changes the forward's material fingerprint
+     * and so its policy_generation. For this long afterwards the lease plane
+     * still honours the generation a client got before the refresh, provided
+     * nothing but the line material differs (see LeigodTokenBroker).
+     */
+    public const PREVIOUS_GENERATION_GRACE_SECONDS = 180;
 
     /**
      * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in
