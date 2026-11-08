@@ -85,8 +85,20 @@ final class UltraMaterialService
         return array_values($result);
     }
 
-    /** @return array<int, int> */
-    public function dueLineIds(string|int $sourceIdOrRefreshWindow = '', int $refreshWindowSeconds = 600): array
+    /**
+     * Lines whose material is due for a refresh, most urgent first.
+     *
+     * Only eight are handed out per poll. They used to be the eight lowest line
+     * ids, so a line the source could not acquire kept its place at the front
+     * forever and the lines behind it were only refreshed once their old
+     * material had already expired. Most urgent first (never acquired, then
+     * soonest to expire) fixes that without needing any state; $skipLineIds
+     * are lines the source reports it is backing off from.
+     *
+     * @param array<int, mixed> $skipLineIds
+     * @return array<int, int>
+     */
+    public function dueLineIds(string|int $sourceIdOrRefreshWindow = '', int $refreshWindowSeconds = 600, array $skipLineIds = []): array
     {
         $sourceId = '';
         if (is_int($sourceIdOrRefreshWindow)) {
@@ -97,16 +109,25 @@ final class UltraMaterialService
         if ($sourceId === '') {
             $sourceId = $this->primarySourceId();
         }
+        $skip = [];
+        foreach (array_slice($skipLineIds, 0, 64) as $rawLineId) {
+            $skip[(int) $rawLineId] = true;
+        }
         $now = $this->now();
         $due = [];
         foreach ($this->requiredLineIds($sourceId !== '' ? $sourceId : null) as $lineId) {
+            if (isset($skip[$lineId])) {
+                continue;
+            }
             $material = $this->loadMaterial($sourceId, $lineId, false);
             $expiresAt = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
             if ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
-                $due[] = $lineId;
+                $due[$lineId] = $expiresAt;
             }
         }
-        return array_slice($due, 0, 8);
+        // asort keeps the original (ascending line id) order among equals.
+        asort($due, SORT_NUMERIC);
+        return array_slice(array_keys($due), 0, 8);
     }
 
     /** @param array<int, int> $lineIds */
@@ -209,7 +230,7 @@ final class UltraMaterialService
         $normalized = $this->normalizeLineRefs($lineRefs);
         $ips = [];
         $generations = [];
-        $expiresAt = PHP_INT_MAX;
+        $expiryOfLines = [];
         foreach ($normalized as $lineRef) {
             $sourceId = (string) $lineRef['source_id'];
             $lineId = (int) $lineRef['line_id'];
@@ -218,8 +239,7 @@ final class UltraMaterialService
                 continue;
             }
             $generations[] = $sourceId . ':' . $lineId . ':' . (string) ($material['generation'] ?? '');
-            $materialExpiry = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
-            $expiresAt = min($expiresAt, $materialExpiry);
+            $expiryOfLines[] = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -230,7 +250,24 @@ final class UltraMaterialService
                 }
             }
         }
-        if ($ips === [] || $generations === [] || $expiresAt <= $this->now()) {
+        if ($ips === [] || $generations === [] || $expiryOfLines === []) {
+            return null;
+        }
+        $now = $this->now();
+        // A grant can only be as long as the material behind it, and it is not
+        // issued at all when that is under 30 seconds. Capping it by the
+        // soonest-expiring line meant one line whose refresh failed took every
+        // other healthy line of the forward down with it, a few seconds before
+        // its own expiry. A line that is about to expire is left out of the cap
+        // while at least one other line is comfortably valid: the lease plane
+        // resolves candidates from fresh material only, so the dying line is
+        // simply not offered once it is gone.
+        $comfortable = array_filter(
+            $expiryOfLines,
+            static fn(int $expiry): bool => $expiry > $now + UltraMode::MATERIAL_EXPIRING_MARGIN_SECONDS
+        );
+        $expiresAt = min($comfortable !== [] ? $comfortable : $expiryOfLines);
+        if ($expiresAt <= $now) {
             return null;
         }
         return [

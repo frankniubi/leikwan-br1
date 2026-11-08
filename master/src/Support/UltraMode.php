@@ -69,6 +69,11 @@ final class UltraMode
     /** How long before material expiry the panel asks the source agent for fresh material. */
     public const MATERIAL_REFRESH_WINDOW_KEY = 'ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS';
     public const DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS = 600;
+    /**
+     * A line with less than this left on its material no longer limits how long
+     * a forward's grant may be, as long as another line of the forward has more.
+     */
+    public const MATERIAL_EXPIRING_MARGIN_SECONDS = 120;
 
     /**
      * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in

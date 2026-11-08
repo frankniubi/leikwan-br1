@@ -27,11 +27,86 @@ except ImportError:  # pragma: no cover - Python 3.10 compatibility on source ho
     tomllib = None
 
 
-AGENT_VERSION = "2026.09.24.1"
+AGENT_VERSION = "2026.11.08.1"
 MAX_INVENTORY_BYTES = 256 * 1024
 INVENTORY_SCHEMA_VERSION = 3
 MAX_INVENTORY_RECORDS = 1024
 CATALOG_SCHEMA_VERSION = 1
+
+# A failed line is not retried at once: the n-th consecutive failure holds it
+# back for BACKOFF[n-1] seconds (the last value repeats). One dead line used to
+# be retried every cycle for hours, and every retry round ended in a re-login.
+LINE_BACKOFF_SECONDS = (60, 120, 300, 600, 1200, 1800)
+MAX_SKIP_LINES = 64
+# line-client prints "error: LeiGod error <code>: <text>" and exits non-zero.
+# 400007 is the account session itself being rejected; every other code (for
+# example 400352 "no server available") is a verdict on that one line.
+LEIGOD_ERROR_RE = re.compile(r"LeiGod error (\d+)\s*:?\s*(.*)")
+SESSION_EXPIRED_CODES = frozenset({"400007"})
+SESSION_EXPIRED_MARKERS = ("登录态已过期", "重新登录", "no session at")
+SECRET_FRAGMENT_RE = re.compile(r"(?i)(token|password|passwd|credential|secret)\S*\s*[=:]\s*\S+")
+MAX_DETAIL_CHARS = 160
+
+
+# Without any explanation, this many cycles in a row where nothing could be
+# acquired are needed before a re-login is tried as a last resort.
+BLIND_CYCLES_BEFORE_RELOGIN = 3
+
+
+class AcquisitionError(RuntimeError):
+    """A line could not be acquired, with what line-client said about it.
+
+    session_expired is the only reason to log in again: the account session is
+    what a re-login replaces, and a re-login also kills every credential that
+    was handed out under the old session. A line-specific refusal says nothing
+    about the session.
+    """
+
+    def __init__(self, line_id: int, detail: str = "", *, code: str = "", session_expired: bool = False):
+        message = f"line acquisition {int(line_id)} failed"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
+        self.line_id = int(line_id)
+        self.detail = detail
+        self.code = code
+        self.session_expired = bool(session_expired)
+
+    @property
+    def kind(self) -> str:
+        """session: the account session was refused. line: LeiGod answered with
+        an error code of its own about this line. unknown: anything else, which
+        includes messages without a LeiGod error code (a network error, a missing
+        session file): those say nothing safe about the line, so they must never
+        be taken for a verdict that keeps the agent from logging in again."""
+        if self.session_expired:
+            return "session"
+        if self.code:
+            return "line"
+        return "unknown"
+
+
+def acquisition_failure_kind(exc: BaseException) -> str:
+    """Anything that is not an AcquisitionError (a timeout, a malformed answer)
+    carries no evidence about the session and is reported as unknown."""
+    return exc.kind if isinstance(exc, AcquisitionError) else "unknown"
+
+
+def classify_acquisition_failure(stderr_text: object) -> tuple[str, str, bool]:
+    """Reduce line-client's stderr to (error code, short safe detail, session expired)."""
+    if isinstance(stderr_text, bytes):
+        stderr_text = stderr_text.decode("utf-8", errors="replace")
+    if not isinstance(stderr_text, str):
+        return "", "", False
+    lines = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+    if not lines:
+        return "", "", False
+    last = lines[-1]
+    match = LEIGOD_ERROR_RE.search(last)
+    code = match.group(1) if match else ""
+    detail = SECRET_FRAGMENT_RE.sub(lambda m: m.group(1) + "=<redacted>", last)[:MAX_DETAIL_CHARS]
+    expired = code in SESSION_EXPIRED_CODES or any(marker in last for marker in SESSION_EXPIRED_MARKERS)
+    return code, detail, expired
 
 LINELIST_SUMMARY_RE = re.compile(
     r"^os_type=\d+\s+game_id=\d+\s+area_id=\d+\s+lines=(\d+)\s*$",
@@ -871,7 +946,8 @@ def acquire_line(
 ) -> dict:
     line_path = lines_dir / f"{line_id}.toml"
     if not line_path.is_file():
-        raise RuntimeError(f"line configuration {line_id} is missing")
+        # A missing local file says nothing about the account session.
+        raise AcquisitionError(line_id, "line configuration is missing", code="local")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         output_path.unlink()
@@ -881,15 +957,19 @@ def acquire_line(
     if session_path is not None:
         command.extend(["--session", str(session_path)])
     command.extend(["--save", str(output_path)])
+    # stderr is captured only to tell a rejected account session (400007) from a
+    # refusal about this one line (for example 400352 "no server available").
+    # Nothing from it is logged except the redacted last line.
     completed = subprocess.run(
         command,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         timeout=max(1.0, float(timeout)),
         check=False,
     )
     if completed.returncode != 0 or not output_path.is_file():
-        raise RuntimeError(f"line acquisition {line_id} failed")
+        code, detail, expired = classify_acquisition_failure(getattr(completed, "stderr", None))
+        raise AcquisitionError(line_id, detail, code=code, session_expired=expired)
     try:
         response = json.loads(output_path.read_text(encoding="utf-8"))
         return normalize_acquisition(
@@ -1118,6 +1198,12 @@ class SourceAgent:
         self.login_timeout = max(15.0, min(180.0, float(self.config.get("login_timeout_seconds", 60))))
         self.login_retry = max(60.0, min(3600.0, float(self.config.get("login_retry_seconds", 300))))
         self._last_login_at = 0.0
+        # line_id -> (consecutive failures, retry not before). Memory only: a
+        # restart gives every line one fresh attempt, which is the right default.
+        self._line_failures: dict[int, tuple[int, float]] = {}
+        # Cycles in a row where nothing could be acquired and no failure said
+        # why. Only a streak of these is allowed to fall back to a re-login.
+        self._blind_cycles = 0
         self.timeout = max(2.0, min(30.0, float(self.config.get("request_timeout_seconds", 10))))
         self.acquire_timeout = max(5.0, min(60.0, float(self.config.get("acquire_timeout_seconds", 30))))
         self.material_lifetime = max(300, min(3600, int(self.config.get("material_lifetime_seconds", 1800))))
@@ -1153,12 +1239,19 @@ class SourceAgent:
                 write_inventory_state(self.inventory_state_path, fingerprint, uploaded_at=now)
         except Exception as exc:  # noqa: BLE001
             logging.warning("inventory upload failed: %s", exc)
+        # Lines that are backing off after a failure are named in the request so
+        # the panel hands out the next due lines instead of the same dead ones.
+        # A panel that does not know the parameter ignores it.
+        jobs_path = "/api/ultra/source/jobs?reviews_capacity=" + str(max(0, self.max_reviews_per_cycle))
+        skipped = self._lines_in_backoff()
+        if skipped:
+            jobs_path += "&skip=" + ",".join(str(line_id) for line_id in skipped)
         jobs = request_json_with_retries(
             self.base_url,
             self.source_id,
             self.source_secret,
             "GET",
-            "/api/ultra/source/jobs?reviews_capacity=" + str(max(0, self.max_reviews_per_cycle)),
+            jobs_path,
             None,
             self.timeout,
             attempts=3,
@@ -1169,9 +1262,10 @@ class SourceAgent:
             if isinstance(raw_review, dict):
                 reviews.append(raw_review)
         line_ids = []
+        backing_off = set(skipped)
         for raw_line_id in jobs.get("line_ids", []) if isinstance(jobs.get("line_ids"), list) else []:
             line_id = int(raw_line_id or 0)
-            if 0 < line_id <= 45535 and line_id not in line_ids:
+            if 0 < line_id <= 45535 and line_id not in line_ids and line_id not in backing_off:
                 line_ids.append(line_id)
         line_ids = line_ids[: self.max_lines]
         if not line_ids:
@@ -1180,11 +1274,10 @@ class SourceAgent:
             return 0
         uploader = MaterialUploader(self, ticket)
 
-        def acquire_requested(requested_ids: list[int] | None = None) -> tuple[list[dict], list[int]]:
-            pending_ids = line_ids if requested_ids is None else requested_ids
+        def acquire_requested(requested_ids: list[int]) -> tuple[list[dict], dict[int, Exception]]:
             acquired: list[dict] = []
-            failed: list[int] = []
-            for line_id in pending_ids:
+            failed: dict[int, Exception] = {}
+            for line_id in requested_ids:
                 try:
                     material = acquire_line(
                         line_id,
@@ -1197,28 +1290,85 @@ class SourceAgent:
                     )
                 except Exception as exc:  # noqa: BLE001
                     logging.warning("line %s acquisition failed: %s", line_id, exc)
-                    failed.append(line_id)
+                    failed[line_id] = exc
                     continue
                 acquired.append(material)
+                self._note_line_success(line_id)
                 # The acquisition has just invalidated the credential clients
                 # hold for this line; hand the panel the new one right away.
                 uploader.upload(material)
             return acquired, failed
 
-        materials, failed_line_ids = acquire_requested()
-        if failed_line_ids and self.reauthenticate():
-            logging.info(
-                "source session refreshed; retrying %s failed line materials",
-                len(failed_line_ids),
-            )
-            retried, _still_failed = acquire_requested(failed_line_ids)
-            materials.extend(retried)
-        if not materials:
-            raise RuntimeError("no requested material could be acquired")
+        materials, failures = acquire_requested(line_ids)
+
+        # A re-login replaces the account session, and with it every credential
+        # that was handed out under the old one: all lines this host serves go
+        # dead until they are acquired again. So it is done only when the
+        # session itself was refused (or when nothing at all worked and nothing
+        # explains why), never because one line could not be acquired.
+        kinds = {line_id: acquisition_failure_kind(exc) for line_id, exc in failures.items()}
+        session_lines = [line_id for line_id, kind in kinds.items() if kind == "session"]
+        unexplained = [line_id for line_id, kind in kinds.items() if kind == "unknown"]
+        blind = bool(failures) and not materials and len(unexplained) == len(failures)
+        self._blind_cycles = self._blind_cycles + 1 if blind else 0
+        if session_lines:
+            relogin_lines = session_lines
+        elif blind and self._blind_cycles >= BLIND_CYCLES_BEFORE_RELOGIN:
+            # Nothing worked for several cycles and nothing says why: the
+            # session may be dead in a way line-client does not name.
+            relogin_lines = unexplained
+        else:
+            relogin_lines = []
+        if relogin_lines:
+            if self.reauthenticate():
+                logging.info(
+                    "source session refreshed; retrying %s line materials that failed on it",
+                    len(relogin_lines),
+                )
+                retried, still_failed = acquire_requested(relogin_lines)
+                materials.extend(retried)
+                for line_id in relogin_lines:
+                    failures.pop(line_id, None)
+                failures.update(still_failed)
+            else:
+                logging.warning(
+                    "source session looks rejected but a re-login is not possible now; "
+                    "%s lines wait for the next cycle",
+                    len(relogin_lines),
+                )
+                for line_id in relogin_lines:
+                    kinds[line_id] = "deferred"
+        for line_id, exc in failures.items():
+            if kinds.get(line_id) != "deferred":
+                self._note_line_failure(line_id, exc)
+        if not materials and failures:
+            if any(kinds.get(line_id) in ("session", "unknown", "deferred") for line_id in failures):
+                raise RuntimeError("no requested material could be acquired")
+            # Every failure was a verdict on that one line. They are backing off
+            # now and the panel is told to skip them, so this is not a failed cycle.
+            logging.info("%s requested lines failed on their own; backing off", len(failures))
+            self.process_reviews(reviews, uploader)
+            self.refresh_catalog()
+            return 0
         uploader.flush()
         self.process_reviews(reviews, uploader)
         self.refresh_catalog()
         return len(uploader.accepted)
+
+    def _lines_in_backoff(self, now: float | None = None) -> list[int]:
+        moment = time.time() if now is None else float(now)
+        active = sorted(line_id for line_id, (_count, until) in self._line_failures.items() if until > moment)
+        return active[:MAX_SKIP_LINES]
+
+    def _note_line_success(self, line_id: int) -> None:
+        self._line_failures.pop(int(line_id), None)
+
+    def _note_line_failure(self, line_id: int, exc: Exception) -> None:
+        count = self._line_failures.get(int(line_id), (0, 0.0))[0] + 1
+        delay = LINE_BACKOFF_SECONDS[min(count, len(LINE_BACKOFF_SECONDS)) - 1]
+        self._line_failures[int(line_id)] = (count, time.time() + delay)
+        if count == 1 or count % 10 == 0:
+            logging.info("line %s failed %s time(s) in a row; next try in %ss", line_id, count, delay)
 
     def process_reviews(self, reviews: list[dict], uploader: "MaterialUploader | None" = None) -> int:
         """Run the reviews the panel asked for and report each outcome back.

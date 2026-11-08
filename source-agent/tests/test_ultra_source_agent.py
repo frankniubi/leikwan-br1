@@ -648,7 +648,10 @@ class UltraSourceAgentTests(unittest.TestCase):
             def fake_acquire(line_id, *_args, **_kwargs):
                 acquisition_calls.append(line_id)
                 if line_id == 2 and acquisition_calls.count(2) == 1:
-                    raise RuntimeError("expired session")
+                    # line-client says the account session itself was refused.
+                    raise MODULE.AcquisitionError(
+                        2, "error: LeiGod error 400007: login expired", code="400007", session_expired=True
+                    )
                 return {"line_id": line_id, "relays": [{"ip": "203.0.113.20", "port": 5438}]}
 
             with mock.patch.object(MODULE, "build_inventory", return_value={"inventory_fingerprint": "a" * 64, "lines": []}):
@@ -934,7 +937,7 @@ class UltraSourceSignatureTests(unittest.TestCase):
     def test_review_capacity_is_advertised_in_the_jobs_request(self):
         source = (ROOT / "source-agent" / "ultra_source_agent.py").read_text(encoding="utf-8")
         self.assertIn("reviews_capacity=", source, "the panel hands out no review to an agent that does not ask")
-        self.assertEqual("2026.09.24.1", MODULE.AGENT_VERSION)
+        self.assertEqual("2026.11.08.1", MODULE.AGENT_VERSION)
 
 
 class UltraSourceAgentReviewTests(unittest.TestCase):
