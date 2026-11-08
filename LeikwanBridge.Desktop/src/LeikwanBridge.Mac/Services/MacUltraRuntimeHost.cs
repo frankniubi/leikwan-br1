@@ -287,6 +287,10 @@ public sealed class MacUltraRuntimeHost : IUltraRuntimeHost
         }
     }
 
+    public bool SendControl(int forwardId, object command)
+        => _runtimes.TryGetValue(forwardId, out var runtime)
+            && UltraNetworkGrace.Send(runtime.SocketPath, false, forwardId, command);
+
     public void Stop(int forwardId)
     {
         _supervisor.StopAll(forwardId);

@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ios/Frameworks/Libbox.xcframework
-          key: libbox-${{ env.SING_BOX_VERSION }}-${{ hashFiles('ios/scripts/build-go-mobile.sh', 'ios/runtime/go/**', 'tools/ultra-client/*.go', 'opengfw/analyzer/**') }}
+          key: libbox-${{ env.SING_BOX_VERSION }}-${{ hashFiles('ios/scripts/build-go-mobile.sh', 'scripts/runtime-build-identity.py', 'artifacts/runtime-release.json', 'ios/runtime/go/**', 'tools/ultra-client/*.go', 'tools/ultra-client/go.mod', 'tools/ultra-client/go.sum', 'opengfw/analyzer/**') }}
       - name: Build Libbox.xcframework (sing-box + ultra)
         if: steps.libbox-cache.outputs.cache-hit != 'true'
         run: bash ios/scripts/build-go-mobile.sh

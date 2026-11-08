@@ -113,6 +113,7 @@ final class UltraLeaseManager {
         var backoff = ControlPlaneBackoff()
         var active: Active?
         var installedSidecar = Self.plannedPolicy(forward)?.externalUot?.fingerprint
+        var graceGeneration: String?
         var pullFirst = false
         var first = true
         var failedAttempts = 0
@@ -151,6 +152,7 @@ final class UltraLeaseManager {
                 if Task.isCancelled { return }
                 if !accepted { throw UltraLeaseError("ultra_lease_rejected_by_runtime") }
                 active = Active(policy: policy, sentAt: Date())
+                graceGeneration = nil
                 backoff.reset()
                 pullFirst = false
                 failedAttempts = 0
@@ -161,6 +163,19 @@ final class UltraLeaseManager {
             } catch is CancellationError {
                 return
             } catch let error as PanelError {
+                if let held = active?.policy {
+                    if error.isFailoverEligible,
+                       graceGeneration != held.policyGeneration,
+                       let until = UltraNetworkGrace.deadline(issuedExpiry: held.expiresAt),
+                       sendGrace(forward, policy: held, until: until) {
+                        graceGeneration = held.policyGeneration
+                    } else if !error.isFailoverEligible, graceGeneration == held.policyGeneration {
+                        _ = sendGrace(forward, policy: held, until: nil)
+                        graceGeneration = nil
+                    }
+                }
+                if let held = active?.policy,
+                   Date() >= held.expiresAt.addingTimeInterval(UltraNetworkGrace.seconds) { graceGeneration = nil }
                 first = false
                 pullFirst = true
                 switch error {
@@ -176,7 +191,7 @@ final class UltraLeaseManager {
                     delayMs = 60_000
                 default:
                     failedAttempts += 1
-                    if stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
+                    if graceGeneration == nil && stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
                     reportFailure(error.description, forward: forward, active: active)
                     delayMs = backoff.nextDelayMs()
                 }
@@ -226,6 +241,14 @@ final class UltraLeaseManager {
             ultraAccess: access
         )
         return UltraPolicy.from(contract)
+    }
+
+    private func sendGrace(_ forward: UltraForwardLaunch, policy: UltraPolicy, until: Date?) -> Bool {
+        do {
+            let frame = try UltraNetworkGrace.command(generation: policy.policyGeneration, until: until)
+            let reply = try UnixControlSocket.exchange(path: forward.controlSocketPath, frame: frame, timeoutMs: 2000)
+            return UltraRuntimeConfigBuilder.controlReplyAccepted(reply, forwardId: forward.forwardID, policyGeneration: policy.policyGeneration)
+        } catch { return false }
     }
 
     private func deliverLeases(_ forward: UltraForwardLaunch, policy: UltraPolicy) async throws -> Bool {
