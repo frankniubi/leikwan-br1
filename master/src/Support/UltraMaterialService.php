@@ -223,7 +223,9 @@ final class UltraMaterialService
 
     /**
      * @param array<int, array{source_id:string,line_id:int}|int> $lineRefs
-     * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int}|null
+     * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int,changed_at:int}|null
+     *         changed_at is the newest acquisition time among the lines: the
+     *         moment the fingerprint last moved because material was refreshed.
      */
     public function lineSnapshot(array $lineRefs): ?array
     {
@@ -231,6 +233,7 @@ final class UltraMaterialService
         $ips = [];
         $generations = [];
         $expiryOfLines = [];
+        $changedAt = 0;
         foreach ($normalized as $lineRef) {
             $sourceId = (string) $lineRef['source_id'];
             $lineId = (int) $lineRef['line_id'];
@@ -240,6 +243,7 @@ final class UltraMaterialService
             }
             $generations[] = $sourceId . ':' . $lineId . ':' . (string) ($material['generation'] ?? '');
             $expiryOfLines[] = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
+            $changedAt = max($changedAt, $this->parseTimestamp((string) ($material['acquired_at'] ?? '')) ?? 0);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -274,6 +278,65 @@ final class UltraMaterialService
             'line_ips' => array_slice(array_keys($ips), 0, 8),
             'fingerprint' => hash('sha256', implode('|', $generations)),
             'expires_at' => $expiresAt,
+            'changed_at' => $changedAt,
+        ];
+    }
+
+    /**
+     * The lines a grant covers as a sorted list of "source:line" keys, for
+     * comparing the lines a client's ticket was minted for with today's.
+     *
+     * @param array<int, mixed> $lineRefs
+     * @return array<int, string>
+     */
+    public function lineKeys(array $lineRefs): array
+    {
+        $keys = [];
+        foreach ($this->normalizeClientScopeLines(['lines' => $lineRefs]) as $line) {
+            $keys[] = (string) $line['source_id'] . ':' . (int) $line['line_id'];
+        }
+        sort($keys, SORT_STRING);
+        return $keys;
+    }
+
+    /**
+     * What a client's own session ticket says it was minted for, once the ticket
+     * is proven to belong to this client, device and forward and to still be
+     * valid. Used to recognise a grant that was current until the line material
+     * was refreshed (see LeigodTokenBroker). Returns [] for anything else,
+     * including tickets minted before the revocation epoch was recorded in them:
+     * those can never be given the benefit of the doubt.
+     *
+     * @return array{policy_generation:string,material_fingerprint:string,revocation_epoch:int,expires_at:int,line_keys:array<int,string>}|array{}
+     */
+    public function presentedTicketScope(string $token, int $clientId, string $deviceId, int $forwardId): array
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return [];
+        }
+        $payload = str_starts_with($token, 'u2')
+            ? $this->open($token)
+            : $this->open((string) $this->settingGet(self::CLIENT_SCOPE_PREFIX . hash('sha256', $token), ''));
+        $now = $this->now();
+        $generation = strtolower(trim((string) ($payload['policy_generation'] ?? '')));
+        $fingerprint = strtolower(trim((string) ($payload['material_fingerprint'] ?? '')));
+        if (($payload['kind'] ?? '') !== 'client-access'
+            || (int) ($payload['client_id'] ?? 0) !== $clientId
+            || (int) ($payload['forward_id'] ?? 0) !== $forwardId
+            || !hash_equals((string) ($payload['device_hash'] ?? ''), hash('sha256', $deviceId !== '' ? $deviceId : 'none'))
+            || (int) ($payload['expires_at'] ?? 0) <= $now
+            || !array_key_exists('revocation_epoch', $payload)
+            || preg_match('/^[a-f0-9]{64}$/', $generation) !== 1
+            || preg_match('/^[a-f0-9]{64}$/', $fingerprint) !== 1) {
+            return [];
+        }
+        return [
+            'policy_generation' => $generation,
+            'material_fingerprint' => $fingerprint,
+            'revocation_epoch' => (int) $payload['revocation_epoch'],
+            'expires_at' => (int) $payload['expires_at'],
+            'line_keys' => $this->lineKeys(is_array($payload['lines'] ?? null) ? $payload['lines'] : []),
         ];
     }
 
