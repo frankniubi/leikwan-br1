@@ -51,6 +51,8 @@ MAX_DETAIL_CHARS = 160
 # Without any explanation, this many cycles in a row where nothing could be
 # acquired are needed before a re-login is tried as a last resort.
 BLIND_CYCLES_BEFORE_RELOGIN = 3
+# Batch acquisitions declare a lifetime up to this fraction shorter than configured.
+MATERIAL_LIFETIME_JITTER = 0.15
 
 
 class AcquisitionError(RuntimeError):
@@ -1210,6 +1212,16 @@ class SourceAgent:
         self.max_lines = max(1, min(8, int(self.config.get("max_lines_per_cycle", 8))))
         self.poll_interval = max(30.0, min(900.0, float(self.config.get("poll_interval_seconds", 60))))
 
+    def _staggered_lifetime(self) -> int:
+        """Declared lifetime for one batch acquisition, never above the configured one.
+
+        Lines acquired in the same cycle would otherwise all expire in the same
+        second, so a bad cycle left a forward with no valid line at all and every
+        refresh changed the whole forward's generation at once. Only ever shorter,
+        so the panel is never told the material is valid for longer than configured.
+        """
+        return max(300, int(self.material_lifetime * random.uniform(1.0 - MATERIAL_LIFETIME_JITTER, 1.0)))
+
     def run_cycle(self) -> int:
         try:
             inventory = build_inventory(
@@ -1286,7 +1298,7 @@ class SourceAgent:
                         self.state_dir / f"line-{line_id}.json.tmp",
                         session_path=self.session_path,
                         timeout=self.acquire_timeout,
-                        lifetime_seconds=self.material_lifetime,
+                        lifetime_seconds=self._staggered_lifetime(),
                     )
                 except Exception as exc:  # noqa: BLE001
                     logging.warning("line %s acquisition failed: %s", line_id, exc)

@@ -131,6 +131,24 @@ class ReloginPolicyTests(unittest.TestCase):
             reauth.assert_not_called()
             self.assertEqual({2}, set(agent._line_failures))
 
+    def test_lines_acquired_together_do_not_all_expire_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            agent = self._agent(Path(directory))
+            lifetimes = []
+
+            def acquire(line_id, *_a, lifetime_seconds, **_k):
+                lifetimes.append(lifetime_seconds)
+                return self._material(line_id)
+
+            outcome, _paths, _reauth = self._cycle(agent, list(range(1, 9)), acquire)
+            self.assertNotIsInstance(outcome, Exception)
+            self.assertEqual(8, len(lifetimes))
+            # Never longer than configured, never below the floor, and not all identical.
+            self.assertTrue(all(300 <= value <= agent.material_lifetime for value in lifetimes), lifetimes)
+            self.assertGreater(len(set(lifetimes)), 1, lifetimes)
+            floor = int(agent.material_lifetime * (1.0 - MODULE.MATERIAL_LIFETIME_JITTER))
+            self.assertTrue(all(value >= floor for value in lifetimes), lifetimes)
+
     def test_a_refused_session_triggers_one_relogin_and_a_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             agent = self._agent(Path(directory))
