@@ -45,9 +45,11 @@ public partial class MainViewModel
         HookProxySystemEvents();
     }
 
-    private void ForgetProxySession()
+    /// <param name="force">Sign-out must cancel even a reconnect that is in flight;
+    /// the reconnect's own stop calls this without force so it does not cancel itself.</param>
+    private void ForgetProxySession(bool force = false)
     {
-        if (_proxyRecovering)
+        if (_proxyRecovering && !force)
             return;
         _proxyRecoverySession = null;
         try { _proxyRecoveryCts?.Cancel(); }

@@ -340,7 +340,10 @@ final class ClientOnlineSessionService
     {
         $userAgent = trim((string) ($request->header('user-agent') ?? ''));
         $platform = trim((string) ($request->header('x-device-platform') ?? (string) $request->input('platform', '')));
-        $deviceName = trim((string) ($request->header('x-device-name') ?? (string) $request->input('device_name', '')));
+        $rawDeviceName = $request->header('x-device-name');
+        $deviceName = $rawDeviceName !== null
+            ? $this->decodeHeaderText(trim($rawDeviceName))
+            : trim((string) $request->input('device_name', ''));
         $osRelease = trim((string) $request->input('os_release', $request->input('kernel_release', '')));
 
         if ($deviceName === '' && $userAgent !== '') {
@@ -372,6 +375,25 @@ final class ClientOnlineSessionService
     private function requestIp(Request $request): ?string
     {
         return $this->clientIpResolver->resolve($request);
+    }
+
+    /**
+     * Clients send a non-ASCII device name as an RFC 2047 UTF-8 base64 encoded
+     * word, because HTTP header values must be ASCII. Anything that is not a
+     * well-formed UTF-8 encoded word is returned exactly as sent.
+     */
+    private function decodeHeaderText(string $value): string
+    {
+        if (preg_match('/^=\?UTF-8\?B\?([A-Za-z0-9+\/]+={0,2})\?=$/i', $value, $matches) !== 1) {
+            return $value;
+        }
+
+        $decoded = base64_decode($matches[1], true);
+        if ($decoded === false || preg_match('//u', $decoded) !== 1) {
+            return $value;
+        }
+
+        return trim($decoded);
     }
 
     private function trimOrNull(mixed $value): ?string

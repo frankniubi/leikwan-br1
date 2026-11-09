@@ -695,13 +695,50 @@ func dialStreamWithGreetingOrderConfig(
 	}
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
-		return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, context.DeadlineExceeded)
+		return nil, &greetingFallbackError{initial: err, fallback: context.DeadlineExceeded}
 	}
 	fallbackConn, fallbackErr := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[1])
 	if fallbackErr == nil {
 		return fallbackConn, nil
 	}
-	return nil, fmt.Errorf("stream handshake failed after greeting fallback: initial=%v; fallback=%w", err, fallbackErr)
+	return nil, &greetingFallbackError{initial: err, fallback: fallbackErr}
+}
+
+// greetingFallbackError is a stream handshake that failed with both greetings.
+// It unwraps to the fallback error only, exactly like the fmt.Errorf form it
+// replaces, so every errors.Is verdict on it is unchanged. The initial error is
+// kept for streamCredentialRejected: a relay that refuses the credential on the
+// first greeting usually lets the fallback run into the deadline, and the
+// refusal was then only visible in the log text.
+type greetingFallbackError struct {
+	initial  error
+	fallback error
+}
+
+func (err *greetingFallbackError) Error() string {
+	return fmt.Sprintf("stream handshake failed after greeting fallback: initial=%v; fallback=%v", err.initial, err.fallback)
+}
+
+func (err *greetingFallbackError) Unwrap() error {
+	return err.fallback
+}
+
+// streamCredentialRejected reports whether a relay refused the lease credential
+// (05 02) on any greeting of a stream handshake, including one a selection
+// probe wrapped as probe_tcp_failed.
+func streamCredentialRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errStreamAuthenticationRejected) {
+		return true
+	}
+	var fallback *greetingFallbackError
+	if errors.As(err, &fallback) && streamCredentialRejected(fallback.initial) {
+		return true
+	}
+	var probe *probeFailureError
+	return errors.As(err, &probe) && streamCredentialRejected(probe.cause)
 }
 
 func dialStream(lease ProviderLease, targetHost string, targetPort int, timeout time.Duration) (net.Conn, error) {

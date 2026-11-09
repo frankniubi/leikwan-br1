@@ -19,6 +19,7 @@ final class UltraMaterialService
     private const CLIENT_SCOPE_PREFIX = 'ultra.client.scope.v2.';
     private const SOURCE_NONCE_PREFIX = 'ultra.source.nonces.v1.';
     private const TICKET_NONCE_PREFIX = 'ultra.source.tickets.v1.';
+    private const CREDENTIAL_REJECTED_PREFIX = 'ultra.material.rejected.v1.';
 
     /** @var callable(): int */
     private $clock;
@@ -95,6 +96,9 @@ final class UltraMaterialService
      * soonest to expire) fixes that without needing any state; $skipLineIds
      * are lines the source reports it is backing off from.
      *
+     * A line whose current material a relay refused (noteCredentialRejected)
+     * is due before its window and sorts like material that expires now.
+     *
      * @param array<int, mixed> $skipLineIds
      * @return array<int, int>
      */
@@ -121,13 +125,72 @@ final class UltraMaterialService
             }
             $material = $this->loadMaterial($sourceId, $lineId, false);
             $expiresAt = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
-            if ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
+            if ($this->credentialRejectedForMaterial($sourceId, $lineId, $material)) {
+                $due[$lineId] = min($expiresAt, $now);
+            } elseif ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
                 $due[$lineId] = $expiresAt;
             }
         }
         // asort keeps the original (ascending line id) order among equals.
         asort($due, SORT_NUMERIC);
         return array_slice(array_keys($due), 0, 8);
+    }
+
+    /**
+     * A relay refused the credential of this line's current material (05 02).
+     * LeiGod retires relays 10-20 minutes into a credential while the refresh
+     * window only fires at minute 20, so clients keep dialling a dead relay for
+     * up to ten minutes. Mark the material so dueLineIds() refreshes it early.
+     *
+     * Rate limited per line: the mark is only taken when the line's material is
+     * at least the configured interval old, and a mark already pending for the
+     * same material is kept, so a burst of reports causes one refresh at most.
+     */
+    public function noteCredentialRejected(string $sourceId, int $lineId): bool
+    {
+        $sourceId = trim($sourceId);
+        $interval = $this->credentialRejectedRefreshIntervalSeconds();
+        if ($sourceId === '' || $lineId <= 0 || $lineId > 45535 || $interval === 0) {
+            return false;
+        }
+        $material = $this->loadMaterial($sourceId, $lineId, true);
+        $acquiredAt = $this->parseTimestamp((string) ($material['acquired_at'] ?? ''));
+        if ($acquiredAt === null || $acquiredAt > $this->now() - $interval) {
+            return false;
+        }
+        if ($this->credentialRejectedForMaterial($sourceId, $lineId, $material)) {
+            return false;
+        }
+        $this->settingSet($this->credentialRejectedKey($sourceId, $lineId), (string) $material['acquired_at']);
+        return true;
+    }
+
+    /** @param array<string, mixed> $material */
+    private function credentialRejectedForMaterial(string $sourceId, int $lineId, array $material): bool
+    {
+        $acquiredAt = (string) ($material['acquired_at'] ?? '');
+        if ($acquiredAt === '') {
+            return false;
+        }
+        // The mark names the material it was raised against; any newer upload
+        // has replaced the refused credential and so clears it by itself.
+        $marked = $this->settingGet($this->credentialRejectedKey($sourceId, $lineId), '');
+        return $marked !== '' && hash_equals($marked, $acquiredAt);
+    }
+
+    private function credentialRejectedRefreshIntervalSeconds(): int
+    {
+        $raw = trim((string) $this->config->get(UltraMode::CREDENTIAL_REJECTED_REFRESH_INTERVAL_KEY, ''));
+        if ($raw === '' || preg_match('/^[0-9]+$/', $raw) !== 1) {
+            return UltraMode::DEFAULT_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS;
+        }
+        $seconds = (int) $raw;
+        return $seconds === 0 ? 0 : max(60, min(3600, $seconds));
+    }
+
+    private function credentialRejectedKey(string $sourceId, int $lineId): string
+    {
+        return self::CREDENTIAL_REJECTED_PREFIX . hash('sha256', trim($sourceId)) . '.line.' . $lineId;
     }
 
     /** @param array<int, int> $lineIds */

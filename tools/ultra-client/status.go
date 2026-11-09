@@ -313,7 +313,14 @@ func (writer *StatusWriter) RecordProbeFailure(lease ProviderLease, result udpPr
 	tcpFailed := result.TCPSent > 0 &&
 		(result.TCPError != nil || !result.pathUsable(result.TCPSent, result.TCPReceived))
 	if tcpFailed {
-		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", errProbeTCPFailed.Error(), lease.LeaseHash)
+		reason := errProbeTCPFailed.Error()
+		// A relay that refused the lease credential is not a broken TCP path:
+		// it was retired from the line's material. Name it, so the Panel
+		// refreshes the line instead of logging one more probe failure.
+		if streamCredentialRejected(result.TCPError) {
+			reason = credentialRejectedReason
+		}
+		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", reason, lease.LeaseHash)
 	}
 }
 
