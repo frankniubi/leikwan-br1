@@ -144,16 +144,27 @@ $probe = Closure::bind(
     ClientAgentController::class
 );
 
+// Compare against the manifest, not a pinned version: every OpenWrt release
+// moves these URLs, and the contract is which edition each flavour gets.
+$apkX64Url = (string) ($manifest['openwrt_leikwand_apk_x86_64']['artifact_url'] ?? '');
+$apkArmUrl = (string) ($manifest['openwrt_leikwand_apk_aarch64_generic']['artifact_url'] ?? '');
+$opkgX64Url = (string) ($manifest['openwrt_leikwand_x86_64']['artifact_url'] ?? '');
+if (!str_starts_with($apkX64Url, '/artifacts/files/openwrt/apk/amd64/')
+    || !str_starts_with($apkArmUrl, '/artifacts/files/openwrt/apk/arm64/')
+    || !str_starts_with($opkgX64Url, '/artifacts/files/openwrt/amd64/') || !str_ends_with($opkgX64Url, '.ipk')) {
+    failOpenWrtApkEdition('versions.json OpenWrt artifact_url layout changed');
+}
+
 $apkX64 = $probe($controller, 'openwrt', 'apk', 'amd64');
-if (($apkX64['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/amd64/leikwand-1.2.7-r1.apk') {
+if (($apkX64['artifact_url'] ?? '') !== $apkX64Url) {
     failOpenWrtApkEdition('apk flavour + amd64 must serve the apk edition, got ' . json_encode($apkX64));
 }
 $apkArm = $probe($controller, 'openwrt', 'apk', 'arm64');
-if (($apkArm['artifact_url'] ?? '') !== '/artifacts/files/openwrt/apk/arm64/leikwand-1.2.7-r1.apk') {
+if (($apkArm['artifact_url'] ?? '') !== $apkArmUrl) {
     failOpenWrtApkEdition('apk flavour + arm64 must serve the apk edition, got ' . json_encode($apkArm));
 }
 $opkg = $probe($controller, 'openwrt', '', 'amd64');
-if (($opkg['artifact_url'] ?? '') !== '/artifacts/files/openwrt/amd64/leikwand_1.2.7-r1_x86_64.ipk') {
+if (($opkg['artifact_url'] ?? '') !== $opkgX64Url) {
     failOpenWrtApkEdition('no flavour must keep the opkg edition, got ' . json_encode($opkg));
 }
     $bogus = $probe($controller, 'openwrt', 'ipk', 'amd64');
