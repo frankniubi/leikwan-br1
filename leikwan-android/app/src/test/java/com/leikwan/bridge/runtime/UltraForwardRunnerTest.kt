@@ -135,6 +135,25 @@ class UltraForwardRunnerTest {
         assertFalse(plan.configFile.exists())
     }
 
+    @Test
+    fun `ordinary runtime forwards sidecar bootstrap and rejects malformed opt in`() {
+        val forward = sampleForward()
+        val sidecar = JsonParser.parseString("""{"enabled":true,"sidecar_target":"standby.test:7443","token":"fixture","delivery_mode":"reliable_datagram_v1"}""").asJsonObject
+        forward.ultraAccess!!.add("external_uot", sidecar)
+        val policy = UltraPolicy.from(forward, Instant.parse("2026-08-27T00:00:00Z"))!!
+        val dir = Files.createTempDirectory("ultra-sidecar-test").toFile()
+        val plan = UltraForwardRunner.buildPlan(
+            forward, policy, RuntimeBinaryPaths("/wstunnel", "/ingress", "/bond", "/ultra"), dir,
+        )
+        try {
+            val config = JsonParser.parseString(plan.configFile.readText()).asJsonObject
+            assertEquals("standby.test:7443", config["external_uot"].asJsonObject["sidecar_target"].asString)
+            assertEquals("reliable_datagram_v1", config["external_uot"].asJsonObject["delivery_mode"].asString)
+            sidecar.addProperty("token", "")
+            assertTrue(UltraPolicy.from(forward, Instant.parse("2026-08-27T00:00:00Z")) == null)
+        } finally { UltraForwardRunner.cleanup(plan.runtimeContext); dir.deleteRecursively() }
+    }
+
     private fun sampleForward(): ForwardContract = ForwardContract(
         forwardId = 42L,
         serviceName = "Ultra test",

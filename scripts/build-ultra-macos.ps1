@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.11.4",
+    [string]$Version = "",
     [string]$ShortSha = "",
     [string]$OutputRoot = "",
     # The macOS client ships for Apple Silicon only; darwin/amd64 is no longer built.
@@ -29,6 +29,12 @@ if ([string]::IsNullOrWhiteSpace($ShortSha)) {
     }
 }
 $FullVersion = "$Version.$ShortSha"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $identity = (& python (Join-Path $PSScriptRoot "runtime-build-identity.py")) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $identity.fingerprint) { throw "runtime identity generation failed" }
+    $Version = $identity.version
+    $FullVersion = $identity.fingerprint
+}
 $garbleVersion = "v0.17.0"
 $toolDir = Join-Path ([System.IO.Path]::GetTempPath()) "leikwan-garble-$garbleVersion"
 $garblePath = Join-Path $toolDir "garble.exe"
