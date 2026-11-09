@@ -123,6 +123,25 @@ public sealed class MasterApiClientDesktopLoginTests
     }
 
     [Fact]
+    public async Task PullConfigsAsync_SendsNonAsciiDeviceNameAsAnAsciiEncodedWord()
+    {
+        using var server = new HeaderCaptureServer();
+        using var api = new MasterApiClient(
+            server.BaseUrl,
+            "agent-token-27",
+            "windows-device-123",
+            "Leikwan Bridge on 办公机",
+            "windows-desktop");
+
+        await api.PullConfigsAsync();
+
+        var sent = server.LastRequestHeaders["X-Device-Name"];
+        var expected = "=?UTF-8?B?" + Convert.ToBase64String(Encoding.UTF8.GetBytes("Leikwan Bridge on 办公机")) + "?=";
+        Assert.Equal(expected, sent);
+        Assert.DoesNotContain(sent, c => c > '~');
+    }
+
+    [Fact]
     public async Task PullConfigsAsync_UsesInjectedHttpClientFactory_ForProtectedLeikwanMasterUrl()
     {
         using var http = new HttpClient(new StubPullResponseHandler()) { Timeout = TimeSpan.FromSeconds(5) };
