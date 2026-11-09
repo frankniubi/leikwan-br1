@@ -59,7 +59,7 @@ func haErrorClass(err error) string {
 		// explicitly so it is not indistinguishable from a generic io_error in
 		// ha_events, and so it never counts as path-loss evidence.
 		return "target_connect_rejected"
-	case errors.Is(err, errStreamAuthenticationRejected):
+	case streamCredentialRejected(err):
 		return credentialRejectedReason
 	case errors.Is(err, errStreamPreludeRejected):
 		return "prelude_rejected"
