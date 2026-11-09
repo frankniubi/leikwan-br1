@@ -1,0 +1,77 @@
+name: Ultra real sidecar failover drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      fault_node:
+        description: Pool node id to stop for the drill
+        required: true
+        type: string
+      test_origin:
+        description: Original external_uot sidecar_target for the test forward
+        required: true
+        type: string
+      forward_id:
+        description: Real forward id; leave 0 to use the first binding on the faulted node
+        required: false
+        default: "0"
+        type: string
+      fault_seconds:
+        description: Seconds to keep the sidecar down; must exceed pool TTL
+        required: false
+        default: "75"
+        type: string
+      confirm_production:
+        description: Required explicit confirmation for production fault injection
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ultra-real-failover-production
+  cancel-in-progress: false
+
+jobs:
+  real-failover:
+    # Configure this environment with required reviewers before using the
+    # workflow. Credentials are GitHub Actions secrets, never repository files.
+    environment: production-ha
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HA_CONFIRM_PRODUCTION: ${{ inputs.confirm_production && 'true' || 'false' }}
+      HA_FAULT_NODE: ${{ inputs.fault_node }}
+      HA_TEST_ORIGIN: ${{ inputs.test_origin }}
+      HA_FORWARD_ID: ${{ inputs.forward_id }}
+      HA_RESTORE_TIMEOUT: "120"
+      ULTRA_HA_PANEL_SSH_HOST: ${{ secrets.ULTRA_HA_PANEL_SSH_HOST }}
+      ULTRA_HA_PANEL_SSH_USER: ${{ secrets.ULTRA_HA_PANEL_SSH_USER }}
+      ULTRA_HA_PANEL_SSH_PASSWORD: ${{ secrets.ULTRA_HA_PANEL_SSH_PASSWORD }}
+      ULTRA_HA_NODES_JSON: ${{ secrets.ULTRA_HA_NODES_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH tooling
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openssh-client sshpass
+      - name: Validate secret shape without printing secrets
+        run: |
+          python3 - <<'PY'
+          import json, os
+          nodes = json.loads(os.environ["ULTRA_HA_NODES_JSON"])
+          assert isinstance(nodes, list) and nodes
+          assert all(n.get("id") and n.get("host") and n.get("target") and n.get("password") for n in nodes)
+          print("secret_shape=PASS nodes=%d" % len(nodes))
+          PY
+      - name: Preflight real pool and select a real client tuple
+        run: python3 tools/ha-real-failover.py preflight
+      - name: Inject real sidecar failure
+        run: python3 tools/ha-real-failover.py inject
+      - name: Wait beyond pool TTL
+        run: sleep "${{ inputs.fault_seconds }}"
+      - name: Verify panel reassignment and real standby UoT/DNS path
+        run: python3 tools/ha-real-failover.py verify
+      - name: Restore faulted sidecar and verify recovery
+        if: always()
+        run: python3 tools/ha-real-failover.py restore
