@@ -28,12 +28,22 @@ if [ -z "$device_type" ]; then
   exit 0
 fi
 
-runtime="$(xcrun simctl list runtimes -j | python3 -c '
-import json, sys
-runtimes = [r for r in json.load(sys.stdin)["runtimes"] if r["name"].startswith("iOS ") and r.get("isAvailable")]
+# The newest installed runtime is not always one the Duo supports: a runner
+# image that adds a newer iOS runtime made `simctl create` fail with
+# "Incompatible device". Pick the newest runtime that lists the Duo.
+runtime="$(xcrun simctl list runtimes -j | DEVICE_TYPE="$device_type" python3 -c '
+import json, os, sys
+want = os.environ["DEVICE_TYPE"]
+runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+            if r["name"].startswith("iOS ") and r.get("isAvailable")
+            and any(t.get("identifier") == want for t in r.get("supportedDeviceTypes", []))]
 runtimes.sort(key=lambda r: [int(part) for part in r["version"].split(".")])
 print(runtimes[-1]["identifier"] if runtimes else "")
 ')"
+if [ -z "$runtime" ]; then
+  echo "no installed iOS runtime supports $device_type; skipping"
+  exit 0
+fi
 echo "device type $device_type, runtime $runtime"
 
 udid="$(xcrun simctl create bridge-duo "$device_type" "$runtime")"
