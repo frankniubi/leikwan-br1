@@ -1,0 +1,167 @@
+name: OpenWrt lease diagnosis
+
+# Reproduces the client-47 lease_scope_invalid storm on a clean runner:
+# builds leikwand 1.2.0 (arm64, same as the affected GL-MT3600BE), enrolls it
+# with the credentials supplied as dispatch inputs, runs the pull → lease loop
+# under qemu-user, and dumps the exchange. Also probes the lease endpoint with
+# curl to show the exact request fields the panel accepts or refuses.
+# Credentials come in per-run and are never committed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      panel:
+        description: "Panel base URL"
+        required: false
+        default: "https://v3.leikwanhost.com"
+      client_id:
+        description: "Client id to test with"
+        required: true
+      agent_token:
+        description: "Client agent token (secret)"
+        required: true
+      runtime_minutes:
+        description: "How long to run the daemon loop"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  lease-diag:
+    name: Reproduce lease exchange (arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/openwrt-router-edition
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: "**/go.sum"
+
+      - name: Build leikwand (arm64, like the shipped ipk) + install qemu-user
+        run: |
+          cd tools/leikwand
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o leikwand-arm64 .
+          file leikwand-arm64
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq qemu-user-static >/dev/null 2>&1
+          qemu-aarch64-static ./leikwand-arm64 version 2>/dev/null || \
+            qemu-aarch64-static ./leikwand-arm64 -h 2>&1 | head -5
+
+      - name: Write config + secrets like the ipk would
+        env:
+          CLIENT_ID: ${{ inputs.client_id }}
+          AGENT_TOKEN: ${{ inputs.agent_token }}
+          PANEL: ${{ inputs.panel }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/diag-data" "$GITHUB_WORKSPACE/diag-run"
+          # UCI file (leikwand parses it directly, no uci binary needed)
+          cat > "$GITHUB_WORKSPACE/diag-data/leikwan.conf" <<EOF
+          config leikwan 'leikwan'
+                  option enabled '1'
+                  option panel_url '$PANEL'
+                  option client_id '$CLIENT_ID'
+                  option log_level 'debug'
+          EOF
+          # secret.json mirrors tools/leikwand/secrets.go SecretState
+          cat > "$GITHUB_WORKSPACE/diag-data/secret.json" <<EOF
+          {
+            "agent_token": "$AGENT_TOKEN",
+            "device_id": "openwrt-ci-diag-0001",
+            "device_name": "CI lease diagnosis",
+            "client_id": $CLIENT_ID,
+            "client_name": "",
+            "master_url": "$PANEL",
+            "enrolled_at": "2026-10-31T00:00:00Z",
+            "enroll_method": "direct_token"
+          }
+          EOF
+          chmod 600 "$GITHUB_WORKSPACE/diag-data/secret.json"
+
+      - name: Run the daemon (pull + lease loop) and capture its logs
+        env:
+          RUN_MINUTES: ${{ inputs.runtime_minutes }}
+        run: |
+          cd tools/leikwand
+          export LEIKWAN_UCI_PATH="$GITHUB_WORKSPACE/diag-data/leikwan.conf"
+          export LEIKWAN_DATA_DIR="$GITHUB_WORKSPACE/diag-data"
+          export LEIKWAN_RUN_DIR="$GITHUB_WORKSPACE/diag-run"
+          # The daemon looks for its runtime binary; without it, forwards stay
+          # down but pull/heartbeat/lease (control plane) still run — exactly
+          # what we want to observe.
+          timeout "${RUN_MINUTES}m" qemu-aarch64-static ./leikwand-arm64 run \
+            2>&1 | tee "$GITHUB_WORKSPACE/diag-data/run.log" || true
+          echo "=== last 80 log lines ==="
+          tail -80 "$GITHUB_WORKSPACE/diag-data/run.log" || true
+
+      - name: curl-level probe of pull + lease (exact field shapes)
+        env:
+          PANEL: ${{ inputs.panel }}
+          CLIENT_ID: ${{ inputs.client_id }}
+          AGENT_TOKEN: ${{ inputs.agent_token }}
+        run: |
+          set -uo pipefail
+          H=(-H "Authorization: Bearer $AGENT_TOKEN"
+             -H "X-Device-Id: openwrt-ci-diag-0001"
+             -H "X-Device-UUID: openwrt-ci-diag-0001"
+             -H "X-Device-Platform: openwrt"
+             -H "X-Device-Form-Factor: router"
+             -H "X-Device-Architecture: arm64"
+             -H "X-Client-Version: 1.2.0"
+             -H "User-Agent: leikwan-openwrt-agent/1.2.0 (linux; arm64)")
+          curl -sS "${H[@]}" "$PANEL/api/client/configs/pull" > pull.json
+          python3 - <<'PY'
+          import json, hashlib
+          data = json.load(open('pull.json'))
+          forwards = data.get('forwards') or []
+          print(f"pull: ok={data.get('ok')} forwards={len(forwards)} native_outbound_present={'native_outbound' in data}")
+          for f in forwards[:3]:
+              acc = f.get('ultra_access') or {}
+              print(f"  fwd={f.get('forward_id')} gen={len(acc.get('policy_generation') or '')}ch "
+                    f"ticket={len(acc.get('session_ticket') or '')}B digest={len(acc.get('target_digest') or '')}ch "
+                    f"transport={acc.get('transport')}")
+          if not forwards:
+              print("no forwards; nothing to lease")
+              raise SystemExit(0)
+          f = forwards[0]
+          acc = f.get('ultra_access') or {}
+          body = {
+              'device_id': 'openwrt-ci-diag-0001',
+              'forwards': [{
+                  'purpose': 'ultra',
+                  'forward_id': f['forward_id'],
+                  'session_ticket': acc.get('session_ticket', ''),
+                  'policy_generation': acc.get('policy_generation', ''),
+                  'nonce': hashlib.sha256(b'ci-diag').hexdigest(),
+                  'target_digest': acc.get('target_digest', ''),
+                  'transport': acc.get('transport', 'tcp+udp'),
+                  'selection_mode': 'auto',
+                  'max_candidates': 4,
+              }],
+          }
+          json.dump(body, open('lease-req.json', 'w'))
+          print(f"lease request prepared for fwd={f['forward_id']}")
+          PY
+          if [ -f lease-req.json ]; then
+            echo "=== lease response ==="
+            curl -sS -X POST "${H[@]}" -H "Content-Type: application/json" \
+              -d @lease-req.json -w "\nHTTP %{http_code}\n" \
+              "$PANEL/api/client/ultra/lease" | head -c 5000
+          fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lease-diag
+          path: |
+            diag-data/
+            pull.json
+            lease-req.json
+          if-no-files-found: ignore

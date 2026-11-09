@@ -180,13 +180,13 @@ func TestPullGenericErrorReachesStatus(t *testing.T) {
 	}
 }
 
-// Pairing is refused before the code is consumed; LuCI must get the human
-// explanation, never "panel error 429: client_online_limit_reached".
-func TestPairOnlineLimitReturnsHumanMessage(t *testing.T) {
+// Registration is local-only: the operator pastes credentials the panel
+// already issued, so no panel call may happen here. The device limit is
+// enforced by the next config pull, whose human message reaches LuCI through
+// the pull status (see TestPullOnlineLimitReachesStatusAndSlowsRetry).
+func TestRegisterIsLocalOnlyAndValidatesInput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/client/devices/openwrt/pair" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
+		t.Errorf("unexpected panel call %s: registration is local-only", r.URL.Path)
 		writeLimit(w)
 	}))
 	defer server.Close()
@@ -197,20 +197,22 @@ func TestPairOnlineLimitReturnsHumanMessage(t *testing.T) {
 	agent := newTestAgent(t, cfg)
 	ctl := &ctlServer{agent: agent, secret: "s3cret"}
 
-	reply := ctl.dispatch(CtlRequest{Cmd: "pair", Args: map[string]string{"code": "ABCD-1234", "token": "s3cret"}})
-	if reply.OK {
-		t.Fatal("pairing unexpectedly succeeded")
+	if reply := ctl.dispatch(CtlRequest{Cmd: "register", Args: map[string]string{"client_id": "42", "agent_token": "tok", "token": "s3cret"}}); !reply.OK {
+		t.Fatalf("valid registration refused: %s", reply.Error)
 	}
-	if reply.Error != codeClientOnlineLimit || reply.Message != limitMessage {
-		t.Fatalf("reply error=%q message=%q", reply.Error, reply.Message)
+	if !agent.enrolled() {
+		t.Fatal("a valid registration must enrol the device")
 	}
-	if reply.Details["online_device_limit"] != 2 || reply.Details["active_online_devices"] != 2 {
-		t.Fatalf("details = %v", reply.Details)
+	if agent.secrets.ClientID != 42 {
+		t.Fatalf("client id = %d", agent.secrets.ClientID)
 	}
-	if contains(reply.Message, "panel error") {
-		t.Fatalf("raw panel error leaked: %q", reply.Message)
+	if reply := ctl.dispatch(CtlRequest{Cmd: "register", Args: map[string]string{"client_id": "42", "token": "s3cret"}}); reply.OK || reply.Error != "agent_token_required" {
+		t.Fatalf("missing token: %+v", reply)
 	}
-	if agent.enrolled() {
-		t.Fatal("a refused pairing must not enrol the device")
+	if reply := ctl.dispatch(CtlRequest{Cmd: "register", Args: map[string]string{"agent_token": "tok", "token": "s3cret"}}); reply.OK || reply.Error != "invalid_client_id" {
+		t.Fatalf("missing client id: %+v", reply)
+	}
+	if reply := ctl.dispatch(CtlRequest{Cmd: "register", Args: map[string]string{"client_id": "42", "agent_token": "tok"}}); reply.OK || reply.Error != "unauthorized" {
+		t.Fatalf("missing control token: %+v", reply)
 	}
 }

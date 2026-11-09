@@ -76,6 +76,10 @@ type RuntimeStatus struct {
 	PolicyExpiresAt        string `json:"policy_expires_at,omitempty"`
 	BytesIn                int64  `json:"bytes_in,omitempty"`
 	BytesOut               int64  `json:"bytes_out,omitempty"`
+	// QuotaRemainingBytes is the local limiter slice's remaining bytes. A host
+	// renews the lease when this gets low (or counts quota_exhausted stream
+	// ends) instead of letting active downloads pause on a drained slice.
+	QuotaRemainingBytes    int64  `json:"quota_remaining_bytes,omitempty"`
 	UDPActiveAssociations  int    `json:"udp_active_associations,omitempty"`
 	UDPPendingAssociations int    `json:"udp_pending_associations,omitempty"`
 	UDPQueueDrops          int64  `json:"udp_queue_drops,omitempty"`
@@ -233,6 +237,19 @@ func (writer *StatusWriter) AddUsage(bytesIn, bytesOut int) {
 	})
 }
 
+// UpdateQuotaRemaining records the local limiter slice's remaining bytes. The
+// policy watcher calls it on every tick while a policy is active; the writer
+// still coalesces writes, so this only reaches disk on the regular flush
+// cadence and only when the value moved.
+func (writer *StatusWriter) UpdateQuotaRemaining(remaining int64) {
+	writer.update(func(status *RuntimeStatus) {
+		if status.QuotaRemainingBytes == remaining {
+			return
+		}
+		status.QuotaRemainingBytes = remaining
+	})
+}
+
 func (writer *StatusWriter) UpdateTCP(selectionRef string, rtt time.Duration) {
 	writer.UpdateTCPWithTier(selectionRef, selectionTierUnknown, rtt)
 }
@@ -296,7 +313,14 @@ func (writer *StatusWriter) RecordProbeFailure(lease ProviderLease, result udpPr
 	tcpFailed := result.TCPSent > 0 &&
 		(result.TCPError != nil || !result.pathUsable(result.TCPSent, result.TCPReceived))
 	if tcpFailed {
-		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", errProbeTCPFailed.Error(), lease.LeaseHash)
+		reason := errProbeTCPFailed.Error()
+		// A relay that refused the lease credential is not a broken TCP path:
+		// it was retired from the line's material. Name it, so the Panel
+		// refreshes the line instead of logging one more probe failure.
+		if streamCredentialRejected(result.TCPError) {
+			reason = credentialRejectedReason
+		}
+		writer.RecordCandidateFailure(lease.CandidateKeyHash, "tcp", reason, lease.LeaseHash)
 	}
 }
 

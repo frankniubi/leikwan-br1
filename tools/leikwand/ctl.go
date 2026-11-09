@@ -163,18 +163,11 @@ func (s *ctlServer) dispatch(request CtlRequest) CtlResponse {
 			return panelFailureResponse(err)
 		}
 		return CtlResponse{OK: true, Data: map[string]any{"panel": agent.panel.endpointLabel(), "platform": agent.panel.platform()}}
-	case "enroll":
-		return s.enroll(request.Args)
-	case "pair":
-		if _, err := agent.pairWithCode(request.Args["code"]); err != nil {
-			return panelFailureResponse(err)
-		}
-		return CtlResponse{OK: true, Data: map[string]any{"client_id": agent.panel.clientIDValue(), "client_name": agent.secrets.ClientName}}
+	case "register":
+		return s.register(request.Args)
 	case "sign_out":
 		agent.signOut()
 		return CtlResponse{OK: true, Data: map[string]any{"signed_out": true}}
-	case "forward_action":
-		return s.forwardAction(request.Args)
 	case "reload":
 		agent.reloadConfig()
 		agent.triggerReconcile("ctl_reload")
@@ -186,99 +179,31 @@ func (s *ctlServer) dispatch(request CtlRequest) CtlResponse {
 
 func requiresSecret(cmd string) bool {
 	switch cmd {
-	case "enroll", "pair", "sign_out", "forward_action", "reload":
+	case "register", "sign_out", "reload":
 		return true
 	default:
 		return false
 	}
 }
 
-func (s *ctlServer) enroll(args map[string]string) CtlResponse {
+// register adopts credentials the operator pasted from the panel: the client
+// id and the agent token shown by the panel's install command. There is no
+// login flow and no pairing code — the same direct-token onboarding the
+// headless clients use. The client name is resolved by the first config pull.
+func (s *ctlServer) register(args map[string]string) CtlResponse {
 	agent := s.agent
-	email := strings.TrimSpace(args["email"])
-	password := args["password"]
-	if email == "" || password == "" {
-		return CtlResponse{OK: false, Error: "credentials_required"}
+	token := strings.TrimSpace(args["agent_token"])
+	clientID := atoiDefault(args["client_id"], 0)
+	if token == "" {
+		return CtlResponse{OK: false, Error: "agent_token_required"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	login, err := agent.panel.Login(ctx, email, password)
-	if err != nil {
-		return panelFailureResponse(err)
+	if clientID <= 0 {
+		return CtlResponse{OK: false, Error: "invalid_client_id"}
 	}
-	if !login.OK || strings.TrimSpace(login.SessionToken) == "" {
-		return CtlResponse{OK: false, Error: "login_rejected"}
-	}
-	if len(login.Clients) == 0 {
-		return CtlResponse{OK: false, Error: "no_clients_available"}
-	}
-	targetID := atoiDefault(args["client_id"], login.Clients[0].ID)
-	selection, err := agent.panel.SelectClient(ctx, login.SessionToken, targetID)
-	if err != nil {
-		return panelFailureResponse(err)
-	}
-	if !selection.OK || strings.TrimSpace(selection.AgentToken) == "" {
-		return CtlResponse{OK: false, Error: "client_selection_rejected"}
-	}
-	if err := agent.adoptCredentials(selection.AgentToken, selection.ClientID, selection.ClientName, email, "account"); err != nil {
+	if err := agent.adoptCredentials(token, clientID, "", "", "direct_token"); err != nil {
 		return CtlResponse{OK: false, Error: redactSecrets(err.Error())}
 	}
-	return CtlResponse{OK: true, Data: map[string]any{
-		"client_id":   selection.ClientID,
-		"client_name": selection.ClientName,
-	}}
-}
-
-func (s *ctlServer) forwardAction(args map[string]string) CtlResponse {
-	agent := s.agent
-	forwardID := atoiDefault(args["forward_id"], 0)
-	action := strings.ToLower(strings.TrimSpace(args["action"]))
-	if forwardID <= 0 {
-		return CtlResponse{OK: false, Error: "forward_id_required"}
-	}
-	agent.mu.Lock()
-	state, known := agent.runtimes[forwardID]
-	forward, desired := agent.forwards[forwardID]
-	agent.mu.Unlock()
-
-	switch action {
-	case "start":
-		if !desired || !known {
-			if !desired {
-				return CtlResponse{OK: false, Error: "forward_not_assigned"}
-			}
-			agent.triggerReconcile("manual_start")
-			return CtlResponse{OK: true, Data: map[string]any{"forward_id": forwardID, "action": "start"}}
-		}
-		state.userStopped = false
-		return CtlResponse{OK: true, Data: map[string]any{"forward_id": forwardID, "action": "start"}}
-	case "stop":
-		if !known {
-			return CtlResponse{OK: false, Error: "forward_not_running"}
-		}
-		state.userStopped = true
-		agent.mu.Lock()
-		delete(agent.runtimes, forwardID)
-		agent.mu.Unlock()
-		agent.stopRuntime(state.proc, "user_stop")
-		agent.store.DeleteApplied(forwardID)
-		return CtlResponse{OK: true, Data: map[string]any{"forward_id": forwardID, "action": "stop"}}
-	case "restart":
-		if !desired {
-			return CtlResponse{OK: false, Error: "forward_not_assigned"}
-		}
-		if known {
-			agent.mu.Lock()
-			delete(agent.runtimes, forwardID)
-			agent.mu.Unlock()
-			agent.stopRuntime(state.proc, "user_restart")
-		}
-		agent.triggerReconcile("manual_restart")
-		return CtlResponse{OK: true, Data: map[string]any{"forward_id": forwardID, "action": "restart"}}
-	default:
-		_ = forward
-		return CtlResponse{OK: false, Error: "unknown_action"}
-	}
+	return CtlResponse{OK: true, Data: map[string]any{"client_id": clientID}}
 }
 
 // ctlCall is the client side used by the "leikwand ctl" CLI.

@@ -147,7 +147,8 @@ public sealed class WindowsSavedNodeFlowTests : IDisposable
         _vm.ApplyForwardSnapshot([runtime.Forward], _ => false);
         await SaveNodeAsync("node.example.test", 30526);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        // ProxyForwardStartException is an InvalidOperationException that also names the forward.
+        await Assert.ThrowsAnyAsync<InvalidOperationException>(() =>
             _vm.StartProxyAsync(WindowsProxyMode.Http, _vm.SelectedProxyProfileId));
 
         Assert.False(host.IsRunning);

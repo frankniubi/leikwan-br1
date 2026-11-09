@@ -140,7 +140,8 @@ final class Bootstrap
             $whmcsIdentityService,
         );
         $ultraInventory = new UltraInventoryService($this->config, $this->db);
-        $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
+        $ultraClientStatus = new UltraClientStatusService($this->config, $this->db, materials: $ultraMaterials);
         $accessPolicy = isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
             ? $this->services['access_policy']
             : new AccessPolicyService($this->db);
@@ -157,7 +158,6 @@ final class Bootstrap
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
         $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
-        $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
         $ultraLeases = new UltraLeaseService($this->config, $this->db, $ultraMaterials);
         $clientAgent = new ClientAgentController(
             $this->config,
@@ -466,6 +466,9 @@ final class Bootstrap
         $this->router->add('GET', '/artifacts/manage-client.ps1', [$artifacts, 'manageClientPowerShell']);
         $this->router->add('GET', '/artifacts/install-client-agent.sh', [$artifacts, 'installClientAgent']);
         $this->router->add('GET', '/artifacts/install-docker-client.sh', [$artifacts, 'installDockerClient']);
+        $this->router->add('GET', '/artifacts/install-openwrt.sh', [$artifacts, 'installOpenwrt']);
+        $this->router->add('GET', '/artifacts/openwrt-packages.txt', [$artifacts, 'openwrtPackages']);
+        $this->router->add('GET', '/artifacts/openwrt-versions.sh', [$artifacts, 'openwrtVersions']);
         $this->router->add('GET', '/artifacts/docker-client/docker-compose.yml', [$artifacts, 'dockerClientCompose']);
         $this->router->add('GET', '/artifacts/docker-client/Dockerfile', [$artifacts, 'dockerClientDockerfile']);
         $this->router->add('GET', '/artifacts/docker-client/fetch-artifacts.py', [$artifacts, 'dockerClientFetchArtifacts']);

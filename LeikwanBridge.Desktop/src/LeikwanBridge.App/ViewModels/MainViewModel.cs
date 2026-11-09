@@ -132,10 +132,11 @@ public partial class MainViewModel : ObservableObject
     public WindowsProxyEditorViewModel ProxyEditor { get; } = new();
 
     public string SelectedProxyGameDisplayName => _selectedProxyGameDisplayName;
-    public bool IsForwardPairingView => string.Equals(CurrentView, "Forwards", StringComparison.OrdinalIgnoreCase);
-
     partial void OnCurrentViewChanged(string value)
-        => OnPropertyChanged(nameof(IsForwardPairingView));
+    {
+        if (string.Equals(value, "Dashboard", StringComparison.OrdinalIgnoreCase))
+            _ = RefreshAccessPolicyAsync();
+    }
 
     partial void OnShowUpdatePromptChanged(bool value) => NotifyUpdateOverlayState();
 
@@ -281,7 +282,11 @@ public partial class MainViewModel : ObservableObject
     public MainViewModel()
     {
         _config = new AgentConfig();
-        Forwards.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ForwardCount));
+        Forwards.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(ForwardCount));
+            OnPropertyChanged(nameof(SpeedLimitText));
+        };
         ProxyProfiles.CollectionChanged += (_, _) =>
         {
             OnPropertyChanged(nameof(HostedNodeCount));
@@ -1383,9 +1388,14 @@ public partial class MainViewModel : ObservableObject
         ShowSetupWizard = false;
     }
 
-    public void SignOutForTests()
+    /// <summary>
+    /// Forgets the signed-in session and client in the config only. It touches
+    /// no proxy, runtime, or UI state, so sign-out can persist it before
+    /// teardown runs: a teardown that hangs or a killed process then cannot
+    /// leave the session alive for the next launch.
+    /// </summary>
+    public void ClearSignedInConfig()
     {
-        StopProxyForShutdown();
         _config.DesktopSessionToken = string.Empty;
         _config.SignedInUserId = 0;
         _config.SignedInUsername = string.Empty;
@@ -1395,6 +1405,17 @@ public partial class MainViewModel : ObservableObject
         _config.ActiveClientName = string.Empty;
         _config.ClientId = 0;
         _config.AgentToken = string.Empty;
+    }
+
+    public void SignOutForTests()
+    {
+        StopProxyForShutdown();
+        ClearSignedInConfig();
+        ResetSignedInView();
+    }
+
+    private void ResetSignedInView()
+    {
         AvailableClientChoices.Clear();
         SignedInUsername = string.Empty;
         SignedInEmail = string.Empty;
@@ -1538,6 +1559,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsConnected = true;
+        _ = RefreshAccessPolicyAsync(ct);
         if (deviceLimit is null)
         {
             ClearDeviceLimit();
@@ -1615,12 +1637,43 @@ public partial class MainViewModel : ObservableObject
     private void Disconnect()
     {
         StopProxyForShutdown();
+        DisconnectRuntime();
+    }
+
+    private static readonly TimeSpan SignOutProxyStopBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Signs out without blocking the UI thread. A proxy start, health check or
+    /// reconnect can hold the proxy gates while its next step is queued to the
+    /// UI thread; blocking that thread on the proxy stop deadlocked sign-out.
+    /// Awaiting keeps the dispatcher pumping, and the stop gets a budget so a
+    /// slow driver cannot hold the user on the dashboard indefinitely.
+    /// </summary>
+    public async Task SignOutAsync()
+    {
+        ForgetProxySession(force: true);
+        try
+        {
+            await StopProxyAsync("sign_out", CancellationToken.None).WaitAsync(SignOutProxyStopBudget);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "proxy stop during sign-out failed or exceeded its budget");
+        }
+        DisconnectRuntime();
+        ClearSignedInConfig();
+        ResetSignedInView();
+    }
+
+    private void DisconnectRuntime()
+    {
         StopUsageRefresh();
         _pollingService?.Stop();
         _healthCheckService?.Stop();
         _runtimeManager?.StopAll();
         _api?.Dispose();
         _api = null;
+        ResetAccessPolicyState();
         _diagnostics = null;
         IsConnected = false;
         ClearDeviceLimit();
@@ -1635,7 +1688,13 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NavigateTo(string view) => CurrentView = view;
+    private void NavigateTo(string view)
+        => CurrentView = IsServicesViewId(view) ? "Proxy" : view;
+
+    /// <summary>The services and nodes section lives on the connect page. The old view ids still open that page.</summary>
+    private static bool IsServicesViewId(string view)
+        => string.Equals(view, "Nodes", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(view, "Forwards", StringComparison.OrdinalIgnoreCase);
 
     [RelayCommand]
     private void SelectForward(ForwardViewModel? forward)
@@ -1644,7 +1703,7 @@ public partial class MainViewModel : ObservableObject
             return;
 
         SelectedForward = forward;
-        CurrentView = "Forwards";
+        CurrentView = "Proxy";
     }
 
     /// <summary>
@@ -1749,7 +1808,11 @@ public partial class MainViewModel : ObservableObject
     public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;
     public int ForwardCount => Forwards.Count;
 
-    public void ApplyForwardSnapshot(IEnumerable<ForwardConfig> forwards, Func<int, bool> isRunning, StateManager? stateManager = null)
+    public void ApplyForwardSnapshot(
+        IEnumerable<ForwardConfig> forwards,
+        Func<int, bool> isRunning,
+        StateManager? stateManager = null,
+        Func<int, string?>? startFailure = null)
     {
         IsLoadingForwards = false;
         var snapshot = forwards.ToList();
@@ -1764,7 +1827,7 @@ public partial class MainViewModel : ObservableObject
             var busy = _busyForwards.Contains(forward.ForwardId);
             var userStopped = applied.TryGetValue(forward.ForwardId.ToString(), out var appliedState) && appliedState!.UserStopped;
             var degraded = HasDegradedLeg(qualityStateManager, forward);
-            var vm = new ForwardViewModel(forward, BuildSummary(forward, running, busy, userStopped, degraded));
+            var vm = new ForwardViewModel(forward, BuildSummary(forward, running, busy, userStopped, degraded, startFailure?.Invoke(forward.ForwardId)));
             Forwards.Add(vm);
             ConnectionQualityForwards.Add(BuildConnectionQuality(forward, running, qualityStateManager));
         }
@@ -1774,7 +1837,7 @@ public partial class MainViewModel : ObservableObject
         ActiveForwardCount = Forwards.Count;
     }
 
-    private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded)
+    private static ForwardSummary BuildSummary(ForwardConfig forward, bool running, bool busy, bool userStopped, bool degraded, string? startFailure)
     {
         var nativeOutboundRule = ForwardRuntimeManager.IsNativeOutboundForward(forward);
         var lifecycle = busy ? ForwardLifecycleState.Connecting
@@ -1786,7 +1849,7 @@ public partial class MainViewModel : ObservableObject
             : degraded ? ForwardQualityState.Degraded
             : ForwardQualityState.Good;
 
-        var friendly = lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "";
+        var friendly = FriendlyForwardMessage(lifecycle, startFailure);
 
         return new ForwardSummary(
             forward.ForwardId,
@@ -1827,7 +1890,7 @@ public partial class MainViewModel : ObservableObject
             lifecycle,
             running ? ForwardQualityState.Good : ForwardQualityState.Unavailable,
             running ? ForwardQualityState.Good.ToString() : ForwardQualityState.Unavailable.ToString(),
-            lifecycle == ForwardLifecycleState.Unavailable ? "Unavailable" : "",
+            FriendlyForwardMessage(lifecycle, _runtimeManager?.GetLastStartFailure(forwardId)),
             busy,
             CanStart: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Stopped or ForwardLifecycleState.Unavailable,
             CanStop: !nativeOutboundRule && lifecycle is ForwardLifecycleState.Connected,
@@ -2010,7 +2073,10 @@ public partial class MainViewModel : ObservableObject
 
         InvokeOnUiThread(() =>
         {
-            ApplyForwardSnapshot(forwards, forwardId => _runtimeManager?.IsForwardRunning(forwardId) == true);
+            ApplyForwardSnapshot(
+                forwards,
+                forwardId => _runtimeManager?.IsForwardRunning(forwardId) == true,
+                startFailure: forwardId => _runtimeManager?.GetLastStartFailure(forwardId));
             _healthCheckService?.UpdateForwards(forwards);
         });
 
@@ -2249,7 +2315,9 @@ public partial class MainViewModel : ObservableObject
             // 16 second poll and a fresh candidate batch per forward.
             var expiresAt = proxyService.ActiveNativeLeaseExpiresAt ?? _nativeLeaseBatchExpiresAt;
             var dataPlaneRunning = proxyService.IsNativeDataPlaneRunning;
+            var quotaLow = dataPlaneRunning && _proxyService.IsNativeQuotaLow();
             if (expiresAt is not null
+                && !quotaLow
                 && !NativeLeaseRenewalLoop.IsRefreshDue(expiresAt, now))
                 return;
 
@@ -2544,6 +2612,25 @@ public partial class MainViewModel : ObservableObject
     private static string GetStringOr(string key, string fallback)
         => System.Windows.Application.Current?.TryFindResource(key) as string ?? fallback;
 
+    /// <summary>
+    /// Message for a row that is not running. A failed start names its local cause
+    /// (for example a port held by another program) instead of a bare "Unavailable".
+    /// The raw code is the fallback when no resource is loaded.
+    /// </summary>
+    private static string FriendlyForwardMessage(ForwardLifecycleState lifecycle, string? startFailure)
+    {
+        if (lifecycle != ForwardLifecycleState.Unavailable)
+            return string.Empty;
+        return startFailure switch
+        {
+            LocalPortFailure.InUse => GetStringOr("ProxyErrLocalPortInUse", LocalPortFailure.InUse),
+            LocalPortFailure.HeldBySystem => GetStringOr("ProxyErrLocalPortHeldBySystem", LocalPortFailure.HeldBySystem),
+            LocalPortFailure.Reserved => GetStringOr("ProxyErrLocalPortReserved", LocalPortFailure.Reserved),
+            "permission_required" => GetStringOr("ProxyErrPermissionRequired", "permission_required"),
+            _ => "Unavailable",
+        };
+    }
+
     private static string GetString(string key)
     {
         var app = System.Windows.Application.Current;
@@ -2572,13 +2659,16 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // Post rather than Invoke: sign-out and disconnect block the UI thread
+        // while background proxy cleanup runs, and a synchronous Invoke from that
+        // cleanup would wait on the same blocked UI thread forever.
         try
         {
-            dispatcher.Invoke(() =>
+            dispatcher.BeginInvoke(new Action(() =>
             {
                 if (!IsShuttingDown)
                     action();
-            });
+            }));
         }
         catch (InvalidOperationException) when (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
         {

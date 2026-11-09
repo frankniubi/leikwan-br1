@@ -30,6 +30,7 @@ public class ForwardRuntimeManager : IDisposable
     private sealed record UltraStartupFailure(string Contract, int Attempts, DateTimeOffset RetryAfter);
     private readonly ConcurrentDictionary<int, UltraStartupFailure> _ultraStartupFailures = new();
     private readonly ConcurrentDictionary<int, DateTimeOffset> _lastBreakdownLog = new();
+    private readonly ConcurrentDictionary<int, string> _lastStartFailures = new();
 
     public event Action<int, string>? UltraRecoveryRequested;
 
@@ -68,6 +69,27 @@ public class ForwardRuntimeManager : IDisposable
     }
 
     private readonly ConcurrentDictionary<int, DateTimeOffset> _lastUltraLeaseDelivery = new();
+    private readonly ConcurrentDictionary<int, (string Generation, DateTimeOffset Expiry, bool Graced)> _graceLeases = new();
+
+    public void HandleUltraControlFailure(int forwardId, bool transportFailure)
+    {
+        lock (LockFor(forwardId))
+        {
+            if (!_graceLeases.TryGetValue(forwardId, out var held) || !IsForwardRunning(forwardId)) return;
+            if (!transportFailure)
+            {
+                if (held.Graced && _ultraRuntimeHost.SendControl(forwardId,
+                    new { op = "stop_grace", policy_generation = held.Generation }))
+                    _graceLeases.TryRemove(forwardId, out _);
+                return;
+            }
+            if (held.Graced || UltraNetworkGrace.Deadline(held.Expiry, DateTimeOffset.UtcNow) is not { } until) return;
+            if (_ultraRuntimeHost.SendControl(forwardId, new {
+                op = "extend_grace", policy_generation = held.Generation,
+                grace_until = until.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            })) _graceLeases[forwardId] = (held.Generation, held.Expiry, true);
+        }
+    }
 
     /// <summary>
     /// True when the forward's runtime process is alive and reports that it is
@@ -476,7 +498,9 @@ public class ForwardRuntimeManager : IDisposable
                 effectiveSignature,
                 string.IsNullOrWhiteSpace(applyReason) ? "config_sync" : applyReason);
             _lastUltraLeaseDelivery[forward.ForwardId] = deliveryStartedAt;
+            _graceLeases[forward.ForwardId] = (usableLeases[0].PolicyGeneration, usableLeases.Min(x => x.ExpiresAt), false);
             _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
+            _lastStartFailures.TryRemove(forward.ForwardId, out _);
         }
         catch (Exception ex)
         {
@@ -489,6 +513,8 @@ public class ForwardRuntimeManager : IDisposable
                 effectiveSignature, attempts, _startupRetryClock().AddSeconds(delaySeconds));
             Log.Warning(ex, "Ultra runtime start failed for forward {ForwardId} ({ErrorType})",
                 forward.ForwardId, ex.GetType().Name);
+            // Start wraps its failure as ultra_runtime_start_failed; the cause is the inner code.
+            _lastStartFailures[forward.ForwardId] = ex.InnerException?.Message ?? ex.Message;
             StopForwardForPolicy(forward.ForwardId);
         }
         finally
@@ -504,6 +530,7 @@ public class ForwardRuntimeManager : IDisposable
         lock (LockFor(forwardId))
         {
             Log.Information("stopping forward {ForwardId}", forwardId);
+            _graceLeases.TryRemove(forwardId, out _);
             _ultraRuntimeHost.Stop(forwardId);
 
             var applied = _stateManager.LoadApplied();
@@ -633,6 +660,7 @@ public class ForwardRuntimeManager : IDisposable
                 if (refreshed)
                 {
                     _lastUltraLeaseDelivery[forward.ForwardId] = deliveryStartedAt;
+                    _graceLeases[forward.ForwardId] = (leases[0].PolicyGeneration, leases.Min(x => x.ExpiresAt), false);
                     _ultraStartupFailures.TryRemove(forward.ForwardId, out _);
                 }
                 return refreshed;
@@ -648,10 +676,16 @@ public class ForwardRuntimeManager : IDisposable
 
     public bool IsForwardRunning(int forwardId) => _supervisor.IsRunning(forwardId);
 
+    /// <summary>The code from the last failed start of this forward, or null. Cleared by a successful start.</summary>
+    public string? GetLastStartFailure(int forwardId) => _lastStartFailures.TryGetValue(forwardId, out var code) ? code : null;
+
     public void StopAll()
     {
         foreach (var forwardId in _stateManager.LoadApplied().Keys.Select(key => int.TryParse(key, out var id) ? id : 0).Where(id => id > 0))
+        {
+            _graceLeases.TryRemove(forwardId, out _);
             _ultraRuntimeHost.Stop(forwardId);
+        }
         _supervisor.StopAll();
         _stateManager.SaveApplied([]);
     }
@@ -701,6 +735,7 @@ public class ForwardRuntimeManager : IDisposable
         Log.Information("skip ordinary Ultra runtime for native outbound forward {ForwardId}", forwardId);
         try
         {
+            _graceLeases.TryRemove(forwardId, out _);
             _ultraRuntimeHost.Stop(forwardId);
             _stateManager.RemoveApplied(forwardId);
         }

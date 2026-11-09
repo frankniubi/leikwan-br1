@@ -178,7 +178,24 @@ func wrapProbeFailure(kind error, cause error) error {
 	if cause == nil {
 		return kind
 	}
-	return fmt.Errorf("%w: %v", kind, cause)
+	return &probeFailureError{kind: kind, cause: cause}
+}
+
+// probeFailureError is wrapProbeFailure's "kind: cause" error. Like the
+// fmt.Errorf("%w: %v") form it replaces, it unwraps to the kind only, so no
+// errors.Is verdict on a probe failure changes; the cause is kept so that
+// streamCredentialRejected can still see a refused credential underneath.
+type probeFailureError struct {
+	kind  error
+	cause error
+}
+
+func (err *probeFailureError) Error() string {
+	return fmt.Sprintf("%v: %v", err.kind, err.cause)
+}
+
+func (err *probeFailureError) Unwrap() error {
+	return err.kind
 }
 
 func dualProbeResult(udp, tcp udpProbeResult) udpProbeResult {

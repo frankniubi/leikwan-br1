@@ -19,9 +19,21 @@ State files (all optional):
                   device key when the header is present; "off" ignores it;
                   "require" refuses a lease request without the header
                   (docs/specs/2026-10-02-ultra-sealed-lease-v1.md)
+  relay_host      address the router dials for every candidate (default
+                  127.0.0.1; the router VM test sets the QEMU host address)
+  relay_port      candidate 2 endpoint (default 19000)
+  relay2_port     candidate 3 endpoint; a second *live* relay so failover has
+                  somewhere to go (default: unset = no third candidate)
+  policy_generation  replaces HEX64, which is how a line rotation reaches the
+                  runtime: a new generation makes it re-select
+  offline         "1" makes every endpoint answer 503 after a short delay,
+                  which is what a router sees while the panel is unreachable
 
-Written state: last_lease_key_header (the header value, public key only) and
-last_lease_sealed ("sealed N" or "clear N") after every lease answer.
+Written state: last_lease_key_header (the header value, public key only),
+last_lease_sealed ("sealed N" or "clear N") after every lease answer,
+usage.jsonl (every usage snapshot the panel accepted), last_heartbeat.json,
+last_headers.json (request headers of the last pull, so the harness can prove
+the router reported its package manager), pulls and generations.jsonl.
 """
 
 import base64
@@ -59,6 +71,21 @@ def sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def generation() -> str:
+    """The policy generation the panel currently publishes.
+
+    A new value is the panel's way of rotating lines: the runtime replaces its
+    whole candidate set and re-selects instead of treating the batch as a
+    refresh of the path it already holds.
+    """
+    value = state("policy_generation")
+    return value if value else HEX64
+
+
+def offline() -> bool:
+    return state("offline", "0") == "1"
+
+
 def transport_mode() -> str:
     """Transport published for the forward and its policy.
 
@@ -76,7 +103,7 @@ def policy(forward_id: int, target: str) -> dict:
     return {
         "protocol": "leikwan-ultra-policy-v2",
         "forward_id": forward_id,
-        "policy_generation": HEX64,
+        "policy_generation": generation(),
         "session_ticket": "it-ticket-%d" % forward_id,
         "issued_at": "2020-01-01T00:00:00Z",
         "renew_after": "2020-01-01T00:00:00Z",
@@ -90,14 +117,21 @@ def policy(forward_id: int, target: str) -> dict:
     }
 
 
-def lease_frame(forward_id: int, target: str, ip: str, port: int, index: int) -> dict:
+def lease_frame(forward_id: int, target: str, ip: str, port: int, index: int, serial: int = 0) -> dict:
+    """One candidate lease.
+
+    serial makes the lease identity unique per request. A real panel never
+    reissues a nonce, and the runtime treats a repeated nonce_hash as a replay
+    and rejects the whole batch — which is exactly what a router sees after a
+    reboot if the mock keeps handing out the same values.
+    """
     return {
         "protocol": "leikwan-ultra-policy-v2",
         "purpose": "ultra",
         "forward_id": forward_id,
         "session_ticket": "it-ticket-%d" % forward_id,
-        "policy_generation": HEX64,
-        "lease_id": "lease-%d-%d" % (forward_id, index),
+        "policy_generation": generation(),
+        "lease_id": "lease-%d-%d-%d" % (forward_id, serial, index),
         "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 240)),
         "transport": transport_mode(),
         "rate_limit_mbps": 100,
@@ -109,7 +143,7 @@ def lease_frame(forward_id: int, target: str, ip: str, port: int, index: int) ->
         "selection_ref": hashlib.sha256(("ref-%d" % index).encode()).hexdigest(),
         "selection_tier": "paid",
         "candidate_key_hash": hashlib.sha256(("cand-%d" % index).encode()).hexdigest(),
-        "nonce_hash": hashlib.sha256(("nonce-%d" % index).encode()).hexdigest(),
+        "nonce_hash": hashlib.sha256(("nonce-%d-%d" % (serial, index)).encode()).hexdigest(),
         "endpoint": {"ip": ip, "port": port},
         "credential": {"user": "user-%d" % index, "password": "pass-%d" % index},
     }
@@ -249,7 +283,7 @@ def native_lease_frames(item: dict) -> list:
         serial = NATIVE_LEASES
     return [{
         "protocol": NATIVE_LEASE_PROTOCOL, "purpose": "native_outbound", "forward_id": NATIVE_ID,
-        "lease_id": "native-lease-%d" % serial, "policy_generation": HEX64,
+        "lease_id": "native-lease-%d" % serial, "policy_generation": generation(),
         "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + min(ttl, 240))),
         "transport": "tcp+udp", "rate_limit_mbps": 100, "quota_remaining_bytes": 1 << 30,
         "selection_ref": hashlib.sha256(("native-ref-%d" % serial).encode()).hexdigest(),
@@ -263,6 +297,7 @@ def native_lease_frames(item: dict) -> list:
 
 
 NATIVE_LEASES = 0
+LEASE_SERIAL = 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -300,13 +335,40 @@ class Handler(BaseHTTPRequestHandler):
                               "protocol_version": 1, "details": dict(counts)}, **counts))
         return False
 
+    def _offline_gate(self) -> bool:
+        """Simulate a panel the router cannot reach.
+
+        A 503 is what an unreachable panel looks like from the agent's side: no
+        usable answer, so the grant it already holds is what keeps serving.
+        The short delay keeps the agent's request timeouts honest.
+        """
+        if not offline():
+            return True
+        time.sleep(0.2)
+        self._json(503, {"ok": False, "error": "panel_unavailable"})
+        return False
+
     def do_GET(self):
         global PULLS
-        if not self._platform_gate() or not self._online_limit_gate():
+        if not self._offline_gate() or not self._platform_gate() or not self._online_limit_gate():
             return
         if self.path.startswith("/api/client/configs/pull"):
             with LOCK:
                 PULLS += 1
+            # The router reports the package manager it runs; the real panel
+            # uses it to pick the apk or opkg artifact. Keep it so the harness
+            # can assert the header survives the whole path.
+            self._write_state("last_headers.json", json.dumps(dict(self.headers.items())))
+            self._write_state("last_pull_headers.json", json.dumps({
+                "authorization": self.headers.get("Authorization", ""),
+                "package_manager": self.headers.get("X-Device-Package-Manager", ""),
+                "platform": self.headers.get("X-Device-Platform", ""),
+                "device_id": self.headers.get("X-Device-Id", ""),
+                "client_version": self.headers.get("X-Client-Version", ""),
+                "user_agent": self.headers.get("User-Agent", ""),
+            }))
+            with open(os.path.join(STATE, "generations.jsonl"), "a") as handle:
+                handle.write(json.dumps({"generation": generation(), "pulls": PULLS}) + "\n")
             target = state("target", "127.0.0.1:9")
             listen_port = int(state("listen_port", "10001"))
             count = int(state("forward_count", "1"))
@@ -358,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw or b"{}")
         except ValueError:
             body = {}
-        if not self._platform_gate() or not self._online_limit_gate():
+        if not self._offline_gate() or not self._platform_gate() or not self._online_limit_gate():
             return
 
         if self.path.startswith("/api/client/ultra/lease"):
@@ -379,8 +441,20 @@ class Handler(BaseHTTPRequestHandler):
         forward_id = int(forwards[0].get("forward_id", 3)) if forwards else 3
         target = state("target", "127.0.0.1:9")
         # Candidate 1 is deliberately blackholed on port 1 so the runtime's
-        # probe fails fast; candidate 2 is a local listener.
-        candidate_targets = [("127.0.0.1", 1), ("127.0.0.1", int(state("relay_port", "19000")))]
+        # probe fails fast; candidate 2 is a local listener. relay2_port adds a
+        # second live relay: with only one, a dead relay leaves the runtime
+        # nowhere to fail over to, and the harness would be testing nothing.
+        # relay_host is the address the *router* must dial: the host-only
+        # integration suite leaves it at loopback, and the router VM test sets
+        # the QEMU host address because the router is a separate machine.
+        relay_host = state("relay_host", "127.0.0.1")
+        candidate_targets = [(relay_host, 1), (relay_host, int(state("relay_port", "19000")))]
+        if state("relay2_port"):
+            candidate_targets.append((relay_host, int(state("relay2_port"))))
+        with LOCK:
+            global LEASE_SERIAL
+            LEASE_SERIAL += 1
+            serial = LEASE_SERIAL
         if mode == "none":
             self._json(409, {"ok": False, "error": "no_approved_candidate"})
             return
@@ -403,10 +477,13 @@ class Handler(BaseHTTPRequestHandler):
         elif mode == "invalid":
             # Five candidates exceeds the runtime's protocol limit of four, so
             # a correct agent must see the batch rejected instead of truncated.
-            frames = [lease_frame(forward_id, target, "127.0.0.1", 1, i) for i in range(5)]
+            frames = [lease_frame(forward_id, target, "127.0.0.1", 1, i, serial) for i in range(5)]
         else:
-            frames = [lease_frame(forward_id, target, ip, port, i) for i, (ip, port) in enumerate(candidate_targets)]
+            frames = [lease_frame(forward_id, target, ip, port, i, serial)
+                      for i, (ip, port) in enumerate(candidate_targets)]
         self._write_state("last_lease_request.json", json.dumps(body))
+        with open(os.path.join(STATE, "lease_requests.jsonl"), "a") as handle:
+            handle.write(json.dumps(body) + "\n")
         response = {"ok": True, "leases": frames}
         sealing = state("lease_sealing", "optional")
         header = (self.headers.get("X-Leikwan-Lease-Key") or "").strip()
@@ -435,15 +512,32 @@ class Handler(BaseHTTPRequestHandler):
             HEARTBEATS.append(body)
         self._write_state("last_heartbeat.json", json.dumps(body))
         if body.get("ultra_usage"):
+            # Keep the running total per policy generation as well as the raw
+            # stream: a line rotation starts a new generation, and usage from
+            # the previous one must not be lost when it does.
+            totals = {}
+            totals_path = os.path.join(STATE, "usage_totals.json")
+            try:
+                with open(totals_path) as handle:
+                    totals = json.load(handle)
+            except (OSError, ValueError):
+                totals = {}
             with open(os.path.join(STATE, "usage.jsonl"), "a") as handle:
                 for item in body["ultra_usage"]:
                     handle.write(json.dumps(item) + "\n")
+                    key = str(item.get("policy_generation", ""))
+                    bucket = totals.setdefault(key, {"bytes_in": 0, "bytes_out": 0, "snapshots": 0})
+                    bucket["bytes_in"] += int(item.get("bytes_in", 0))
+                    bucket["bytes_out"] += int(item.get("bytes_out", 0))
+                    bucket["snapshots"] += 1
+            with open(totals_path, "w") as handle:
+                json.dump(totals, handle)
         actions = []
         stop_id = state("action_stop")
         if stop_id:
             actions.append({
                 "forward_id": int(stop_id),
-                "policy_generation": HEX64,
+                "policy_generation": generation(),
                 "action": "stop",
                 "reason": "integration_test",
             })

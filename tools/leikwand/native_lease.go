@@ -163,5 +163,5 @@ func (a *Agent) requestNativeLeases(ctx context.Context, plan carrierPlan) ([]Le
 	if err != nil {
 		return nil, nil, err
 	}
-	return frames, leaseBypassCIDRs(response.Leases), nil
+	return frames, nil, nil
 }

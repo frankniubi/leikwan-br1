@@ -16,6 +16,21 @@ public static class WindowsProxyConfigBuilder
     public const string TunIpv6Address = "fdfe:dcba:9876::1/126";
     private const string TunIpv6Gateway = "fdfe:dcba:9876::2";
 
+    /// <summary>
+    /// Bundled runtimes whose own traffic must never be captured by the TUN
+    /// (they are what the proxy outbound tunnels through).
+    /// </summary>
+    public static readonly IReadOnlyList<string> ManagedRuntimeProcessNames =
+    [
+        "ultra-client.exe",
+        "wstunnel.exe",
+        "leikwan-bond.exe",
+        "leikwan-uot-bond.exe",
+        "leikwan-ingress.exe",
+        "leikwan-mptcp-relay.exe",
+        "leikwan-client-win.exe",
+    ];
+
     public static string NormalizeTunStack(string? value)
     {
         var normalized = value?.Trim().ToLowerInvariant();
@@ -560,6 +575,24 @@ public static class WindowsProxyConfigBuilder
 
         if (mode == WindowsProxyMode.Tun)
         {
+            // Our own runtimes (ultra-client, wstunnel, bond...) carry the
+            // forward the proxy outbound points at.  Their relay connections go
+            // to lease-provided addresses that are not in the bypass list, so
+            // under strict_route they would re-enter the TUN, hit the proxy
+            // outbound (127.0.0.1:<forward>) and loop back into the same
+            // runtime: the tunnel "connects" instantly but nothing leaves.
+            // Send every packet they originate - DNS included, hence before
+            // hijack-dns - straight out through the physical interface.
+            var runtimes = new JsonArray();
+            foreach (var name in ManagedRuntimeProcessNames)
+                runtimes.Add(name);
+            rules.Add(new JsonObject
+            {
+                ["inbound"] = new JsonArray("tun-in"),
+                ["process_name"] = runtimes,
+                ["outbound"] = "direct",
+            });
+
             rules.Add(new JsonObject
             {
                 ["inbound"] = new JsonArray("tun-in"),

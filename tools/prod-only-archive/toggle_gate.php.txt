@@ -1,0 +1,43 @@
+<?php
+declare(strict_types=1);
+
+// Parse .env manually
+$env = [];
+$lines = file(__DIR__ . '/../.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+foreach ($lines as $line) {
+    $line = trim($line);
+    if ($line === '' || $line[0] === '#') continue;
+    if (strpos($line, '=') === false) continue;
+    list($key, $value) = explode('=', $line, 2);
+    $key = trim($key);
+    $value = trim($value);
+    // Remove quotes
+    if (($value[0] === '"' && $value[strlen($value)-1] === '"') ||
+        ($value[0] === "'" && $value[strlen($value)-1] === "'")) {
+        $value = substr($value, 1, -1);
+    }
+    $env[$key] = $value;
+}
+
+$host = $env['DB_HOST'];
+$name = $env['DB_NAME'];
+$user = $env['DB_USER'];
+$pass = $env['DB_PASSWORD'];
+
+$pdo = new PDO("mysql:host=$host;dbname=$name;charset=utf8mb4", $user, $pass);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+$on = ($argv[1] === 'on');
+$id1 = (int)$argv[2];
+$id2 = (int)$argv[3];
+
+$enabled = $on ? 1 : 0;
+$api_rev = time();
+
+$stmt = $pdo->prepare("UPDATE forwards SET enabled = ?, api_revision = ? WHERE id = ?");
+$stmt->execute([$enabled, $api_rev, $id1]);
+$r1 = $stmt->rowCount();
+$stmt->execute([$enabled, $api_rev, $id2]);
+$r2 = $stmt->rowCount();
+
+echo json_encode(['success' => true, 'updated' => ['id1' => $r1, 'id2' => $r2], 'api_revision' => $api_rev]) . "\n";

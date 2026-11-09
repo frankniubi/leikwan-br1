@@ -300,10 +300,22 @@ def publish(root, stage, backup_base, plan, health, min_free=1024**3):
     return receipt
 
 
+def php_fpm_state():
+    unit = subprocess.run(['systemctl', 'is-active', 'php-fpm-83-source196.service'],
+                          text=True, capture_output=True).stdout.strip()
+    if unit == 'active':
+        return unit
+    # The pool nginx talks to is not always that unit: the panel's init script can
+    # start it outside systemd. Accept a PHP-FPM process listening on its socket;
+    # the HTTP health check below is still the gate.
+    listeners = subprocess.run(['ss', '-xlnp'], text=True, capture_output=True).stdout.splitlines()
+    if any('/tmp/php-cgi-83.sock' in line and 'php-fpm' in line for line in listeners):
+        return 'active (socket /tmp/php-cgi-83.sock)'
+    raise RuntimeError('php-fpm inactive')
+
+
 def live_health():
-    active = subprocess.check_output(['systemctl', 'is-active', 'php-fpm-83-source196.service'], text=True).strip()
-    if active != 'active':
-        raise RuntimeError('php-fpm inactive')
+    active = php_fpm_state()
     reply = subprocess.check_output(['curl', '--noproxy', '*', '--fail', '--silent', '--show-error',
                                     '--connect-timeout','10','--max-time','20',
                                     'https://v3.leikwanhost.com/api/health'], text=True)

@@ -144,6 +144,7 @@ public sealed class ProxyForwardLeaseTests
     [Theory]
     [InlineData(false, 1)]
     [InlineData(true, 0)]
+    [Trait("Platform", "Windows")]
     public async Task TimeoutDoesNotAcceptAnotherProcessesListener(bool alreadyRunning, int expectedStops)
     {
         var stops = 0;
@@ -212,6 +213,36 @@ public sealed class ProxyForwardLeaseTests
         Assert.False(clone.RememberLoginInfo);
         clone.ProxyProfileIdsByForwardId[180] = 8;
         Assert.Equal(5, config.ProxyProfileIdsByForwardId[180]);
+    }
+
+    [Fact]
+    public async Task ReadinessTimeoutReportsTheLocalPortCauseWhenOneIsKnown()
+    {
+        var exception = await Assert.ThrowsAsync<TimeoutException>(() => ProxyForwardLease.AcquireAsync(
+            Forward(),
+            isRunning: () => true,
+            start: _ => Task.CompletedTask,
+            stop: _ => Task.CompletedTask,
+            readinessProbe: (_, _) => Task.FromResult(false),
+            timeout: TimeSpan.FromMilliseconds(150),
+            diagnosePort: _ => LocalPortFailure.HeldBySystem));
+
+        Assert.Equal(LocalPortFailure.HeldBySystem, exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadinessTimeoutKeepsTheGenericCodeWithoutALocalCause()
+    {
+        var exception = await Assert.ThrowsAsync<TimeoutException>(() => ProxyForwardLease.AcquireAsync(
+            Forward(),
+            isRunning: () => true,
+            start: _ => Task.CompletedTask,
+            stop: _ => Task.CompletedTask,
+            readinessProbe: (_, _) => Task.FromResult(false),
+            timeout: TimeSpan.FromMilliseconds(150),
+            diagnosePort: _ => null));
+
+        Assert.Equal("proxy_forward_readiness_timeout", exception.Message);
     }
 
     private static ForwardConfig Forward() => new()

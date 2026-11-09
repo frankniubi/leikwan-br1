@@ -169,6 +169,36 @@ public sealed class UltraRuntimeStatusTests
         Assert.Equal(1472, UltraRuntimeStatus.ReadForwardPayloadCeiling(ordinaryRoot, 180));
     }
 
+    [Fact]
+    public void ForwardQuotaRemainingReadsTheNewestSnapshotAndTreatsAbsenceAsUnknown()
+    {
+        using var temp = new TempStateDirectory();
+        var runtimeRoot = Path.Combine(temp.Path, "proxy-runtime");
+        var older = Path.Combine(runtimeRoot, "native-usage", "native-180-stopped", "status.json");
+        var newer = Path.Combine(runtimeRoot, "native-usage", "native-180-active", "status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(older)!);
+        File.WriteAllText(older, """{"forward_id": 180, "quota_remaining_bytes": 900000000}""");
+        File.SetLastWriteTimeUtc(older, DateTime.UtcNow.AddMinutes(-5));
+        Directory.CreateDirectory(Path.GetDirectoryName(newer)!);
+        File.WriteAllText(newer, """{"forward_id": 180, "quota_remaining_bytes": 70000000}""");
+
+        Assert.Equal(70000000, UltraRuntimeStatus.ReadForwardQuotaRemaining(runtimeRoot, 180));
+        // Another forward's snapshot is not this forward's quota.
+        Assert.Null(UltraRuntimeStatus.ReadForwardQuotaRemaining(runtimeRoot, 181));
+        // An older runtime without the field, and an absent runtime root, read
+        // as unknown so the host keeps the legacy expiry-only cadence.
+        var legacy = Path.Combine(temp.Path, "legacy-runtime", "native-usage", "native-182-live", "status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+        File.WriteAllText(legacy, """{"forward_id": 182}""");
+        Assert.Null(UltraRuntimeStatus.ReadForwardQuotaRemaining(Path.Combine(temp.Path, "legacy-runtime"), 182));
+        Assert.Null(UltraRuntimeStatus.ReadForwardQuotaRemaining(Path.Combine(temp.Path, "absent"), 180));
+        // Zero is a drained slice, not an absence: it must be reported.
+        var drained = Path.Combine(runtimeRoot, "native-usage", "native-183-live", "status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(drained)!);
+        File.WriteAllText(drained, """{"forward_id": 183, "quota_remaining_bytes": 0}""");
+        Assert.Equal(0, UltraRuntimeStatus.ReadForwardQuotaRemaining(runtimeRoot, 183));
+    }
+
     private static void WriteStatus(string path, int forwardId, int ceiling)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

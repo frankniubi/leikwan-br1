@@ -448,8 +448,21 @@ final class ClientAgentController extends BaseController
         }
         $forwards = array_slice(array_values($forwards), 0, 4);
         $offlineValidity = UltraMode::parseOfflineValidityHeader($request->header(UltraMode::OFFLINE_VALIDITY_HEADER));
-        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true, $offlineValidity);
         $leaseValidityCap = UltraMode::offlineValidityCapSeconds($this->config, $offlineValidity);
+        $presentedByForward = [];
+        foreach ($forwards as $presentedItem) {
+            if (!is_array($presentedItem)) {
+                continue;
+            }
+            $presentedId = (int) ($presentedItem['forward_id'] ?? 0);
+            if ($presentedId > 0) {
+                $presentedByForward[$presentedId] = [
+                    'session_ticket' => trim((string) ($presentedItem['session_ticket'] ?? '')),
+                    'policy_generation' => strtolower(trim((string) ($presentedItem['policy_generation'] ?? ''))),
+                ];
+            }
+        }
+        $granted = $this->attachUltraAccessGrants($assigned, (int) $client['id'], $deviceId, true, $offlineValidity, $presentedByForward);
         $grantsById = [];
         foreach ($granted as $grantedForward) {
             if (!is_array($grantedForward)) {
@@ -540,6 +553,26 @@ final class ClientAgentController extends BaseController
                 // by the grant's own expires_at above.
                 $policy['offline_validity_seconds'] = $leaseValidityCap;
             }
+            // A line-material refresh moves the forward's generation while the
+            // client still leases against the one it pulled before. The broker
+            // names that generation only when its own ticket proves the line
+            // material was the sole difference, so honour it for the grace
+            // window and never past the ticket's expiry (it caps expires_at).
+            $graceGrant = is_array($grant['previous_generation_grace'] ?? null) ? $grant['previous_generation_grace'] : [];
+            $presentedGeneration = strtolower(trim((string) ($item['policy_generation'] ?? '')));
+            if ($graceGrant !== []
+                && $presentedGeneration !== ''
+                && hash_equals((string) ($graceGrant['policy_generation'] ?? ''), $presentedGeneration)
+                && !hash_equals((string) $policy['policy_generation'], $presentedGeneration)) {
+                $policy['policy_generation'] = $presentedGeneration;
+                $policy['expires_at'] = (string) ($graceGrant['expires_at'] ?? $policy['expires_at']);
+                error_log(sprintf(
+                    'ultra_lease_prev_generation_grace client=%d forward=%d device=%s',
+                    (int) ($client['id'] ?? 0),
+                    $forwardId,
+                    substr(hash('sha256', $deviceId), 0, 16)
+                ));
+            }
             if ($isNative) {
                 $direction = trim((string) ($nativeCarrier['direction'] ?? ''));
                 $routeScope = UltraMode::normalizeNativeRouteScope(
@@ -608,7 +641,7 @@ final class ClientAgentController extends BaseController
                 }
                 $result = $this->ultraLeases->issueLease($candidateRequest, (int) $client['id'], $deviceId, $policy);
                 if (($result['ok'] ?? false) === true && is_array($result['lease'] ?? null)) {
-                    $candidateLease = $this->attachExternalUotToLease($result['lease'], $grant, $isNative);
+                    $candidateLease = $this->attachExternalUotToLease($result['lease'], $grant, $isNative, $policy['policy_generation']);
                     $endpoint = is_array($candidateLease['endpoint'] ?? null) ? $candidateLease['endpoint'] : [];
                     $endpointKey = strtolower(trim((string) ($endpoint['ip'] ?? ''))) . ':' . (int) ($endpoint['port'] ?? 0);
                     $selectionRef = trim((string) ($candidateLease['selection_ref'] ?? ''));
@@ -820,15 +853,18 @@ final class ClientAgentController extends BaseController
      * Carry the current server-authorized sidecar contract across that boundary.
      * Native SOCKS5 has a separate transport contract and must not receive it.
      */
-    private function attachExternalUotToLease(array $lease, array $grant, bool $isNative): array
+    private function attachExternalUotToLease(array $lease, array $grant, bool $isNative, ?string $policyGeneration = null): array
     {
         unset($lease['external_uot']);
         $external = $grant['external_uot'] ?? null;
         if ($isNative || !is_array($external) || ($external['enabled'] ?? false) !== true) {
             return $lease;
         }
+        // The generation this lease was issued under: the grant's own, or the
+        // pre-refresh one honoured by the previous-generation grace window.
+        $policyGeneration ??= (string) ($grant['policy_generation'] ?? '');
         if ((int) ($lease['forward_id'] ?? 0) !== (int) ($grant['forward_id'] ?? 0)
-            || !hash_equals((string) ($lease['policy_generation'] ?? ''), (string) ($grant['policy_generation'] ?? ''))
+            || !hash_equals((string) ($lease['policy_generation'] ?? ''), $policyGeneration)
             || empty($external['target_digest'])
             || !hash_equals((string) ($lease['target_digest'] ?? ''), (string) $external['target_digest'])) {
             throw new ApiException('external_uot_scope_mismatch', 409);
@@ -846,8 +882,26 @@ final class ClientAgentController extends BaseController
         $sinceRevision = trim((string) $request->input('since_revision', ''));
         $waitSeconds = max(0, min(25, (int) $request->input('wait_seconds', 0)));
         $runtimeArchitecture = $this->clientRuntimeArchitecture($request);
+        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
+        $userAgent = strtolower(trim((string) ($request->header('user-agent') ?? '')));
+        // leikwand degrades its platform tag to "linux" once when a Panel
+        // rejects "openwrt", and keeps it for the life of the process. Its
+        // User-Agent never changes, so it is what identifies a router here;
+        // otherwise the router would be pointed at the python agent version.
+        $routerAgent = str_starts_with($platform, 'openwrt')
+            || $platform === 'router'
+            || str_starts_with($userAgent, 'leikwan-openwrt-agent/');
+        $snapshotPlatform = $routerAgent ? 'openwrt' : $platform;
+        // leikwand names its package-manager flavour so the pull can serve the
+        // matching update edition: apk (.apk, OpenWrt 25.12+) or opkg (.ipk).
+        // Anything else — older leikwand, other callers — keeps the opkg
+        // edition, which is what the installed base runs.
+        $packageFlavour = strtolower(trim((string) ($request->header('x-device-package-manager') ?? '')));
+        if ($packageFlavour !== 'apk') {
+            $packageFlavour = '';
+        }
 
-        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
+        $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform, $packageFlavour);
         $configRevision = (string) $snapshot['config_revision'];
         $forceApply = (bool) $snapshot['force_apply'];
 
@@ -856,7 +910,7 @@ final class ClientAgentController extends BaseController
             $deadline = microtime(true) + $waitSeconds;
             while (microtime(true) < $deadline) {
                 usleep(500000);
-                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture);
+                $snapshot = $this->stableConfigSnapshot((int) $client['id'], $deviceSession, $client, $runtimeArchitecture, $snapshotPlatform, $packageFlavour);
                 if (!hash_equals($sinceRevision, (string) $snapshot['config_revision']) || (bool) $snapshot['force_apply']) {
                     break;
                 }
@@ -890,11 +944,9 @@ final class ClientAgentController extends BaseController
         $updateRequested = (bool) $snapshot['update_requested'];
         $linuxProfileRuntime = $snapshot['linux_profile_runtime'];
 
-        $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? '')));
         // Older Mac builds did not consistently send X-Device-Platform. The
         // dedicated User-Agent remains an authenticated client identity signal
         // and keeps those builds on the scrubbed Ultra v2 contract.
-        $userAgent = strtolower(trim((string) ($request->header('user-agent') ?? '')));
         $policyV2 = self::usesUltraPolicyV2($platform)
             || str_starts_with($userAgent, 'leikwan-mac-gui/');
         $forwards = $this->attachUltraAccessGrants(
@@ -932,6 +984,9 @@ final class ClientAgentController extends BaseController
                 ...self::desiredClientArtifacts($updateRequested, [
                     'desired_agent_version' => (string) ($clientAgent['version'] ?? ''),
                     'desired_agent_sha256' => (string) ($clientAgent['sha256'] ?? ''),
+                    // Routers installed leikwand from a URL, not a feed, so the
+                    // router needs the ipk itself; it verifies desired_agent_sha256.
+                    ...($routerAgent ? ['desired_agent_url' => (string) ($clientAgent['artifact_url'] ?? '')] : []),
                     'desired_installer_version' => (string) ($clientAgentInstaller['version'] ?? ''),
                     'desired_installer_sha256' => (string) ($clientAgentInstaller['sha256'] ?? ''),
                     'desired_install_forward_runtime_version' => (string) ($installForwardRuntime['version'] ?? ''),
@@ -1018,7 +1073,9 @@ final class ClientAgentController extends BaseController
         int $clientId,
         ?array $deviceSession,
         array $client,
-        string $runtimeArchitecture = 'amd64'
+        string $runtimeArchitecture = 'amd64',
+        string $platform = '',
+        string $packageFlavour = ''
     ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
@@ -1027,6 +1084,27 @@ final class ClientAgentController extends BaseController
         if ($clientAgent === []) {
             $clientAgentKey = 'client_agent';
             $clientAgent = $this->artifactMetadata($clientAgentKey);
+        }
+        // OpenWrt agents self-update through their package manager, so the
+        // version they compare against is the packaged leikwand file, not the
+        // python client-agent. The router checks DesiredAgentVer against its
+        // own agentVersion and installs the named package after verifying its
+        // sha256. Without a leikwand entry it gets nothing: the python agent
+        // is not a package it can install. Two editions coexist: opkg
+        // (.ipk, 23.05/24.10) and apk (.apk, 25.12+); the router names its
+        // flavour in X-Device-Package-Manager and falls back to the opkg
+        // edition when the header or the apk manifest entry is absent.
+        if (str_starts_with($platform, 'openwrt') || $platform === 'router') {
+            $leikwandArch = $runtimeArchitecture === 'arm64' ? 'aarch64_generic' : 'x86_64';
+            $clientAgentKey = 'openwrt_leikwand_' . $leikwandArch;
+            $clientAgent = $this->artifactMetadata($clientAgentKey);
+            if ($packageFlavour === 'apk') {
+                $apkEntry = $this->artifactMetadata('openwrt_leikwand_apk_' . $leikwandArch);
+                if ($apkEntry !== []) {
+                    $clientAgentKey = 'openwrt_leikwand_apk_' . $leikwandArch;
+                    $clientAgent = $apkEntry;
+                }
+            }
         }
         $clientAgentInstaller = $this->artifactMetadata('client_agent_installer');
         $installForwardRuntime = $this->artifactMetadata('install_forward_runtime');
@@ -1232,6 +1310,7 @@ final class ClientAgentController extends BaseController
         string $deviceId,
         bool $policyV2 = false,
         int $offlineValiditySeconds = 0,
+        array $presentedByForward = [],
     ): array {
         $brokerForwards = $forwards;
         $firstFlightRaw = isset($this->config) ? trim((string) $this->config->get('ULTRA_TCP_FIRST_FLIGHT_JSON', '')) : '';
@@ -1264,6 +1343,9 @@ final class ClientAgentController extends BaseController
                 $brokerForwards[$index]['_ultra_destination_zone'] = $metadata[$forwardId]['destination_zone'];
                 $brokerForwards[$index]['_ultra_allowed_ingress_zones'] = $metadata[$forwardId]['allowed_ingress_zones'];
                 $brokerForwards[$index]['_ultra_fallback_policy'] = $metadata[$forwardId]['fallback_policy'];
+                if (isset($presentedByForward[(int) $forwardId])) {
+                    $brokerForwards[$index]['_ultra_presented'] = $presentedByForward[(int) $forwardId];
+                }
                 // The external UoT sidecar contract is published per forward
                 // combination. It is handed to the broker (which normalizes it
                 // and adds the target digest) instead of the ordinary client
@@ -1287,7 +1369,15 @@ final class ClientAgentController extends BaseController
                     $offlineValiditySeconds
                 )
                 : $this->ultraTokenProvider->grantsForClientForwards($clientId, $deviceId, $brokerForwards, $policyV2);
-        } catch (\Throwable) {
+        } catch (\Throwable $throwable) {
+            // Every Ultra grant on this pull is withdrawn, so say why: this
+            // path was silent while it took a router's carriers down.
+            error_log(sprintf(
+                'ultra_grants_withdrawn client=%d error=%s: %s',
+                $clientId,
+                $throwable::class,
+                $throwable->getMessage()
+            ));
             return $policyV2 ? $this->scrubUltraForwards($forwards) : $forwards;
         }
         if ($grants === []) {
@@ -1477,7 +1567,12 @@ final class ClientAgentController extends BaseController
         return str_starts_with($platform, 'windows')
             || str_starts_with($platform, 'linux')
             || str_starts_with($platform, 'macos')
-            || str_starts_with($platform, 'ios');
+            || str_starts_with($platform, 'ios')
+            // leikwand (openwrt-* / router) speaks the same ultra-client
+            // runtime, so it needs the session_ticket the v2 grant carries;
+            // without it the lease endpoint refuses with lease_scope_invalid.
+            || str_starts_with($platform, 'openwrt')
+            || $platform === 'router';
     }
 
     /** @param array<string,mixed> $forward @return array<string,mixed> */

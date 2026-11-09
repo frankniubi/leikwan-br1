@@ -67,13 +67,16 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
     private val networkMonitor by lazy {
-        AndroidNetworkMonitor(this) { network ->
-            setUnderlyingNetworks(network?.let { arrayOf(it) })
-        }
+        AndroidNetworkMonitor(this, onUnderlyingNetwork = { network ->
+            applyUnderlyingNetworks(network)
+        })
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var recoveryJob: Job? = null
+    /** Wi-Fi <-> cellular switch recovery (see [onDefaultInterfaceChanged]). */
+    private var switchRecoveryJob: Job? = null
+    @Volatile private var lastDefaultInterfaceName: String? = null
 
 
     companion object {
@@ -264,6 +267,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     fun stopVpn() {
+        switchRecoveryJob?.cancel()
+        switchRecoveryJob = null
         closeRuntime()
         // The config contains ephemeral native SOCKS credentials. Do not keep it
         // reachable after the VPN runtime has been stopped.
@@ -285,6 +290,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     override fun onDestroy() {
         recovering = false
+        switchRecoveryJob = null
         recoveryScope.cancel()
         TrafficMonitor.onStopped()
         closeRuntime()
@@ -333,9 +339,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             .setMtu(options.mtu)
 
         if (plan.bindActiveNetwork) {
-            resolveUnderlyingNetwork()?.let { network ->
+            resolveUnderlyingNetworks().takeIf { it.isNotEmpty() }?.let { networks ->
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    builder.setUnderlyingNetworks(arrayOf(network))
+                    builder.setUnderlyingNetworks(networks.toTypedArray())
                 }
             }
         }
@@ -415,7 +421,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     override fun readWIFIState(): WIFIState? = null
 
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
-        if (listener != null) networkMonitor.start(listener)
+        if (listener != null) {
+            networkMonitor.start(listener)
+            networkMonitor.addOnDefaultInterfaceChanged(::onDefaultInterfaceChanged)
+        }
     }
 
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
@@ -587,7 +596,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
 
     private fun resolveUnderlyingNetwork(): Network? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return null
-        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
+        return resolveUnderlyingNetworks().firstOrNull()
+    }
+
+    private fun resolveUnderlyingNetworks(): List<Network> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return emptyList()
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
         val candidates = connectivity.allNetworks.mapNotNull { network ->
             val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
             UnderlyingNetworkCandidate(
@@ -596,7 +610,116 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                 hasInternet = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
             )
         }
-        return UnderlyingNetworkSelector.select(connectivity.activeNetwork, candidates)
+        return UnderlyingNetworkSelector.selectAll(connectivity.activeNetwork, candidates)
+    }
+
+    /**
+     * Publishes the physical networks the tunnel may leave through. Passing every physical
+     * network (not only the selected one) lets the kernel keep tunnel traffic flowing across a
+     * Wi-Fi <-> cellular switch: on 4G/5G the selected network can die seconds before the
+     * monitor sees it, and a single pinned network blackholed the tunnel until the next
+     * `onLost` callback re-pinned it. When nothing physical is up, fall back to default
+     * routing (null) so the tunnel follows the system as networks return.
+     */
+    private fun applyUnderlyingNetworks(preferred: Network?) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1) return
+        val networks = resolveUnderlyingNetworks()
+        val ordered = buildList {
+            if (preferred != null && networks.contains(preferred)) add(preferred)
+            networks.forEach { if (it != preferred) add(it) }
+        }
+        try {
+            setUnderlyingNetworks(ordered.ifEmpty { null }?.toTypedArray())
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to update underlying VPN networks", e)
+        }
+    }
+
+    /**
+     * Wi-Fi <-> cellular switch recovery.
+     *
+     * Even with every physical network published as underlying, a transport switch can leave the
+     * tunnel unusable: libbox's established outbound sockets keep pointing at the dead interface
+     * until they are rebuilt, and sing-box's DNS/route caches keep the old one. On a default
+     * interface change while the tunnel is up, tell libbox to rebind ([CommandServer.resetNetwork]),
+     * then verify the switch actually healed the path; if it did not, rebuild the VPN in place
+     * through the orchestrator (which restarts only the runtimes and re-opens the TUN, not the
+     * whole service). A brief silence first: right after a switch the new network is still
+     * validating and a probe would fail spuriously.
+     */
+    private fun onDefaultInterfaceChanged(name: String?) {
+        val previous = lastDefaultInterfaceName
+        lastDefaultInterfaceName = name
+        if (!isRunning || recovering) return
+        if (previous == null && name == null) return
+        Log.i(TAG, "Default interface changed: ${previous ?: "none"} -> ${name ?: "none"}")
+        try {
+            commandServer?.resetNetwork()
+        } catch (e: Exception) {
+            Log.w(TAG, "resetNetwork after interface switch failed", e)
+        }
+        switchRecoveryJob?.cancel()
+        switchRecoveryJob = recoveryScope.launch {
+            // Let the new network validate and libbox rebind before judging the tunnel.
+            delay(VpnRecovery.SWITCH_PROBE_DELAY_MS)
+            if (!isRunning || recovering) return@launch
+            if (probeTunnelPath()) return@launch
+            Log.w(TAG, "Tunnel still unusable after the interface switch; rebuilding it")
+            try {
+                TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Post-switch rebuild failed; the recovery loop or the user will retry", e)
+            }
+        }
+    }
+
+    /**
+     * The tunnel's own path check: DNS UDP to the TUN resolver through the tunnel. Cheap, uses
+     * the tunnel's own plumbing (so it fails exactly when the tunnel is broken), and needs no
+     * panel. A single 2s attempt; false negatives only cost one rebuild that would have been
+     * harmless.
+     */
+    private fun probeTunnelPath(): Boolean {
+        val dnsServer = tunDnsServer() ?: return true
+        return runCatching {
+            val socket = java.net.DatagramSocket()
+            try {
+                socket.soTimeout = VpnRecovery.SWITCH_PROBE_TIMEOUT_MS
+                val address = java.net.InetSocketAddress(dnsServer, 53)
+                // An A query for the panel host; the answer content does not matter.
+                val query = dnsQueryBytes("connectivity.leikwanhost.com")
+                socket.send(java.net.DatagramPacket(query, query.size, address))
+                val buffer = ByteArray(512)
+                val packet = java.net.DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                packet.length >= 12
+            } finally {
+                socket.close()
+            }
+        }.getOrElse { error ->
+            Log.i(TAG, "Tunnel probe via $dnsServer failed: ${error.message}")
+            false
+        }
+    }
+
+    private fun tunDnsServer(): String? {
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
+        val properties = connectivity.getLinkProperties(connectivity.activeNetwork) ?: return null
+        // On our own VPN the active network's DNS is the TUN resolver sing-box hijacks.
+        return properties.dnsServers.firstOrNull()?.hostAddress
+    }
+
+    /** A minimal recursive A query; no external DNS library needed for a boolean probe. */
+    private fun dnsQueryBytes(name: String): ByteArray {
+        val id = byteArrayOf(0x12, 0x34)
+        val header = byteArrayOf(id[0], id[1], 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+        val labels = name.split('.').flatMap { label ->
+            (byteArrayOf(label.length.toByte()) + label.toByteArray(Charsets.US_ASCII)).asIterable()
+        }.fold(byteArrayOf()) { acc, part -> acc + part }
+        val tail = byteArrayOf(0x00, 0x00, 0x01, 0x00, 0x01)
+        return header + labels + tail
     }
 
     private fun RoutePrefixIterator?.toRoutePrefixes(): List<RoutePrefix> {

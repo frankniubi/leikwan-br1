@@ -17,12 +17,15 @@ $probe = new class {
     public function renderCopyButton(...$args): string { return 'copy'; }
     public function renderCommandLink(...$args): string { return 'download'; }
     public function androidClientApkUrl(): string { return '/android.apk'; }
+    public function tenantOpenwrtSection(array $client): string { return '<section>OpenWrt-fixture</section>'; }
 };
 $render = function () use ($expression): string {
     $installCommand = 'linux-install';
     $resetForm = '';
     $windowsSection = '<section>Windows-fixture</section>';
     $macosSection = '<section>macOS-fixture</section>';
+    $iosSection = '<section>iOS-fixture</section>';
+    $client = [];
     $dockerSection = '<section>Docker-forbidden /artifacts/install-docker-client.sh docker-compose.yml</section>';
     $onlineCount = 0;
     $onlineLimit = 1;

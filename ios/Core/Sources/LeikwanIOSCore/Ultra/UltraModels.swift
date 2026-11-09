@@ -31,6 +31,7 @@ public struct UltraPolicy: Equatable {
     public let quotaRemainingBytes: Int64
     public let targetDigest: String
     public let tcpFirstFlight: UltraTcpFirstFlight?
+    public let externalUot: ExternalUotGrant?
 
     public init(
         forwardId: Int64,
@@ -43,7 +44,8 @@ public struct UltraPolicy: Equatable {
         rateLimitMbps: Int64,
         quotaRemainingBytes: Int64,
         targetDigest: String,
-        tcpFirstFlight: UltraTcpFirstFlight? = nil
+        tcpFirstFlight: UltraTcpFirstFlight? = nil,
+        externalUot: ExternalUotGrant? = nil
     ) {
         self.forwardId = forwardId
         self.sessionTicket = sessionTicket
@@ -56,6 +58,7 @@ public struct UltraPolicy: Equatable {
         self.quotaRemainingBytes = quotaRemainingBytes
         self.targetDigest = targetDigest
         self.tcpFirstFlight = tcpFirstFlight
+        self.externalUot = externalUot
     }
 
     /// SHA-256 hex of the trimmed forward target.
@@ -97,6 +100,18 @@ public struct UltraPolicy: Equatable {
         if !UltraConstants.allowedTransports.contains(transport) { return nil }
         if rateLimit < 0 || rateLimit > UltraConstants.maxRateMbps { return nil }
         if quota < 1 || quota > UltraConstants.maxQuotaBytes { return nil }
+        var externalUot: ExternalUotGrant?
+        if let wire = access["external_uot"] {
+            guard let raw = wire as? [String: Any] else { return nil }
+            if let digest = raw["target_digest"],
+               JSONLenient.requiredString(digest) != policyTargetDigest { return nil }
+            if JSONLenient.isBoolean(raw["enabled"]), raw["enabled"] as? Bool == false {
+                externalUot = nil
+            } else {
+                guard let grant = try? ExternalUotGrant.from(raw) else { return nil }
+                externalUot = grant
+            }
+        }
         var firstFlight: UltraTcpFirstFlight?
         if let raw = access["tcp_first_flight"] as? [String: Any] {
             firstFlight = UltraTcpFirstFlight.from(raw, forwardTarget: forward.target, policyGeneration: generation, now: now)
@@ -112,7 +127,8 @@ public struct UltraPolicy: Equatable {
             rateLimitMbps: rateLimit,
             quotaRemainingBytes: quota,
             targetDigest: policyTargetDigest,
-            tcpFirstFlight: firstFlight
+            tcpFirstFlight: firstFlight,
+            externalUot: externalUot
         )
     }
 }

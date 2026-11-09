@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using Serilog;
 
@@ -73,7 +74,9 @@ public sealed partial class MasterApiClient : IDisposable
         _http.DefaultRequestHeaders.UserAgent.ParseAdd($"{userAgentProduct}/{appVersion}");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         AddOptionalHeader("X-Device-Id", deviceId);
-        AddOptionalHeader("X-Device-Name", deviceName);
+        // Device names can be non-ASCII (a Chinese machine name, for example);
+        // HTTP header values cannot, so the name goes out as an encoded word.
+        AddOptionalHeader("X-Device-Name", AsciiHeaderValue.Encode((deviceName ?? string.Empty).Trim()));
         AddOptionalHeader("X-Device-Platform", devicePlatform);
     }
 
@@ -103,6 +106,21 @@ public sealed partial class MasterApiClient : IDisposable
         var body = await response.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<ClientSelectionResponse>(body, JsonOptions)
                ?? throw new InvalidOperationException("null client selection response");
+    }
+
+    /// <summary>
+    /// Reads the account's access policy (home province for the login-region rule).
+    /// The request carries the same bearer token and device headers as the pull.
+    /// </summary>
+    public async Task<AccessPolicyStatus> GetAccessPolicyAsync(CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/access/policy";
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var response = await SendAsync(request, ct);
+        await EnsureSuccessOrThrowAsync(response, ct);
+        var json = await response.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<AccessPolicyStatus>(json, JsonOptions)
+            ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
     }
 
     public async Task<PullResponse> PullConfigsAsync(string? sinceRevision = null, int waitSeconds = 0, CancellationToken ct = default)

@@ -45,4 +45,44 @@ class UnderlyingNetworkSelectorTest {
 
         assertNull(selected)
     }
+
+    @Test
+    fun `select all lists every physical network with the active one first`() {
+        val networks = UnderlyingNetworkSelector.selectAll(
+            active = "vpn",
+            candidates = listOf(
+                UnderlyingNetworkCandidate("vpn", isVpn = true, hasInternet = true),
+                UnderlyingNetworkCandidate("wifi", isVpn = false, hasInternet = true),
+                UnderlyingNetworkCandidate("cell", isVpn = false, hasInternet = true),
+            ),
+        )
+
+        assertEquals(listOf("wifi", "cell"), networks)
+    }
+
+    @Test
+    fun `select all keeps the active network first and appends the others`() {
+        val networks = UnderlyingNetworkSelector.selectAll(
+            active = "cell",
+            candidates = listOf(
+                UnderlyingNetworkCandidate("wifi", isVpn = false, hasInternet = true),
+                UnderlyingNetworkCandidate("cell", isVpn = false, hasInternet = true),
+            ),
+        )
+
+        assertEquals(listOf("cell", "wifi"), networks)
+    }
+
+    @Test
+    fun `select all drops networks without internet`() {
+        val networks = UnderlyingNetworkSelector.selectAll(
+            active = "cell",
+            candidates = listOf(
+                UnderlyingNetworkCandidate("cell", isVpn = false, hasInternet = true),
+                UnderlyingNetworkCandidate("wifi", isVpn = false, hasInternet = false),
+            ),
+        )
+
+        assertEquals(listOf("cell"), networks)
+    }
 }

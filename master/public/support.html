@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support — Bridge</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; background: #fbf8ff; color: #1b1b21; font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 22px 72px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 30px 0 8px; }
+  .meta { color: #5c5c68; font-size: 14px; margin: 0 0 24px; }
+  a { color: #4f5bd5; }
+  @media (prefers-color-scheme: dark) { body { background: #121318; color: #e4e1e9; } .meta { color: #a9a6b3; } a { color: #bac3ff; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Bridge Support</h1>
+<p class="meta">Bridge for iOS</p>
+
+<h2>Getting connected</h2>
+<p>Bridge signs in with a server address, a Client ID and an Agent Token. These are issued by the operator of the server you connect to — the app does not create accounts and does not sell access. If you run your own server, use the credentials that server's administrator gave you; if you were given access by someone else, ask them for the three values.</p>
+
+<h2>Common questions</h2>
+<p><strong>The server says it does not trust this device.</strong> Check that the Client ID matches the one the Agent Token was issued for. A device identifier is derived from the Client ID, so a mismatched ID is refused.</p>
+<p><strong>The connection stops right after it starts.</strong> Open Tools → Tunnel logs and copy the last lines; they show which runtime stopped and why.</p>
+<p><strong>How do I remove my data?</strong> Sign out, delete the profile (this removes its Agent Token from the device), then uninstall the app. Records held on a server are deleted by that server's operator.</p>
+
+<h2>Contact</h2>
+<p><a href="mailto:support@forfoxsakesanctuary.org">support@forfoxsakesanctuary.org</a></p>
+<p>Privacy policy: <a href="https://v3.leikwanhost.com/privacy.html">https://v3.leikwanhost.com/privacy.html</a></p>
+</main>
+</body>
+</html>

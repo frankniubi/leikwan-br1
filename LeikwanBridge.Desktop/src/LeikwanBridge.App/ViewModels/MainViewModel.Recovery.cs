@@ -45,9 +45,11 @@ public partial class MainViewModel
         HookProxySystemEvents();
     }
 
-    private void ForgetProxySession()
+    /// <param name="force">Sign-out must cancel even a reconnect that is in flight;
+    /// the reconnect's own stop calls this without force so it does not cancel itself.</param>
+    private void ForgetProxySession(bool force = false)
     {
-        if (_proxyRecovering)
+        if (_proxyRecovering && !force)
             return;
         _proxyRecoverySession = null;
         try { _proxyRecoveryCts?.Cancel(); }
@@ -99,6 +101,15 @@ public partial class MainViewModel
                 catch (Exception exception) when (WindowsProxyElevation.IsElevationCancelled(exception))
                 {
                     Log.Information("proxy reconnect stopped: elevation was declined");
+                    break;
+                }
+                catch (Exception exception) when (
+                    string.Equals(exception.Message, "administrator_required", StringComparison.OrdinalIgnoreCase))
+                {
+                    // A TUN/process session can only be reconnected from an
+                    // elevated instance; silently retrying here would never
+                    // succeed.  Stop and let the user reconnect.
+                    Log.Information("proxy reconnect stopped: administrator rights are required");
                     break;
                 }
                 catch (Exception exception)

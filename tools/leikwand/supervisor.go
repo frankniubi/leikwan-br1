@@ -129,10 +129,6 @@ func (a *Agent) stopRuntime(proc *runtimeProcess, reason string) {
 	if proc == nil {
 		return
 	}
-	if !proc.native && proc.forwardID > 0 {
-		a.bypass.remove(forwardBypassOwner(proc.forwardID))
-		_ = a.bypass.sync()
-	}
 	proc.mu.Lock()
 	if proc.cmd == nil || proc.cmd.Process == nil || proc.exitSeen {
 		proc.stopping = true

@@ -1,6 +1,6 @@
 # Leikwan 会聚 App for OpenWrt
 
-路由器侧的 Leikwan 会聚客户端。三个 opkg 包 + 一个固件构建脚本。
+路由器侧的 Leikwan 会聚客户端。三个软件包（两种包格式）+ 一个固件构建脚本。
 
 完整设计、运维手册与边界说明见 [`docs/openwrt-convergence-app.md`](../docs/openwrt-convergence-app.md)。
 
@@ -12,7 +12,19 @@
 | `leikwan-runtime` | `/usr/libexec/leikwan/ultra-client` | 转发运行时（`tools/ultra-client`） |
 | `luci-app-leikwan` | LuCI 视图、menu.d、acl.d、rpcd ucode 桥 | 图形界面 |
 
-目标：**OpenWrt 24.10**，`x86_64` 与 `aarch64`。
+## 两种包格式（opkg / apk）
+
+OpenWrt **25.12 起系统包管理器从 opkg 换成了 apk**，两者互不兼容：apk 装不了
+`.ipk`，opkg 也装不了 `.apk`。同一份包源码，用哪个 SDK 构建就产出哪种格式：
+
+| 目标系统 | 包管理器 | 包格式 | 构建 SDK |
+|---|---|---|---|
+| OpenWrt 25.12+ | apk | `.apk` | **OpenWrt 25.12 SDK** |
+| OpenWrt 23.05 – 24.10 | opkg | `.ipk` | OpenWrt 24.10 SDK |
+| OpenWrt 21.02 / 22.03 | opkg | `.ipk`（仅核心包，无 LuCI） | OpenWrt 24.10 SDK |
+
+目标架构：`x86_64` 与 `aarch64`。CI（`.github/workflows/openwrt-router.yml`）在
+`packages` job 的矩阵里同时构建两个版本；面板下载卡片对两个版本各给一组安装命令。
 
 ## 目录
 
@@ -28,7 +40,8 @@ openwrt/
 
 ## 构建
 
-前置：OpenWrt 24.10 SDK（与目标架构一致）、Go 1.21+（用于交叉编译两个二进制）。
+前置：与目标系统匹配的 OpenWrt SDK（见上表；apk 版用 25.12 SDK）、Go 1.21+
+（用于交叉编译两个二进制）。
 
 ```sh
 export LEIKWAN_SDK=$HOME/leikwan-build/sdk
@@ -40,7 +53,7 @@ openwrt/build-ipk.sh amd64        # 或 arm64
 1. 用 `CGO_ENABLED=0` 交叉编译 `leikwand` 与 `ultra-client`（静态，无 libc 依赖，musl 直接可用）；
 2. 把三个包目录复制进 SDK 的 `package/leikwan/`；
 3. 依次 `make package/leikwan/<pkg>/compile`；
-4. 打印产出的 `.ipk` 路径。
+4. 打印产出的包路径（`.ipk` 或 `.apk`，取决于 SDK 版本）。
 
 ### 固件
 
@@ -51,7 +64,8 @@ openwrt/image/build-image.sh amd64
 ```
 
 固件预装 luci + 三个包 + sing-box + kmod-tun（网关模式所需；`LEIKWAN_IMAGE_GATEWAY=0` 可去掉），并预置面板地址。**固件里不含任何机密**：刷完机只需要在
-LuCI 里输入一个配对码。
+LuCI 里输入一个配对码。ImageBuilder 的版本同样决定包格式：给 25.12 ImageBuilder
+喂 `.apk`，给 24.10 喂 `.ipk`（脚本按 `LEIKWAN_IPK_DIR` 里的文件后缀自动判断）。
 
 ## 为什么 `luci-app-leikwan` 不用 `luci.mk`
 

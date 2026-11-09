@@ -4786,6 +4786,14 @@ final class ProvisioningService
                     }
                 }
             }
+            // The combination's allowed ingress zones are a hard rule. Save-time
+            // validation only runs when a combination is saved, and ingress zones
+            // are auto-detected, so the lease itself must enforce the rule too.
+            $ingressZone = strtolower(trim((string) ($row['ingress_zone'] ?? 'unknown')));
+            $allowedIngressZones = $result[$key]['allowed_ingress_zones'];
+            if ($allowedIngressZones !== [] && !in_array($ingressZone, $allowedIngressZones, true)) {
+                continue;
+            }
             $lineId = (int) ($row['line_id'] ?? 0);
             $sourceId = trim((string) ($row['source_id'] ?? ''));
             $lineKey = $sourceId . ':' . $lineId;

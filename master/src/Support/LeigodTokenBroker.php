@@ -65,10 +65,11 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         if ($clientId <= 0) {
             return [];
         }
-        $requested = $this->eligibleForwards(
-            (new ExternalUoTPool($this->config))->assign($clientId, $deviceId,
-                ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId))
-        );
+        $requested = $this->eligibleForwards($this->assignExternalUoT(
+            $clientId,
+            $deviceId,
+            ExternalUoTDefaults::withClientDeliveryMode($this->config, $clientId, $forwards, $deviceId)
+        ));
         if ($requested === []) {
             return [];
         }
@@ -85,6 +86,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         // already refused, and how far each forward's revocation history has run.
         $revocations = $this->materials->revocationIndex(array_keys($requested));
         $result = [];
+        $graces = [];
         foreach ($requested as $forwardId => $request) {
             $grant = $cached[$forwardId] ?? null;
             $snapshot = $this->materials->lineSnapshot($request['lines']);
@@ -116,6 +118,21 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
                     'revoked' => $revocations['revoked'],
                 ]
             );
+            if (isset($request['presented'])) {
+                $grace = $this->previousGenerationGrace(
+                    $request,
+                    $snapshot,
+                    $quotaBytes,
+                    $revocations,
+                    $policyGeneration,
+                    $clientId,
+                    $deviceId,
+                    $now
+                );
+                if ($grace !== null) {
+                    $graces[$forwardId] = $grace;
+                }
+            }
             if ($this->grantUsable($grant, $now)
                 && hash_equals($policyGeneration, (string) ($grant['policy_generation'] ?? ''))
                 && $this->parseTimestamp((string) ($grant['renew_after'] ?? '')) > $now
@@ -178,6 +195,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
                 'fallback_policy' => $request['fallback_policy'],
                 'material_fingerprint' => $snapshot['fingerprint'],
                 'policy_generation' => $policyGeneration,
+                'revocation_epoch' => (int) ($revocations['epochs'][(int) $request['forward_id']] ?? 0),
                 'target_digest' => hash('sha256', (string) $request['target']),
             ], $expiresAt);
             if ($token === '') {
@@ -203,6 +221,24 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             $this->materials->saveGrantCache($clientId, $deviceId, $result, $validityClass);
         } catch (Throwable) {
             // A cache write failure must not invalidate a freshly minted grant.
+        }
+        // Attached after the cache write on purpose: this describes one request,
+        // not the grant, and must never be served from the cache.
+        foreach ($graces as $forwardId => $grace) {
+            if (!isset($result[$forwardId])) {
+                continue;
+            }
+            $until = min(
+                $this->parseTimestamp((string) ($result[$forwardId]['expires_at'] ?? '')) ?? 0,
+                $grace['ticket_expires_at']
+            );
+            if ($until <= $now) {
+                continue;
+            }
+            $result[$forwardId]['previous_generation_grace'] = [
+                'policy_generation' => $grace['policy_generation'],
+                'expires_at' => $this->formatTimestamp($until),
+            ];
         }
         return $result;
     }
@@ -289,6 +325,36 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         return $result;
     }
 
+    /**
+     * Route each forward's external UoT sidecar through the pool one forward
+     * at a time. The pool fails closed when a forward's managed origin has no
+     * healthy node, and that must cost only that forward its grant. Assigned
+     * as one batch, a single late pool heartbeat withdrew every grant on the
+     * device, forwards that do not use the pool included, and a router whose
+     * carrier lost its grant in the middle of a renewal crashed on it.
+     *
+     * @param array<int, array<string, mixed>> $forwards
+     * @return array<int, array<string, mixed>>
+     */
+    private function assignExternalUoT(int $clientId, string $deviceId, array $forwards): array
+    {
+        $pool = new ExternalUoTPool($this->config);
+        $assigned = [];
+        foreach ($forwards as $forward) {
+            try {
+                $assigned[] = $pool->assign($clientId, $deviceId, [$forward])[0];
+            } catch (ApiException $exception) {
+                error_log(sprintf(
+                    'ultra_grant_withheld client=%d forward=%d reason=%s',
+                    $clientId,
+                    is_array($forward) ? (int) ($forward['forward_id'] ?? $forward['id'] ?? 0) : 0,
+                    $exception->getMessage()
+                ));
+            }
+        }
+        return $assigned;
+    }
+
     /** @param array<int, array<string, mixed>> $forwards @return array<string, array<string, mixed>> */
     private function eligibleForwards(array $forwards): array
     {
@@ -365,6 +431,14 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             $externalUoT = $this->normalizeExternalUoT($forward['external_uot'] ?? null, $target);
             if ($externalUoT !== null) {
                 $result[(string) $forwardId]['external_uot'] = $externalUoT;
+            }
+            // Set only by the lease endpoint: what the client presented, so a
+            // generation that lags a line-material refresh can be recognised.
+            if (is_array($forward['_ultra_presented'] ?? null)) {
+                $result[(string) $forwardId]['presented'] = [
+                    'session_ticket' => trim((string) ($forward['_ultra_presented']['session_ticket'] ?? '')),
+                    'policy_generation' => strtolower(trim((string) ($forward['_ultra_presented']['policy_generation'] ?? ''))),
+                ];
             }
             foreach (['quota_remaining_bytes', 'quota_bytes', 'traffic_limit_bytes'] as $quotaKey) {
                 if (array_key_exists($quotaKey, $forward) && $forward[$quotaKey] !== null && $forward[$quotaKey] !== '') {
@@ -537,10 +611,10 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
      * the runtime receives resets its local limiter to this value and every
      * renewal re-slices from the reconciled remaining quota, so the slice only
      * has to outlast one renewal interval at the forward's top speed: it is
-     * never smaller than two renewal intervals at that speed (an unlimited
+     * never smaller than three renewal intervals at that speed (an unlimited
      * forward is assumed to run at ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS,
-     * default 1000). Default slice: max(1 GiB, rate * V) with a rate limit,
-     * 10 GiB without one (raised to the floor: ~56 GiB at 1000 Mbps).
+     * default 2500). Default slice: max(1 GiB, rate * V) with a rate limit,
+     * 10 GiB without one (raised to the floor: ~140 GiB at 2500 Mbps).
      * ULTRA_GRANT_QUOTA_SLICE_ENABLED=0 hands out the full remaining quota.
      */
     private function grantQuotaSliceBytes(int $quotaBytes, int $rateLimitMbps, int $validitySeconds): int
@@ -558,7 +632,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
                 : UltraMode::DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS;
         }
         $bytesPerSecond = $assumedMbps * 125000;
-        $floor = $bytesPerSecond * 2 * $this->renewIntervalSeconds($validitySeconds);
+        $floor = $bytesPerSecond * 3 * $this->renewIntervalSeconds($validitySeconds);
 
         $rawSlice = trim((string) $this->config->get(UltraMode::GRANT_QUOTA_SLICE_KEY, ''));
         if ($rawSlice !== '' && preg_match('/^[0-9]+$/', $rawSlice) === 1 && (int) $rawSlice > 0) {
@@ -681,6 +755,67 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         }
 
         return $generation;
+    }
+
+    /**
+     * A refresh of a line's material moves the forward's material fingerprint,
+     * and with it policy_generation, while a client keeps leasing against the
+     * generation of the grant it pulled before the refresh. Everything else a
+     * generation stands for (target, transport, rate, quota bucket, service
+     * expiry, reputation state, revocation state) can be recomputed here, so the
+     * client's own session ticket proves whether the line material was the only
+     * thing that changed. If it was, and the refresh is recent, the generation
+     * stays leasable until the ticket expires. Anything else returns null and
+     * the lease is refused as before.
+     *
+     * @param array<string,mixed> $request one eligibleForwards() entry that carries 'presented'
+     * @param array{fingerprint:string,changed_at:int} $snapshot
+     * @param array{epochs:array<int,int>,revoked:array<string,true>} $revocations
+     * @return array{policy_generation:string,ticket_expires_at:int}|null
+     */
+    private function previousGenerationGrace(
+        array $request,
+        array $snapshot,
+        int $quotaBytes,
+        array $revocations,
+        string $currentGeneration,
+        int $clientId,
+        string $deviceId,
+        int $now,
+    ): ?array {
+        $presentedGeneration = strtolower(trim((string) ($request['presented']['policy_generation'] ?? '')));
+        if ($presentedGeneration === '' || hash_equals($currentGeneration, $presentedGeneration)) {
+            return null;
+        }
+        $forwardId = (int) ($request['forward_id'] ?? 0);
+        $scope = $this->materials->presentedTicketScope(
+            (string) ($request['presented']['session_ticket'] ?? ''),
+            $clientId,
+            $deviceId,
+            $forwardId
+        );
+        if ($scope === []
+            || !hash_equals($scope['policy_generation'], $presentedGeneration)
+            || hash_equals($scope['material_fingerprint'], (string) $snapshot['fingerprint'])
+            || $scope['expires_at'] <= $now
+            || $now - (int) ($snapshot['changed_at'] ?? 0) > UltraMode::PREVIOUS_GENERATION_GRACE_SECONDS) {
+            return null;
+        }
+        $epoch = (int) ($revocations['epochs'][$forwardId] ?? 0);
+        if ($scope['revocation_epoch'] !== $epoch
+            || $scope['line_keys'] !== $this->materials->lineKeys(is_array($request['lines'] ?? null) ? $request['lines'] : [])) {
+            return null;
+        }
+        $recomputed = $this->policyGeneration(
+            $request,
+            $scope['material_fingerprint'],
+            $quotaBytes,
+            ['epoch' => $epoch, 'revoked' => $revocations['revoked']]
+        );
+        if (!hash_equals($recomputed, $presentedGeneration)) {
+            return null;
+        }
+        return ['policy_generation' => $presentedGeneration, 'ticket_expires_at' => $scope['expires_at']];
     }
 
     private function parseTimestamp(string $value): ?int

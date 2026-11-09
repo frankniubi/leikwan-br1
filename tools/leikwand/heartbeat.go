@@ -35,6 +35,10 @@ func (a *Agent) heartbeatLoop(ctx context.Context) {
 				a.log.Warn("heartbeat", "heartbeat failed: %v", err)
 			}
 		}
+		// Console-requested self-update rides the heartbeat cadence: the
+		// desired_* fields arrive with the pull, and opkg must not race a
+		// heartbeat that is still streaming usage.
+		a.maybeSelfUpdate(ctx)
 	}
 }
 

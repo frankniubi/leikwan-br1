@@ -241,8 +241,12 @@ public sealed class ConfigPollingService
         }
     }
 
-    private void NotePullFailure(string reason)
+    private void NotePullFailure(string reason, Exception? exception = null)
     {
+        foreach (var forward in _latestForwards)
+            _runtimeManager.HandleUltraControlFailure(
+                forward.ForwardId,
+                transportFailure: exception is not null && IsTransientControlPlaneError(exception));
         var delay = _pullBackoff.RecordFailure();
         Log.Information(
             "control-plane pull failed ({Reason}); backing off {DelaySeconds:0.0}s (consecutive={Failures})",
@@ -278,6 +282,7 @@ public sealed class ConfigPollingService
 
     private void NoteLeaseFailure(int forwardId, Exception exception)
     {
+        _runtimeManager.HandleUltraControlFailure(forwardId, IsTransientControlPlaneError(exception));
         var delay = _leaseBackoff.RecordFailure();
         Log.Information(
             "Ultra lease request for forward {ForwardId} hit a control-plane failure ({ErrorType}); lease retries back off {DelaySeconds:0.0}s (consecutive={Failures})",
@@ -488,7 +493,7 @@ public sealed class ConfigPollingService
             if (DeviceLimitReachedException.TryFind(exception, out var limit))
                 NotePullDeviceLimit(limit);
             else
-                NotePullFailure(exception.GetType().Name);
+                NotePullFailure(exception.GetType().Name, exception);
             throw;
         }
         if (!pull.Ok)
@@ -688,6 +693,7 @@ public sealed class ConfigPollingService
             }
             catch (Exception ex)
             {
+                _runtimeManager.HandleUltraControlFailure(forward.ForwardId, IsTransientControlPlaneError(ex));
                 Log.Warning(
                     "Ultra lease refresh failed for forward {ForwardId} (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
                     forward.ForwardId,
@@ -875,6 +881,7 @@ public sealed class ConfigPollingService
         }
         catch (Exception ex)
         {
+            _runtimeManager.HandleUltraControlFailure(forward.ForwardId, IsTransientControlPlaneError(ex));
             Log.Warning(
                 "Ultra lease refresh failed for forward {ForwardId}; preserving current runtime (error={ErrorType}, status={StatusCode}, code={ErrorCode})",
                 forward.ForwardId,

@@ -153,6 +153,10 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		return
 	}
 	defer clearBytes(payload)
+	if reply, handled := handleControlCommand(payload, server.store); handled {
+		_ = writeJSONFrame(connection, reply)
+		return
+	}
 	policy, leases, err := decodeLeaseBatchFrame(payload, server.config)
 	if err == nil {
 		leases, err = applyCandidateQuarantine(server.config, leases, time.Now(), server.status)

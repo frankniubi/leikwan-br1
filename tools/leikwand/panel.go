@@ -192,6 +192,10 @@ func (c *PanelClient) headers(req *http.Request) {
 	// Form factor is additive and ignored by Panels that do not know it yet.
 	req.Header.Set("X-Device-Form-Factor", "router")
 	req.Header.Set("X-Device-Architecture", runtime.GOARCH)
+	// Package-manager flavour is additive and ignored by Panels that do not
+	// know it yet: OpenWrt 25.12+ boxes have apk and need .apk updates, older
+	// ones have opkg and need .ipk. Probed once per process, not per request.
+	req.Header.Set("X-Device-Package-Manager", packageManagerFlavour())
 	req.Header.Set("X-Device-Id", c.deviceID)
 	req.Header.Set("X-Device-UUID", c.deviceID)
 	if c.deviceNme != "" {
@@ -206,6 +210,37 @@ func (c *PanelClient) headers(req *http.Request) {
 	}
 }
 
+// fallbackReserve is the part of a caller's budget held back for each endpoint
+// after the current one. The current endpoint gets everything else, so a
+// healthy Panel answering a 20s long poll inside a 40s pull keeps 30s and is
+// never cut off; only a dead one is abandoned early enough to try the next.
+const fallbackReserve = 10 * time.Second
+
+// minAttemptBudget is the least an endpoint attempt is given. Below it a
+// healthy but distant Panel (TLS over a lossy uplink takes seconds) would be
+// cut off on every request.
+const minAttemptBudget = 8 * time.Second
+
+// attemptContext bounds one endpoint attempt so that, of what is left of ctx's
+// deadline, fallbackReserve remains for each of the remaining-1 endpoints
+// after this one. The last endpoint, a ctx without a deadline, or a budget too
+// small to reserve anything get ctx unchanged.
+func attemptContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok || remaining <= 1 {
+		return context.WithCancel(ctx)
+	}
+	left := time.Until(deadline)
+	share := left - fallbackReserve*time.Duration(remaining-1)
+	if share < minAttemptBudget {
+		share = minAttemptBudget
+	}
+	if share >= left {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, share)
+}
+
 // do performs a request against the active endpoint and transparently retries
 // the next endpoint on transport failure.
 func (c *PanelClient) do(ctx context.Context, method, path string, body any, out any) error {
@@ -213,6 +248,12 @@ func (c *PanelClient) do(ctx context.Context, method, path string, body any, out
 }
 
 // doWithHeaders is do with additional request headers for this call only.
+//
+// Every endpoint attempt gets its own share of the caller's budget. Without
+// it a primary that accepts the connection and never answers (a blackholed
+// CDN edge) spends the whole deadline, the fallback is reached with a dead
+// context, and a short-budget call such as the 30s lease can never succeed
+// while the longer pull fails over fine.
 func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extra map[string]string) error {
 	if c.baseURL() == "" {
 		return errNoEndpoint
@@ -223,6 +264,11 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
+		if ctx.Err() != nil {
+			// The caller's budget is spent. Another attempt would fail at once
+			// and its error would name an endpoint that was never tried.
+			break
+		}
 		base := c.baseURL()
 		var reader io.Reader
 		if body != nil {
@@ -232,8 +278,10 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 			}
 			reader = bytes.NewReader(encoded)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
+		attemptCtx, cancelAttempt := attemptContext(ctx, attempts-attempt)
+		req, err := http.NewRequestWithContext(attemptCtx, method, base+path, reader)
 		if err != nil {
+			cancelAttempt()
 			return err
 		}
 		c.headers(req)
@@ -245,8 +293,15 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
+			cancelAttempt()
 			lastErr = err
 			c.noteError(err)
+			if ctx.Err() != nil {
+				// The caller gave up, not the endpoint: a cancelled pull or a
+				// spent lease budget says nothing about this endpoint, and
+				// rotating would move every other request off a working one.
+				break
+			}
 			if !c.rotateEndpoint() {
 				break
 			}
@@ -254,6 +309,7 @@ func (c *PanelClient) doWithHeaders(ctx context.Context, method, path string, bo
 		}
 		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
+		cancelAttempt()
 		if readErr != nil {
 			lastErr = readErr
 			c.noteError(readErr)
@@ -500,51 +556,6 @@ func (c *PanelClient) DiagnosticsResult(ctx context.Context, payload any) error 
 	return c.do(ctx, http.MethodPost, "/api/client/diagnostics/result", payload, nil)
 }
 
-// Login exchanges operator credentials for a client list, then selects the
-// target client and returns its agent token. This is the same two-step flow
-// the desktop app uses, so no Panel change is required for basic onboarding.
-func (c *PanelClient) Login(ctx context.Context, email, password string) (*loginResponse, error) {
-	var out loginResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/login", map[string]string{
-		"email":    email,
-		"password": password,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (c *PanelClient) SelectClient(ctx context.Context, sessionToken string, clientID int) (*selectResponse, error) {
-	var out selectResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/select", map[string]any{
-		"session_token": sessionToken,
-		"client_id":     clientID,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// PairWithCode redeems a router pairing code. The Panel endpoint is additive:
-// when it is absent (older Panel) the error is surfaced verbatim so LuCI can
-// fall back to the account flow.
-func (c *PanelClient) PairWithCode(ctx context.Context, code, deviceID, deviceName string) (*pairResponse, error) {
-	var out pairResponse
-	err := c.do(ctx, http.MethodPost, "/api/client/devices/openwrt/pair", map[string]string{
-		"pairing_code": code,
-		"device_id":    deviceID,
-		"device_name":  deviceName,
-		"platform":     platformName,
-		"architecture": runtime.GOARCH,
-	}, &out)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
 // Probe performs an authenticated pull with no wait. It is the "Test
 // connection" action in LuCI and intentionally costs one round trip only.
 func (c *PanelClient) Probe(ctx context.Context) error {
@@ -554,30 +565,47 @@ func (c *PanelClient) Probe(ctx context.Context) error {
 	return err
 }
 
-type loginResponse struct {
-	OK           bool   `json:"ok"`
-	SessionToken string `json:"session_token"`
-	UserID       int    `json:"user_id"`
-	Username     string `json:"username"`
-	Email        string `json:"email"`
-	Clients      []struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"clients"`
-}
+// downloadTimeout bounds one artifact download. The control-plane client's
+// 45s budget is sized for JSON, not a multi-megabyte ipk over a slow uplink.
+const downloadTimeout = 5 * time.Minute
 
-type selectResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
-}
-
-type pairResponse struct {
-	OK         bool   `json:"ok"`
-	ClientID   int    `json:"client_id"`
-	ClientName string `json:"client_name"`
-	AgentToken string `json:"agent_token"`
+// Download fetches a Panel-relative artifact path (for example
+// "/artifacts/files/openwrt/arm64/leikwand_1.2.2-r1_aarch64_generic.ipk")
+// into w, reading at most limit bytes. Only paths on the Panel itself are
+// accepted: the caller verifies the sha256 the same Panel published, so
+// letting the pull name an arbitrary host would add nothing but exposure.
+func (c *PanelClient) Download(ctx context.Context, path string, limit int64, w io.Writer) (int64, error) {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return 0, fmt.Errorf("artifact path %q is not panel-relative", path)
+	}
+	base := c.baseURL()
+	if base == "" {
+		return 0, errNoEndpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.headers(req)
+	req.Header.Set("Accept", "*/*")
+	client := &http.Client{Timeout: downloadTimeout, Transport: c.http.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.noteError(err)
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("artifact %s returned %d", path, resp.StatusCode)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("artifact %s exceeds %d bytes", path, limit)
+	}
+	return n, nil
 }
 
 // urlEncode escapes the small set of characters that appear in revisions.

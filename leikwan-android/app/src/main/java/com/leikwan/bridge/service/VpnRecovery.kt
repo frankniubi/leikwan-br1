@@ -11,9 +11,18 @@ import com.leikwan.bridge.data.Prefs
 internal object VpnRecovery {
     /** The boot receiver's start; the system uses [VpnService.SERVICE_INTERFACE] for always-on VPN. */
     const val ACTION_RECONNECT = "com.leikwan.bridge.action.RECONNECT"
-    const val ATTEMPTS = 4
-    /** Waits before attempts 2..[ATTEMPTS]: right after a boot or kill the network may still be coming up. */
-    val RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 30_000L)
+    const val ATTEMPTS = 6
+    /**
+     * Waits before attempts 2..[ATTEMPTS]: right after a boot or kill the network may still be
+     * coming up, and a background kill can land in Doze where connectivity returns only after
+     * minutes. The old 4-attempt (~50 s) window gave up in exactly those cases and left the VPN
+     * off until the user opened the app.
+     */
+    val RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 30_000L, 60_000L, 120_000L)
+    /** Waits after a Wi-Fi <-> cellular switch before probing whether the tunnel still works. */
+    const val SWITCH_PROBE_DELAY_MS = 4_000L
+    /** Per-attempt timeout of the post-switch tunnel probe. */
+    const val SWITCH_PROBE_TIMEOUT_MS = 2_000
 
     /**
      * A sticky restart (null intent), an always-on start or the boot receiver's start rebuilds the

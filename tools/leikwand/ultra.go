@@ -25,6 +25,7 @@ const leaseBatchTimeout = 75 * time.Second
 // runtime does not recognise is ignored, and any field we omit falls back to
 // the runtime's own default, so this stays forward compatible.
 type RuntimeConfig struct {
+	ExternalUoT              *ExternalUoTGrant   `json:"external_uot,omitempty"`
 	ForwardID                int                 `json:"forward_id"`
 	ListenHost               string              `json:"listen_host"`
 	ListenPort               int                 `json:"listen_port"`
@@ -135,7 +136,23 @@ func (c ultraControl) sendLeaseBatch(ctx context.Context, leases []LeaseFrame) (
 	if len(payload) == 0 || len(payload) > maxControlPayload {
 		return nil, errors.New("lease batch exceeds control frame limit")
 	}
+	return c.exchange(ctx, payload)
+}
 
+// sendCommand sends an out-of-band instruction (grace extension or stop) on the
+// same socket. The runtime answers with the same ok/error envelope.
+func (c ultraControl) sendCommand(ctx context.Context, command map[string]any) (map[string]any, error) {
+	payload, err := json.Marshal(command)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 || len(payload) > maxControlPayload {
+		return nil, errors.New("control command exceeds control frame limit")
+	}
+	return c.exchange(ctx, payload)
+}
+
+func (c ultraControl) exchange(ctx context.Context, payload []byte) (map[string]any, error) {
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
 	if err != nil {
@@ -271,6 +288,7 @@ func buildRuntimeConfig(cfg Config, forward ForwardConfig, paths runtimePaths, p
 		digest = policy.TargetDigest
 	}
 	runtime := RuntimeConfig{
+		ExternalUoT:              externalGrant(policy),
 		ForwardID:                forward.ForwardID,
 		ListenHost:               "0.0.0.0",
 		ListenPort:               forward.ListenPort,
@@ -341,6 +359,9 @@ func buildNativeRuntimeConfig(cfg Config, forwardID, listenPort int, paths runti
 }
 
 const nativeRuntimeTargetPlaceholder = "1.1.1.1:443"
+
+// nativePortMin mirrors ultra-client's restricted-policy floor.
+const nativePortMin = 1000
 
 func nativeFilterProfile(routePolicy string) string {
 	if normalizeRoutePolicy(routePolicy) == "unrestricted" {

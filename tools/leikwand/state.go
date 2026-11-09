@@ -49,25 +49,6 @@ type PullState struct {
 	Failures       int       `json:"consecutive_failures"`
 }
 
-// EndpointHealthMirror persists the uplink health view so LuCI can render it
-// immediately after a daemon restart, before the first probe completes.
-type EndpointHealthMirror struct {
-	Uplinks map[string]UplinkHealth `json:"uplinks"`
-}
-
-type UplinkHealth struct {
-	Interface   string    `json:"interface"`
-	Gateway     string    `json:"gateway"`
-	Healthy     bool      `json:"healthy"`
-	LatencyMS   int64     `json:"latency_ms"`
-	LossPercent int       `json:"loss_percent"`
-	Metric      int       `json:"metric,omitempty"`
-	Successes   int       `json:"consecutive_successes"`
-	Failures    int       `json:"consecutive_failures"`
-	LastError   string    `json:"last_error"`
-	UpdatedAt   time.Time `json:"updated_at"`
-}
-
 type Store struct {
 	dir string
 
@@ -75,7 +56,6 @@ type Store struct {
 	applied map[int]AppliedForward
 	usage   UsageState
 	pull    PullState
-	uplinks EndpointHealthMirror
 }
 
 func newStore(dataDir string) (*Store, error) {
@@ -86,21 +66,16 @@ func newStore(dataDir string) (*Store, error) {
 	store := &Store{
 		dir:     stateDir,
 		applied: map[int]AppliedForward{},
-		uplinks: EndpointHealthMirror{Uplinks: map[string]UplinkHealth{}},
 		usage:   UsageState{LastTotals: map[string]int64{}},
 	}
 	_ = store.readJSON("applied.json", &store.applied)
 	_ = store.readJSON("usage_state.json", &store.usage)
 	_ = store.readJSON("config_pull_state.json", &store.pull)
-	_ = store.readJSON("uplink_health.json", &store.uplinks)
 	if store.applied == nil {
 		store.applied = map[int]AppliedForward{}
 	}
 	if store.usage.LastTotals == nil {
 		store.usage.LastTotals = map[string]int64{}
-	}
-	if store.uplinks.Uplinks == nil {
-		store.uplinks.Uplinks = map[string]UplinkHealth{}
 	}
 	return store, nil
 }
@@ -192,25 +167,4 @@ func (s *Store) UpdatePull(mutate func(*PullState)) {
 	snapshot := s.pull
 	s.mu.Unlock()
 	_ = s.writeJSON("config_pull_state.json", snapshot)
-}
-
-func (s *Store) Uplinks() EndpointHealthMirror {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := EndpointHealthMirror{Uplinks: map[string]UplinkHealth{}}
-	for k, v := range s.uplinks.Uplinks {
-		out.Uplinks[k] = v
-	}
-	return out
-}
-
-func (s *Store) PutUplink(health UplinkHealth) {
-	s.mu.Lock()
-	if s.uplinks.Uplinks == nil {
-		s.uplinks.Uplinks = map[string]UplinkHealth{}
-	}
-	s.uplinks.Uplinks[health.Interface] = health
-	snapshot := s.uplinks
-	s.mu.Unlock()
-	_ = s.writeJSON("uplink_health.json", snapshot)
 }

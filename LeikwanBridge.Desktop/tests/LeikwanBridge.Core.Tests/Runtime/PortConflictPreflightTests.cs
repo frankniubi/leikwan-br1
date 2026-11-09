@@ -131,11 +131,44 @@ public sealed class PortConflictPreflightTests
             InstallRoot,
             _ => { },
             quiesceTimeout: TimeSpan.Zero,
-            portExcluded: _ => true);
+            classifyFreePort: _ => "PORT_EXCLUDED");
 
         Assert.True(result.Blocked);
         Assert.Equal("PORT_EXCLUDED", result.ConflictCode);
         Assert.Equal(0, result.ForeignPid);
+    }
+
+    [Fact]
+    public void Run_BlocksFreePortHeldBySystemWithoutVisibleOwner()
+    {
+        var result = PortConflictPreflight.Run(
+            32216,
+            [],
+            _ => [],
+            _ => null,
+            InstallRoot,
+            _ => { },
+            quiesceTimeout: TimeSpan.Zero,
+            classifyFreePort: _ => "PORT_HELD_BY_SYSTEM");
+
+        Assert.True(result.Blocked);
+        Assert.Equal("PORT_HELD_BY_SYSTEM", result.ConflictCode);
+    }
+
+    [Fact]
+    public void Run_AllowsFreePortWhenNothingHoldsIt()
+    {
+        var result = PortConflictPreflight.Run(
+            32217,
+            [],
+            _ => [],
+            _ => null,
+            InstallRoot,
+            _ => { },
+            quiesceTimeout: TimeSpan.Zero,
+            classifyFreePort: _ => null);
+
+        Assert.False(result.Blocked);
     }
 
     [Fact]
@@ -149,7 +182,7 @@ public sealed class PortConflictPreflightTests
             InstallRoot,
             _ => { },
             quiesceTimeout: TimeSpan.Zero,
-            portExcluded: _ => throw new InvalidOperationException("should not probe owned port"));
+            classifyFreePort: _ => throw new InvalidOperationException("should not probe owned port"));
 
         Assert.False(result.Blocked);
     }

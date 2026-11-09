@@ -50,17 +50,45 @@ final class UltraMode
     /**
      * Quota slice of a long grant: the most an offline device can overspend.
      * ULTRA_GRANT_QUOTA_SLICE_BYTES overrides the computed default, but never
-     * below the renewal-safety floor (2 renew intervals at the forward's rate).
+     * below the renewal-safety floor (3 renew intervals at the forward's rate:
+     * one interval covers the drain, the other two absorb renewal jitter and
+     * one failed renewal round trip).
      */
     public const GRANT_QUOTA_SLICE_ENABLED_KEY = 'ULTRA_GRANT_QUOTA_SLICE_ENABLED';
     public const GRANT_QUOTA_SLICE_KEY = 'ULTRA_GRANT_QUOTA_SLICE_BYTES';
     public const GRANT_QUOTA_UNLIMITED_RATE_KEY = 'ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS';
     public const MIN_GRANT_QUOTA_SLICE_BYTES = 1073741824;
     public const DEFAULT_UNLIMITED_RATE_QUOTA_SLICE_BYTES = 10737418240;
-    public const DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS = 1000;
+    /**
+     * Assumed top speed of an unlimited forward when sizing its slice. The
+     * observed fleet ceiling is ~2.5 Gbit/s (multi-gigabit plan lines), so the
+     * old 1000 assumption under-sized slices and let fast downloads drain them
+     * mid-flight before the next renewal.
+     */
+    public const DEFAULT_GRANT_QUOTA_UNLIMITED_RATE_MBPS = 2500;
     /** How long before material expiry the panel asks the source agent for fresh material. */
     public const MATERIAL_REFRESH_WINDOW_KEY = 'ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS';
     public const DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS = 600;
+    /**
+     * A relay refusing a line's credential (05 02) marks that line's material
+     * as due before its refresh window. LeiGod retires relays 10-20 minutes
+     * into a credential, and the window alone only refreshes at minute 20.
+     * Per line, at most one early refresh per this many seconds; 0 disables.
+     */
+    public const CREDENTIAL_REJECTED_REFRESH_INTERVAL_KEY = 'ULTRA_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS';
+    public const DEFAULT_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS = 300;
+    /**
+     * A line with less than this left on its material no longer limits how long
+     * a forward's grant may be, as long as another line of the forward has more.
+     */
+    public const MATERIAL_EXPIRING_MARGIN_SECONDS = 120;
+    /**
+     * A refresh of a line's material changes the forward's material fingerprint
+     * and so its policy_generation. For this long afterwards the lease plane
+     * still honours the generation a client got before the refresh, provided
+     * nothing but the line material differs (see LeigodTokenBroker).
+     */
+    public const PREVIOUS_GENERATION_GRACE_SECONDS = 180;
 
     /**
      * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in

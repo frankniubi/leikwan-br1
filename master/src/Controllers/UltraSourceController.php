@@ -25,7 +25,17 @@ final class UltraSourceController extends BaseController
     public function jobs(Request $request, array $params): Response
     {
         $sourceId = $this->materials->verifySourceRequest($request);
-        $lineIds = $this->materials->dueLineIds($sourceId, $this->materials->materialRefreshWindowSeconds());
+        // Lines the source is backing off from after a failure (comma separated
+        // ids). Without them the same unacquirable lines would be handed out on
+        // every poll and hold the places of lines that could be refreshed.
+        $skip = [];
+        foreach (explode(',', (string) $request->input('skip', '')) as $rawLineId) {
+            $rawLineId = trim($rawLineId);
+            if ($rawLineId !== '' && ctype_digit($rawLineId)) {
+                $skip[] = (int) $rawLineId;
+            }
+        }
+        $lineIds = $this->materials->dueLineIds($sourceId, $this->materials->materialRefreshWindowSeconds(), $skip);
         // A quarantined line can have been condemned by a client whose own
         // network is broken. The source host is the only vantage point that can
         // disprove that, so it is handed the review alongside its material work.

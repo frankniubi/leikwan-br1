@@ -58,7 +58,19 @@ $hmacGrant = $lease + ['external_uot' => ['token' => $hmacToken] + $external];
 requireUotResponse(($attach->invoke($controller, $lease, $hmacGrant, false)['external_uot']['token'] ?? '') === $hmacToken,
     'lease did not carry the HMAC sidecar token');
 
+// A lease honoured under the previous-generation grace carries the pre-refresh
+// generation; the endpoint passes it explicitly and it must still bind.
+$graceLease = ['policy_generation' => str_repeat('c', 64)] + $lease;
+requireUotResponse(($attach->invoke($controller, $graceLease, $grant, false, str_repeat('c', 64))['external_uot'] ?? null) === $external,
+    'a grace-window lease lost its sidecar configuration');
+try {
+    $attach->invoke($controller, $graceLease, $grant, false);
+    throw new RuntimeException('grace generation accepted without being named by the endpoint');
+} catch (ApiException $error) {
+    requireUotResponse($error->getMessage() === 'external_uot_scope_mismatch', 'unexpected grace mismatch error');
+}
+
 $source = file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
-requireUotResponse(str_contains($source, '$candidateLease = $this->attachExternalUotToLease($result[\'lease\'], $grant, $isNative);'),
+requireUotResponse(str_contains($source, '$candidateLease = $this->attachExternalUotToLease($result[\'lease\'], $grant, $isNative, $policy[\'policy_generation\']);'),
     'real lease endpoint does not call the tested attachment boundary');
 echo "ok\n";

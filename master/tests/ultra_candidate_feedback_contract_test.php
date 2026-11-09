@@ -244,6 +244,39 @@ namespace {
         );
     }
 
+    // A relay that refuses the lease credential (05 02) says nothing durable
+    // about the line: a new source login refuses every earlier credential on
+    // every line at once. It is accepted as transport evidence (logged), never
+    // a strike. A connect timeout stays a strike.
+    assertUltraCandidateFeedback(
+        UltraCandidateReputationService::isTransportReason('credential_rejected')
+            && !UltraCandidateReputationService::isFailureReason('credential_rejected'),
+        'credential_rejected must be transport evidence, not a failure strike'
+    );
+    assertUltraCandidateFeedback(
+        UltraCandidateReputationService::isFailureReason('relay_connect_timeout')
+            && !UltraCandidateReputationService::isTransportReason('relay_connect_timeout'),
+        'relay_connect_timeout must keep counting as a failure strike'
+    );
+    $beforeRejected = $reputation->stateFor($scope);
+    $rejectedAccepted = $status->ingestFeedback(7, 'device-a', [[
+        'forward_id' => 42,
+        'candidate_key_hash' => $hash,
+        'lease_hash' => hash('sha256', 'lease-a'),
+        'protocol' => 'tcp',
+        'outcome' => 'failure',
+        'reason' => 'credential_rejected',
+        'evidence_id' => 'feedback-credential-rejected',
+        'detected_ingress_zone' => 'guangzhou',
+    ]]);
+    assertUltraCandidateFeedback($rejectedAccepted === 0, 'credential_rejected reached reputation');
+    $afterRejected = $reputation->stateFor($scope);
+    assertUltraCandidateFeedback(
+        ($afterRejected['consecutive_failures'] ?? 0) === ($beforeRejected['consecutive_failures'] ?? 0)
+            && ($afterRejected['last_reason'] ?? '') !== 'credential_rejected',
+        'credential_rejected moved a failure counter or became last_reason'
+    );
+
     $source = (string) file_get_contents(__DIR__ . '/../src/Support/UltraClientStatusService.php');
     foreach (['ingestFeedback', 'candidate_key_hash', 'lease_hash', 'ultra_client_leases', 'process_stderr'] as $needle) {
         assertUltraCandidateFeedback(str_contains($source, $needle), 'missing feedback boundary: ' . $needle);

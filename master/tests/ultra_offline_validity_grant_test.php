@@ -275,13 +275,15 @@ $quotaCases = [
     [[], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 20], 2_500_000 * 1800],
     [[], ['quota_remaining_bytes' => 100 * 1024 * 1024, 'speed_limit_mbps' => 20], 100 * 1024 * 1024],
     [[], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 1], OV_GIB],
-    [[], ['quota_remaining_bytes' => 90 * OV_GIB, 'speed_limit_mbps' => 0], 125_000_000 * 2 * 240],
-    [[], ['speed_limit_mbps' => 0], 125_000_000 * 2 * 240],
+    [[], ['quota_remaining_bytes' => 90 * OV_GIB, 'speed_limit_mbps' => 0], 90 * OV_GIB],
+    // The unlimited-rate floor (2500 Mbps x 3 intervals) exceeds this quota,
+    // so the slice is the whole remaining quota.
+    [[], ['speed_limit_mbps' => 0], UltraMode::MAX_QUOTA_LEASE_BYTES],
     [['ULTRA_GRANT_QUOTA_UNLIMITED_RATE_MBPS' => '100'], ['quota_remaining_bytes' => 90 * OV_GIB, 'speed_limit_mbps' => 0], 10 * OV_GIB],
     [['ULTRA_GRANT_QUOTA_SLICE_BYTES' => (string) (2 * OV_GIB)], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 20], 2 * OV_GIB],
     [['ULTRA_GRANT_QUOTA_SLICE_BYTES' => '1000'], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 1], OV_GIB],
     // An explicit slice below the renewal floor is raised to the floor.
-    [['ULTRA_GRANT_QUOTA_SLICE_BYTES' => (string) OV_GIB], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 100], 12_500_000 * 2 * 240],
+    [['ULTRA_GRANT_QUOTA_SLICE_BYTES' => (string) OV_GIB], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 100], 12_500_000 * 3 * 240],
     [['ULTRA_GRANT_QUOTA_SLICE_ENABLED' => '0'], ['quota_remaining_bytes' => 50 * OV_GIB, 'speed_limit_mbps' => 20], 50 * OV_GIB],
 ];
 foreach ($quotaCases as $index => [$env, $overrides, $expected]) {
@@ -297,10 +299,10 @@ foreach ($quotaCases as $index => [$env, $overrides, $expected]) {
     $fullQuota = (int) ($overrides['quota_remaining_bytes'] ?? UltraMode::MAX_QUOTA_LEASE_BYTES);
     assertOffline((int) $shortCase['quota_remaining_bytes'] === $fullQuota, 'quota case ' . $index . ': legacy grant must keep the full quota');
     assertOffline($shortCase['policy_generation'] === $longCase['policy_generation'], 'quota case ' . $index . ': slice changed the generation');
-    // Renewal safety: the slice outlasts two renewal intervals at the forward's rate.
+    // Renewal safety: the slice outlasts three renewal intervals at the forward's rate.
     $rate = (int) ($overrides['speed_limit_mbps'] ?? 0);
     if ($rate > 0 && $expected < $fullQuota) {
-        assertOffline((int) $longCase['quota_remaining_bytes'] >= $rate * 125000 * 480, 'quota case ' . $index . ': slice can run out before a renewal');
+        assertOffline((int) $longCase['quota_remaining_bytes'] >= $rate * 125000 * 720, 'quota case ' . $index . ': slice can run out before a renewal');
     }
 }
 

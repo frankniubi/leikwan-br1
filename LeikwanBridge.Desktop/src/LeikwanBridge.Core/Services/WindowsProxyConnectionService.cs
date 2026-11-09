@@ -52,6 +52,15 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
     public const string NativeOutboundDisplayName = "原生出口";
     public const string ProcessLostErrorCode = "proxy_process_lost";
 
+    /// <summary>
+    /// Local slice remainder below which a native lease is renewed early. At
+    /// the observed fleet ceiling (~2.5 Gbit/s) 2 GiB is ~7 s of drain time,
+    /// enough to cover one renewal-loop poll plus the refresh round trip
+    /// before the slice empties; the runtime's bounded copy pause (120 s) is
+    /// the last-resort backstop behind this.
+    /// </summary>
+    public const long NativeQuotaRenewalRemainingBytes = 2L * 1024 * 1024 * 1024;
+
     /// <summary>Minimum spacing between two live-MTU apply attempts.</summary>
     public static readonly TimeSpan MtuApplyDefaultInterval = TimeSpan.FromSeconds(60);
 
@@ -247,6 +256,24 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         => ObserveMeasuredPayloadCeiling(
             forwardId,
             UltraRuntimeStatus.ReadForwardPayloadCeiling(_runtimeDirectory, forwardId));
+
+    /// <summary>
+    /// True when the running native relay's local quota slice is close to
+    /// drained. The host renews the lease on this signal instead of waiting for
+    /// the expiry window: a high-throughput download can exhaust a slice inside
+    /// one renewal interval, and a paused-then-dropped download is the reported
+    /// "large downloads interrupt" symptom. A snapshot without the field (older
+    /// runtime) or an idle connection reads as false, so the legacy expiry-only
+    /// cadence is unchanged there.
+    /// </summary>
+    public bool IsNativeQuotaLow()
+    {
+        if (_activeNativeLease is not { } lease
+            || _snapshot.State != WindowsProxyConnectionState.Connected)
+            return false;
+        return UltraRuntimeStatus.ReadForwardQuotaRemaining(_runtimeDirectory, lease.ForwardId)
+            is long remaining && remaining < NativeQuotaRenewalRemainingBytes;
+    }
 
     /// <summary>
     /// Applies the pending TUN MTU to the live connection.
@@ -1216,7 +1243,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
         }
     }
 
-    private static string ErrorCode(Exception exception)
+    private string ErrorCode(Exception exception)
     {
         var code = exception switch
         {
@@ -1226,7 +1253,7 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
                 => "sing_box_missing",
             FileNotFoundException => "proxy_config_missing",
             KeyNotFoundException => "proxy_profile_not_found",
-            WindowsProxyProcessExitException => "proxy_process_exited",
+            WindowsProxyProcessExitException exit => ClassifyProcessExit(exit.Diagnostics, () => LocalPortFailure.DiagnoseLive(_proxyPort)),
             UnauthorizedAccessException => "permission_required",
             _ => exception.Message,
         };
@@ -1235,5 +1262,33 @@ public sealed class WindowsProxyConnectionService : IAsyncDisposable, LeikwanBri
             .Take(64)
             .ToArray());
         return normalized.Length == 0 ? "proxy_connection_failed" : normalized;
+    }
+
+    public static string ClassifyProcessExit(string diagnostics, Func<string?> livePortCause)
+    {
+        if (diagnostics.Contains("Only one usage", StringComparison.OrdinalIgnoreCase)
+            || diagnostics.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
+            return livePortCause() ?? LocalPortFailure.InUse;
+        if (diagnostics.Contains("access permissions", StringComparison.OrdinalIgnoreCase))
+            return LocalPortFailure.Reserved;
+        return "proxy_process_exited";
+    }
+
+    /// <summary>
+    /// The code a start failure shows in the banner. Known causes become stable
+    /// codes; anything else keeps its own message so nothing is hidden.
+    /// </summary>
+    public static string FailureCode(Exception exception, Func<string?> livePortCause)
+    {
+        switch (exception)
+        {
+            case WindowsProxyProcessExitException exit:
+                var code = ClassifyProcessExit(exit.Diagnostics, livePortCause);
+                return code == "proxy_process_exited" ? exception.Message : code;
+            case UnauthorizedAccessException:
+                return "permission_required";
+            default:
+                return exception.Message;
+        }
     }
 }
