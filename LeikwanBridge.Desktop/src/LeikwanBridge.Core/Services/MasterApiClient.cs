@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using LeikwanBridge.Core.Helpers;
 using LeikwanBridge.Core.Models;
 using Serilog;
 
@@ -73,7 +74,9 @@ public sealed partial class MasterApiClient : IDisposable
         _http.DefaultRequestHeaders.UserAgent.ParseAdd($"{userAgentProduct}/{appVersion}");
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         AddOptionalHeader("X-Device-Id", deviceId);
-        AddOptionalHeader("X-Device-Name", deviceName);
+        // Device names can be non-ASCII (a Chinese machine name, for example);
+        // HTTP header values cannot, so the name goes out as an encoded word.
+        AddOptionalHeader("X-Device-Name", AsciiHeaderValue.Encode((deviceName ?? string.Empty).Trim()));
         AddOptionalHeader("X-Device-Platform", devicePlatform);
     }
 
