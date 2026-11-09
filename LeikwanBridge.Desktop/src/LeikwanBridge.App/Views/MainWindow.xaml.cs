@@ -1602,13 +1602,32 @@ public partial class MainWindow : Window
             SettLogLevel.SelectedItem = selected;
     }
 
-    private void OnSignOut_Click(object sender, RoutedEventArgs e)
+    private bool _signingOut;
+
+    private async void OnSignOut_Click(object sender, RoutedEventArgs e)
     {
-        _vm.StopProxyForShutdown();
-        _vm.DisconnectCommand.Execute(null);
-        _vm.SignOutForTests();
-        var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
-        stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+        if (_signingOut)
+            return;
+        _signingOut = true;
+        try
+        {
+            // Persist the signed-out state before any teardown: if teardown hangs or
+            // the process is killed, the next launch must not restore the session.
+            _vm.ClearSignedInConfig();
+            var stateManager = new StateManager(Path.GetDirectoryName(App.ConfigPath)!);
+            stateManager.SaveConfig(App.ConfigPath, BuildPersistedLoginConfig());
+
+            // Awaited, never blocked on: teardown needs the UI thread to keep pumping.
+            await _vm.SignOutAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "sign-out teardown failed; the signed-out config is already saved");
+        }
+        finally
+        {
+            _signingOut = false;
+        }
         TxtAgentToken.Password = string.Empty;
         TxtClientId.Text = string.Empty;
         SetupSaveInfoCheckBox.IsChecked = _saveLoginInfo;
