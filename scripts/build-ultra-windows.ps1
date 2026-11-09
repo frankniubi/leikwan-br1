@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "2026.09.12.2",
+    [string]$Version = "",
     [string]$OutputPath = "",
     # Optional override for the stamped build identity (matches build-ultra-macos.ps1).
     [string]$ShortSha = "",
@@ -40,6 +40,12 @@ if ([string]::IsNullOrWhiteSpace($shortSha)) {
 }
 if ([string]::IsNullOrWhiteSpace($shortSha)) { $shortSha = "unknown" }
 $FullVersion = "$Version.$shortSha"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $identity = (& python (Join-Path $PSScriptRoot "runtime-build-identity.py")) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $identity.fingerprint) { throw "runtime identity generation failed" }
+    $Version = $identity.version
+    $FullVersion = $identity.fingerprint
+}
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $repoRoot "artifacts\ultra\ultra-client_windows_amd64.exe"
 }

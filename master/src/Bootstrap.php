@@ -140,7 +140,8 @@ final class Bootstrap
             $whmcsIdentityService,
         );
         $ultraInventory = new UltraInventoryService($this->config, $this->db);
-        $ultraClientStatus = new UltraClientStatusService($this->config, $this->db);
+        $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
+        $ultraClientStatus = new UltraClientStatusService($this->config, $this->db, materials: $ultraMaterials);
         $accessPolicy = isset($this->services['access_policy']) && $this->services['access_policy'] instanceof AccessPolicyService
             ? $this->services['access_policy']
             : new AccessPolicyService($this->db);
@@ -157,7 +158,6 @@ final class Bootstrap
         $services = new ServiceController($this->config, $this->db, $this->provisioning);
         $forwardApi = new ForwardLineApiController($this->config, $this->db, $this->provisioning);
         $nodes = new NodeController($this->config, $this->db, $this->provisioning);
-        $ultraMaterials = new UltraMaterialService($this->config, $this->db, new AppSettings($this->db));
         $ultraLeases = new UltraLeaseService($this->config, $this->db, $ultraMaterials);
         $clientAgent = new ClientAgentController(
             $this->config,

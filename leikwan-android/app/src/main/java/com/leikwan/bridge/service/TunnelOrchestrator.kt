@@ -837,6 +837,7 @@ class TunnelOrchestrator internal constructor(
     private fun clearUltraExtras() {
         activeUltraExtras.values.forEach { UltraForwardRunner.cleanup(it.runtime) }
         activeUltraExtras = emptyMap()
+        gracedUltra.clear()
     }
 
     fun isRunning(): Boolean = LeikwanVpnService.isRunning
@@ -1019,6 +1020,20 @@ class TunnelOrchestrator internal constructor(
     }
 
     /** Renews one Ultra runtime; true when it rebuilt the whole tunnel instead. */
+    private val gracedUltra = mutableMapOf<Long, String>()
+
+    private fun handleUltraGrace(active: ActiveUltraRuntime, error: Exception, now: Instant) {
+        val client = UltraLeaseClient()
+        if (error is java.io.IOException && error !is PanelControlException) {
+            val until = com.leikwan.bridge.runtime.UltraNetworkGrace.deadline(active.policy.expiresAt, now) ?: return
+            if (gracedUltra[active.forwardId] != active.policy.policyGeneration &&
+                client.sendCommand(active.controlSocketPath, active.policy, "extend_grace", until))
+                gracedUltra[active.forwardId] = active.policy.policyGeneration
+        } else if (gracedUltra.remove(active.forwardId) == active.policy.policyGeneration) {
+            client.sendCommand(active.controlSocketPath, active.policy, "stop_grace")
+        }
+    }
+
     private suspend fun refreshUltraRuntimeIfDue(
         active: ActiveUltraRuntime,
         mainForwardId: Long,
@@ -1061,12 +1076,16 @@ class TunnelOrchestrator internal constructor(
                 // from its own VPN, so the runtime reaches any relay directly. Tearing the VPN
                 // down here dropped every Android tunnel each few renewals, and for good when a
                 // step of the rebuild failed.
-                val accepted = !active.runtimeRestartPending && if (leases.size == 1) {
+                // Sidecar address/token are bootstrap-only, unlike provider leases.
+                // Replace just this runtime, not the VPN/TUN or unrelated forwards.
+                val bootstrapChanged = nextPolicy.externalUot?.fingerprint != active.policy.externalUot?.fingerprint
+                val accepted = !bootstrapChanged && !active.runtimeRestartPending && if (leases.size == 1) {
                     ultraLeaseSender(active.controlSocketPath, nextPolicy, leases.first())
                 } else {
                     ultraLeaseBatchSender(active.controlSocketPath, nextPolicy, leases)
                 }
                 if (accepted) {
+                    gracedUltra.remove(active.forwardId)
                     storeUltra(
                         active.copy(
                             policy = nextPolicy,
@@ -1076,7 +1095,7 @@ class TunnelOrchestrator internal constructor(
                     )
                     return false
                 }
-                if (!active.runtimeRestartPending && nextProtectedConnectivity == active.protectedConnectivity) {
+                if (!bootstrapChanged && !active.runtimeRestartPending && nextProtectedConnectivity == active.protectedConnectivity) {
                     throw IllegalStateException("ultra_lease_refresh_rejected")
                 }
                 // The runtime will not move one policy generation to a relay set that lacks its
@@ -1087,7 +1106,9 @@ class TunnelOrchestrator internal constructor(
                 leases.forEach(UltraLease::wipe)
             }
         } catch (error: Exception) {
-            if (error is CancellationException || error is PanelControlException) throw error
+            if (error is CancellationException) throw error
+            handleUltraGrace(active, error, now)
+            if (error is PanelControlException) throw error
             // Keep a failure-driven renewal pending: the loop's retry (after its backoff) renews.
             if (failureDriven) ultraFailureRenewalForward.compareAndSet(0L, active.forwardId)
             val remaining = active.policy.expiresAt.epochSecond - now.epochSecond

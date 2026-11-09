@@ -1,0 +1,113 @@
+name: Ultra HA parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/ultra-ha-parity-20261109]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ultra-ha-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wire-and-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo_sqlite, openssl, sodium
+      - run: python -m pip install pytest cryptography
+      - name: Runtime and router fault/recovery tests
+        run: |
+          (cd tools/ultra-client && go test ./... -count=1)
+          (cd tools/leikwand && go test ./... -count=1)
+          (cd tools/uot-sidecar && go test ./... -count=1)
+      - name: Source, sidecar pool and agent tests
+        run: python -m pytest -q -p no:cacheprovider source-agent/tests client-agent/tests tests/test_uot_pool_sync.py tests/test_runtime_build_identity.py
+      - name: Panel pool and offline contracts
+        run: |
+          for test in external_uot_pool external_uot_config_endpoint external_uot_reliable_rollout ultra_multi_source_contract ultra_offline_validity_grant ultra_policy_generation_reputation; do
+            php "master/tests/${test}_test.php"
+          done
+      - name: Build same-source Linux and Windows runtimes
+        run: |
+          mkdir -p out
+          python scripts/runtime-build-identity.py > out/runtime-identity.json
+          version="$(python scripts/runtime-build-identity.py --field fingerprint)"
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            (cd tools/ultra-client && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=$version" -o "../../out/ultra-client_${os}_${arch}" .)
+          done
+          sha256sum out/ultra-client_* > out/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ha-parity-runtimes
+          path: out/
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Core contract and recovery tests (Windows)
+        if: runner.os == 'Windows'
+        run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests --logger "trx;LogFileName=core.trx"
+      - name: Core contract and recovery tests (macOS)
+        if: runner.os == 'macOS'
+        run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Core.Tests --filter "Platform!=Windows" --logger "trx;LogFileName=core.trx"
+      - name: macOS host tests
+        if: runner.os == 'macOS'
+        run: dotnet test LeikwanBridge.Desktop/tests/LeikwanBridge.Mac.Tests --logger "trx;LogFileName=mac.trx"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-tests-${{ matrix.os }}
+          path: "**/TestResults/*.trx"
+
+  ios-core:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift model, bootstrap and control-plane tests
+        run: cd ios/Core && swift test
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android contract, failover and service tests
+        run: |
+          cd leikwan-android
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-tests
+          path: leikwan-android/app/build/reports/tests/

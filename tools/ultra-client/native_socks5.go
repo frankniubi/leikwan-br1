@@ -617,7 +617,7 @@ func (runtime *nativeSocks5Runtime) handleTCP(ctx context.Context, connection ne
 // nativeTCPFailureReason keeps a refused credential apart from a dead relay: a
 // new source login refuses every earlier credential on every line at once.
 func nativeTCPFailureReason(err error) string {
-	if errors.Is(err, errStreamAuthenticationRejected) {
+	if streamCredentialRejected(err) {
 		return credentialRejectedReason
 	}
 	return "relay_connect_timeout"

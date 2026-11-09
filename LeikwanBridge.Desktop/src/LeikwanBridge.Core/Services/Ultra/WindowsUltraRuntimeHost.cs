@@ -275,6 +275,9 @@ public sealed class WindowsUltraRuntimeHost : IUltraRuntimeHost
         return probe(port);
     }
 
+    public bool SendControl(int forwardId, object command)
+        => UltraNetworkGrace.Send(UltraLeaseClient.PipeName(forwardId), true, forwardId, command);
+
     public void Stop(int forwardId)
     {
         _supervisor.StopAll(forwardId);

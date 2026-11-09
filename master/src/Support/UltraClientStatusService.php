@@ -43,6 +43,7 @@ final class UltraClientStatusService
         ?UltraCandidateReputationService $candidateReputation = null,
         ?UltraCandidateReviewService $candidateReviews = null,
         private ?string $releaseManifestPath = null,
+        private ?UltraMaterialService $materials = null,
     ) {
         $this->clock ??= static fn(): int => time();
         $this->candidateReputation = $candidateReputation ?? new UltraCandidateReputationService($db, $this->clock);
@@ -228,6 +229,14 @@ final class UltraClientStatusService
                 // line, and the runtime emits one of these every few seconds
                 // per forward. Count it for the log, keep it out of reputation.
                 $transport[$reason] = (int) ($transport[$reason] ?? 0) + 1;
+                if ($reason === 'credential_rejected' && $this->materials !== null) {
+                    // Not a strike, but the line's material holds a relay that
+                    // no longer takes its credential: refresh it early.
+                    $this->materials->noteCredentialRejected(
+                        (string) ($scope['source_id'] ?? ''),
+                        (int) ($scope['line_id'] ?? 0)
+                    );
+                }
                 continue;
             }
             if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))

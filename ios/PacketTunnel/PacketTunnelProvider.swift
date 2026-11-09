@@ -383,7 +383,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         guard !forwards.isEmpty else { return }
         let essential = Set(forwards.filter { groups[$0.runtimeName] == nil }.map { $0.forwardID })
-        let manager = UltraLeaseManager(client: client, forwards: forwards, essentialForwardIDs: essential) { [weak self] message in
+        let manager = UltraLeaseManager(client: client, forwards: forwards, essentialForwardIDs: essential, restartBootstrap: { [weak self] forward, external in
+            guard let self = self,
+                  var runtime = plan.runtimes.first(where: { $0.name == forward.runtimeName }),
+                  let original = runtime.configJSON,
+                  var config = JSONLenient.parseObject(original)
+            else { throw RuntimeHostError("ultra_bootstrap_unavailable") }
+            config["external_uot"] = external?.bootstrapJSON()
+            runtime.configJSON = try CanonicalJSON.string(config)
+            self.runtimes.stop(named: runtime.name)
+            try self.runtimes.start([runtime])
+        }) { [weak self] message in
             self?.handleUltraUnusable(message)
         }
         ultraLeases = manager
