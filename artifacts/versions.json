@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "86e54b2f97ac47e2a87b5561a36623b5885cd065484a18801414b26d23c90cdb",
-    "size_bytes": 74748305,
-    "version": "0.2.47",
-    "version_code": 49
+    "sha256": "39100b9bea3faf505004000d50ac2eba30d81b3b43dc27bd961aa2653db79100",
+    "size_bytes": 74604945,
+    "version": "0.2.48",
+    "version_code": 50
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -299,17 +299,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/sing-box": "697e8dcaa6f8dc711377d7ea89345f3805b49eacbd962a180484c12902d6e39a",
-      "bin/wstunnel": "904c0420baed592f576a64208f4aa321774420e69b12c005d6de165e333b3e8e",
-      "bin/leikwan-bond": "3f7f0c5e659725d1ee8fcc3a3d4e2aaf11e49d5bd14e06ac6be12ce0a44451cf",
-      "bin/leikwan-ingress": "46d0a903bf357da711218c6894fde3e4d4ff66a43cf121739dd9eb2b272b1b0e",
-      "bin/leikwan-uot-bond": "ba970b263779b7e47ba8fdb16f43ef8a9e58772c01eef5015e0349837aa9eedd",
-      "bin/ultra-client": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
+      "bin/sing-box": "57d898a122f85bd91725882e9a01641785258d5c61af897dc4423bdace29d3ab",
+      "bin/wstunnel": "f1e780ea0d21dd2c60a709eede153652172f75a512c82f98ab56e2200f959000",
+      "bin/leikwan-bond": "b6e0f22e11945f05a1528ab65451ba44ab8c4c311d7b3e8ee9edb2e1f3fb3d07",
+      "bin/leikwan-ingress": "9133c670c56e9be450bcc84850144007cf3434cef084df427e7e9a14a879f24d",
+      "bin/leikwan-uot-bond": "79e72df4b7d386e86b2bd452bacded19eddc73829ffae16ca14cc6029ad43360",
+      "bin/ultra-client": "cac5cdba6eec7874325fecae045f06087680182da4449861ca63a53179fa304b"
     },
-    "sha256": "ce6e2c82a236c868dbbae3b331d059b82cc4e47f302de939270fb43b4b8b686f",
-    "size_bytes": 79162157,
-    "version": "1.0.61",
-    "source_commit": "66a9d84fa15987c3d31f9e475605e14b57f9bb96"
+    "sha256": "977b0127a640053d38a9e521e3bba1ed4c79b6800116226656180283fbd37ba7",
+    "size_bytes": 79046790,
+    "version": "1.0.62",
+    "source_commit": "bcf3327a"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -346,17 +346,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/sing-box": "697e8dcaa6f8dc711377d7ea89345f3805b49eacbd962a180484c12902d6e39a",
-      "bin/wstunnel": "904c0420baed592f576a64208f4aa321774420e69b12c005d6de165e333b3e8e",
-      "bin/leikwan-bond": "3f7f0c5e659725d1ee8fcc3a3d4e2aaf11e49d5bd14e06ac6be12ce0a44451cf",
-      "bin/leikwan-ingress": "46d0a903bf357da711218c6894fde3e4d4ff66a43cf121739dd9eb2b272b1b0e",
-      "bin/leikwan-uot-bond": "ba970b263779b7e47ba8fdb16f43ef8a9e58772c01eef5015e0349837aa9eedd",
-      "bin/ultra-client": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
+      "bin/sing-box": "57d898a122f85bd91725882e9a01641785258d5c61af897dc4423bdace29d3ab",
+      "bin/wstunnel": "f1e780ea0d21dd2c60a709eede153652172f75a512c82f98ab56e2200f959000",
+      "bin/leikwan-bond": "b6e0f22e11945f05a1528ab65451ba44ab8c4c311d7b3e8ee9edb2e1f3fb3d07",
+      "bin/leikwan-ingress": "9133c670c56e9be450bcc84850144007cf3434cef084df427e7e9a14a879f24d",
+      "bin/leikwan-uot-bond": "79e72df4b7d386e86b2bd452bacded19eddc73829ffae16ca14cc6029ad43360",
+      "bin/ultra-client": "cac5cdba6eec7874325fecae045f06087680182da4449861ca63a53179fa304b"
     },
-    "sha256": "0daddc0222b09b0a371d8990a294957dc7d8ec0d23453a23adaeb7a5fc0b55f4",
-    "size_bytes": 70467783,
-    "version": "1.0.61",
-    "source_commit": "66a9d84fa15987c3d31f9e475605e14b57f9bb96"
+    "sha256": "bc9f4fac76289fe531441009d1eb2f9716171643b64a95b109bb6e4b0b4cc595",
+    "size_bytes": 70473483,
+    "version": "1.0.62",
+    "source_commit": "bcf3327a"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -420,43 +420,43 @@
   },
   "openwrt_leikwand_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.8-r1_aarch64_generic.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk",
-    "sha256": "735cf38ff43d68294eed81b50ff9e01d4af64455c53500705f72d346136db07b",
-    "size_bytes": 2595002,
-    "version": "1.2.7"
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.8-r1_aarch64_generic.ipk",
+    "sha256": "72510b72776fb4063981eb112a4cc7fe6bcdabce08418354bd7422f95a5ce06e",
+    "size_bytes": 2660050,
+    "version": "1.2.8"
   },
   "openwrt_leikwand_apk_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.7-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.8-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.7-r1.apk",
-    "sha256": "6936b03c0309439dbd7210b0166f806b2a81ee1488964c01b545ab54eb21ea1b",
-    "size_bytes": 2585828,
-    "version": "1.2.7"
+    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.8-r1.apk",
+    "sha256": "2190a2e7972005dad6f5011767ef2777a9ea40301c17be298208f3a81daf9ccd",
+    "size_bytes": 2648499,
+    "version": "1.2.8"
   },
   "openwrt_leikwand_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.7-r1_x86_64.ipk",
+    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.8-r1_x86_64.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.7-r1_x86_64.ipk",
-    "sha256": "be22501de3053c79cefa77e349d1c5c1e7b2f45df3720812732ae8c69bc790ce",
-    "size_bytes": 2870957,
-    "version": "1.2.7"
+    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.8-r1_x86_64.ipk",
+    "sha256": "a2ac012fb54d0b267deda352680c6a4a72e226cc2310e40867d2ce9b9e72cdc9",
+    "size_bytes": 2954429,
+    "version": "1.2.8"
   },
   "openwrt_leikwand_apk_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.7-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.8-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.7-r1.apk",
-    "sha256": "8acc3f10f85bd2d33d3a71c0d4077b9020ef0699ad70bdbffbd2e76eb8a85080",
-    "size_bytes": 2854372,
-    "version": "1.2.7"
+    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.8-r1.apk",
+    "sha256": "3477fa6146af1092dfb522810943f9b8388315e6e5482e529dffbd2e6f78eb9f",
+    "size_bytes": 2937426,
+    "version": "1.2.8"
   },
   "retired_runtime_030b48158478": {
     "attestation": {
@@ -569,10 +569,10 @@
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "attestation": {
-      "fingerprint": "2026.11.8.1.3d5f1d85",
-      "self_sha256": "e661b908febd7d605a287a252bd39cf4af25607492cee99cde1b52e7cad621dc"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "b74b4344f4317ed797be47928d587031b1899b74fd690a8b0a56f55e6cfce53e"
     },
-    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.8.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.10.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -585,25 +585,25 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "e661b908febd7d605a287a252bd39cf4af25607492cee99cde1b52e7cad621dc",
-    "size_bytes": 19067146,
-    "version": "2026.11.8.1",
-    "runtime_build_version": "2026.11.8.1.3d5f1d85",
+    "sha256": "b74b4344f4317ed797be47928d587031b1899b74fd690a8b0a56f55e6cfce53e",
+    "size_bytes": 19144970,
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "build_provenance": {
-      "source_commit": "3d5f1d85",
+      "source_commit": "2e3ebc61",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "a relay that refuses the credential no longer yields a dead stream; credential_rejected, prelude_rejected and relay_unreachable are reported to the panel; extend_grace/stop_grace control commands for bounded network grace"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "ultra_client_runtime_android_arm64": {
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
     "attestation": {
-      "fingerprint": "2026.10.26.1.571600c2",
-      "self_sha256": "2a65c9c6771f4802dd95b3376481db294f596a1793dd9f67bb1895abb39fb9ed"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "866c4d97bd9abc6884807100dab2de952b642b05440f1d67f4f6739830d8eab5"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.10.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -616,25 +616,25 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_arm64",
-    "sha256": "2a65c9c6771f4802dd95b3376481db294f596a1793dd9f67bb1895abb39fb9ed",
+    "sha256": "866c4d97bd9abc6884807100dab2de952b642b05440f1d67f4f6739830d8eab5",
     "size_bytes": 17498372,
-    "version": "2026.10.26.1",
-    "runtime_build_version": "2026.10.12.1.06471310",
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "build_provenance": {
-      "source_commit": "06471310",
+      "source_commit": "2e3ebc61",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "ultra_client_runtime_android_x86_64": {
     "architecture": "x86_64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
     "attestation": {
-      "fingerprint": "2026.10.26.1.571600c2",
-      "self_sha256": "0039f32bdb966cc59f3fd8893f1e558b1cee91ed0c2ce17a5c10ff70abbe0756"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "9448541c8bedd8e98ed855252b78f3fdd89e1f2a928f283787c501fb23e80ef0"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.10.12.1",
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.10.1",
     "hardening": [
       "pie",
       "relro",
@@ -648,25 +648,25 @@
     "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_x86_64",
-    "sha256": "0039f32bdb966cc59f3fd8893f1e558b1cee91ed0c2ce17a5c10ff70abbe0756",
-    "size_bytes": 19401912,
-    "version": "2026.10.26.1",
-    "runtime_build_version": "2026.10.12.1.06471310",
+    "sha256": "9448541c8bedd8e98ed855252b78f3fdd89e1f2a928f283787c501fb23e80ef0",
+    "size_bytes": 19198016,
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "build_provenance": {
-      "source_commit": "06471310",
+      "source_commit": "2e3ebc61",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "runtime 2026.10.12.1: ack-based write stall (5 s), status writes off the failover path, macOS UoT unsent cap, UDP queue 1024"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "ultra_client_runtime_linux_arm64": {
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
     "attestation": {
-      "fingerprint": "2026.11.8.1.3d5f1d85",
-      "self_sha256": "23513512fd4496deab88a835b5267f060195fe499c497c93f93ace636bc0d75c"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "c7403ddb5b9ebf5317a3ad97e06df5e546a519edbfa4669931b8a3d370d66815"
     },
-    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.8.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.10.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -679,31 +679,31 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "23513512fd4496deab88a835b5267f060195fe499c497c93f93ace636bc0d75c",
-    "size_bytes": 17367306,
-    "version": "2026.11.8.1",
-    "runtime_build_version": "2026.11.8.1.3d5f1d85",
+    "sha256": "c7403ddb5b9ebf5317a3ad97e06df5e546a519edbfa4669931b8a3d370d66815",
+    "size_bytes": 17498378,
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "build_provenance": {
-      "source_commit": "3d5f1d85",
+      "source_commit": "2e3ebc61",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "a relay that refuses the credential no longer yields a dead stream; credential_rejected, prelude_rejected and relay_unreachable are reported to the panel; extend_grace/stop_grace control commands for bounded network grace"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "ultra_client_runtime_macos_arm64": {
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
-      "fingerprint": "2026.11.1.b8d5f402",
-      "self_sha256": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "cac5cdba6eec7874325fecae045f06087680182da4449861ca63a53179fa304b"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.1",
+    "build": "go1.26.10 darwin/arm64 (GitHub Actions macos-15), garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, Developer ID signed + notarized in bundle, 2026.11.10.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "9caba8d3f7a75f0ecd77e0ff396ccc5147fd1745dcd4b6968e6d42b7159be945",
-    "size_bytes": 16179696,
-    "version": "2026.11.1",
-    "runtime_build_version": "2026.11.1.b8d5f402",
+    "sha256": "cac5cdba6eec7874325fecae045f06087680182da4449861ca63a53179fa304b",
+    "size_bytes": 16077456,
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -715,10 +715,10 @@
       "notarized"
     ],
     "build_provenance": {
-      "source_commit": "b8d5f402",
+      "source_commit": "2e3ebc61",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "quota-slice exhaustion: TCP copies pause on a drained slice instead of dropping, host renews on low quota, panel slice floor 3 intervals @2500 Mbps"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "ultra_client_runtime_macos_x64": {
@@ -755,26 +755,26 @@
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "attestation": {
-      "fingerprint": "2026.11.1.b8d5f402",
-      "self_sha256": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61"
+      "fingerprint": "2026.11.10.1.0ef2e258ef9a",
+      "self_sha256": "cbafa0e9c4337f049968b3acc3a230b3179414bf28cdc9cd9ea8f89d5da28c1f"
     },
-    "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.11.1",
+    "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.11.10.1",
     "obfuscator": "none",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "sha256": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61",
-    "size_bytes": 7476224,
-    "version": "2026.11.1",
-    "runtime_build_version": "2026.11.1.b8d5f402",
+    "sha256": "cbafa0e9c4337f049968b3acc3a230b3179414bf28cdc9cd9ea8f89d5da28c1f",
+    "size_bytes": 7489536,
+    "version": "2026.11.10.1",
+    "runtime_build_version": "2026.11.10.1.0ef2e258ef9a",
     "hardening": [
       "cgo-disabled",
       "trimpath",
       "stripped"
     ],
     "build_provenance": {
-      "source_commit": "b8d5f402",
+      "source_commit": "2e3ebc61",
       "compiler": "go",
       "obfuscation": "none",
-      "reason": "quota-slice exhaustion: TCP copies pause on a drained slice instead of dropping, host renews on low quota, panel slice floor 3 intervals @2500 Mbps"
+      "reason": "a relay that refuses the lease credential during candidate selection is reported as credential_rejected (not probe_tcp_failed), so the panel refreshes that line's material early; HA parity: external UoT on mobile/router, bounded network grace"
     }
   },
   "uot_bond_runtime": {
@@ -822,11 +822,11 @@
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61"
+      "ultra_client_runtime_windows": "cbafa0e9c4337f049968b3acc3a230b3179414bf28cdc9cd9ea8f89d5da28c1f"
     },
-    "sha256": "fe3083379233bd6d3752f67a45db380d7235ed4f9a2868e87ec2af6477f67476",
-    "size_bytes": 69943043,
-    "version": "0.1.20.79"
+    "sha256": "3f9700b79812f4d72b0a23c3d082882da3321ae544b2b5d47d7a672d32517d1c",
+    "size_bytes": 69952864,
+    "version": "0.1.20.80"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -834,24 +834,24 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "d398b7ada5573b80af47104c4fd02389b18041b23a6badaf12b0dde337f8a481",
-    "size_bytes": 64022791,
-    "version": "0.1.20.68",
+    "sha256": "ddd5bdadfeceda8cef7cd0c30cca5e79e433383b5c039b8b03d71d266beaefb5",
+    "size_bytes": 64030718,
+    "version": "0.1.20.69",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "94c91be1b5265fe876b9af62e2a5252398c8423d4e5976c7d1844d8353ea4c61"
+      "ultra_client_runtime_windows": "cbafa0e9c4337f049968b3acc3a230b3179414bf28cdc9cd9ea8f89d5da28c1f"
     }
   },
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "cd97a77ff4ee6452ef6161d49bb242919e75cd8d0261d220117a023ebeec1a93",
+    "sha256": "c14d06c3c85cb549399e25349b117248d7ef1fe02d4f426be4d32a4dbd101b40",
     "size_bytes": 16837,
-    "version": "0.1.20.66",
+    "version": "0.1.20.69",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {
