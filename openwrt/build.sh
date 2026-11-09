@@ -38,7 +38,7 @@ echo "==> building ultra-client runtime for linux/$GOARCH"
 mkdir -p "$HERE/leikwan-runtime/bin"
 ( cd "$REPO/tools/ultra-client" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${VERSION:-1.2.7}" \
+	go build -trimpath -ldflags "-s -w -X main.runtimeBuildVersion=${ULTRA_VERSION:-$(python3 "$REPO/scripts/runtime-build-identity.py" --field fingerprint)}" \
 	-o "$HERE/leikwan-runtime/bin/ultra-client" . )
 
 echo "==> verifying the staged binaries are static"

@@ -206,6 +206,18 @@ class UltraLeaseClient(
         }
     }
 
+    fun sendCommand(socketPath: String, policy: UltraPolicy, op: String, until: java.time.Instant? = null): Boolean {
+        val payload = JsonObject().apply {
+            addProperty("op", op)
+            addProperty("policy_generation", policy.policyGeneration)
+            until?.let { addProperty("grace_until", it.toString()) }
+        }
+        return runCatching {
+            sendPayload(socketPath, payload.toString().toByteArray(Charsets.UTF_8), policy.forwardId,
+                policy.policyGeneration, ULTRA_CONTROL_TIMEOUT_MS, 1)
+        }.getOrDefault(false)
+    }
+
     private fun sendPayload(
         controlSocketPath: String,
         payload: ByteArray,

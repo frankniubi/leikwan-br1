@@ -1388,9 +1388,14 @@ public partial class MainViewModel : ObservableObject
         ShowSetupWizard = false;
     }
 
-    public void SignOutForTests()
+    /// <summary>
+    /// Forgets the signed-in session and client in the config only. It touches
+    /// no proxy, runtime, or UI state, so sign-out can persist it before
+    /// teardown runs: a teardown that hangs or a killed process then cannot
+    /// leave the session alive for the next launch.
+    /// </summary>
+    public void ClearSignedInConfig()
     {
-        StopProxyForShutdown();
         _config.DesktopSessionToken = string.Empty;
         _config.SignedInUserId = 0;
         _config.SignedInUsername = string.Empty;
@@ -1400,6 +1405,17 @@ public partial class MainViewModel : ObservableObject
         _config.ActiveClientName = string.Empty;
         _config.ClientId = 0;
         _config.AgentToken = string.Empty;
+    }
+
+    public void SignOutForTests()
+    {
+        StopProxyForShutdown();
+        ClearSignedInConfig();
+        ResetSignedInView();
+    }
+
+    private void ResetSignedInView()
+    {
         AvailableClientChoices.Clear();
         SignedInUsername = string.Empty;
         SignedInEmail = string.Empty;
@@ -1621,6 +1637,36 @@ public partial class MainViewModel : ObservableObject
     private void Disconnect()
     {
         StopProxyForShutdown();
+        DisconnectRuntime();
+    }
+
+    private static readonly TimeSpan SignOutProxyStopBudget = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Signs out without blocking the UI thread. A proxy start, health check or
+    /// reconnect can hold the proxy gates while its next step is queued to the
+    /// UI thread; blocking that thread on the proxy stop deadlocked sign-out.
+    /// Awaiting keeps the dispatcher pumping, and the stop gets a budget so a
+    /// slow driver cannot hold the user on the dashboard indefinitely.
+    /// </summary>
+    public async Task SignOutAsync()
+    {
+        ForgetProxySession(force: true);
+        try
+        {
+            await StopProxyAsync("sign_out", CancellationToken.None).WaitAsync(SignOutProxyStopBudget);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "proxy stop during sign-out failed or exceeded its budget");
+        }
+        DisconnectRuntime();
+        ClearSignedInConfig();
+        ResetSignedInView();
+    }
+
+    private void DisconnectRuntime()
+    {
         StopUsageRefresh();
         _pollingService?.Stop();
         _healthCheckService?.Stop();
@@ -2613,13 +2659,16 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // Post rather than Invoke: sign-out and disconnect block the UI thread
+        // while background proxy cleanup runs, and a synchronous Invoke from that
+        // cleanup would wait on the same blocked UI thread forever.
         try
         {
-            dispatcher.Invoke(() =>
+            dispatcher.BeginInvoke(new Action(() =>
             {
                 if (!IsShuttingDown)
                     action();
-            });
+            }));
         }
         catch (InvalidOperationException) when (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
         {

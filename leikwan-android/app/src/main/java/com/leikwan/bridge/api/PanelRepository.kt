@@ -142,6 +142,7 @@ class PanelRepository(
         PanelNetwork.applyTo(clientBuilder, networkBinder)
 
         clientBuilder
+            .addInterceptor(com.leikwan.bridge.net.PanelEndpointFailoverInterceptor())
             .addInterceptor(
                 PanelDeviceInterceptor(
                     prefs = prefs,

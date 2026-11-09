@@ -25,6 +25,7 @@ const leaseBatchTimeout = 75 * time.Second
 // runtime does not recognise is ignored, and any field we omit falls back to
 // the runtime's own default, so this stays forward compatible.
 type RuntimeConfig struct {
+	ExternalUoT              *ExternalUoTGrant   `json:"external_uot,omitempty"`
 	ForwardID                int                 `json:"forward_id"`
 	ListenHost               string              `json:"listen_host"`
 	ListenPort               int                 `json:"listen_port"`
@@ -287,6 +288,7 @@ func buildRuntimeConfig(cfg Config, forward ForwardConfig, paths runtimePaths, p
 		digest = policy.TargetDigest
 	}
 	runtime := RuntimeConfig{
+		ExternalUoT:              externalGrant(policy),
 		ForwardID:                forward.ForwardID,
 		ListenHost:               "0.0.0.0",
 		ListenPort:               forward.ListenPort,

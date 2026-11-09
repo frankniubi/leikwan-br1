@@ -614,6 +614,15 @@ func (runtime *nativeSocks5Runtime) handleTCP(ctx context.Context, connection ne
 	}
 }
 
+// nativeTCPFailureReason keeps a refused credential apart from a dead relay: a
+// new source login refuses every earlier credential on every line at once.
+func nativeTCPFailureReason(err error) string {
+	if streamCredentialRejected(err) {
+		return credentialRejectedReason
+	}
+	return "relay_connect_timeout"
+}
+
 // dialNativeStreamWithCandidates retries a native CONNECT before replying to
 // the local SOCKS client. The request header has been consumed, but no
 // application payload has been read, so changing the provider cannot replay
@@ -643,7 +652,7 @@ func dialNativeStreamWithCandidates(
 				key = failed.SelectionRef
 			}
 			if status != nil {
-				status.RecordCandidateFailure(key, "tcp", "relay_connect_timeout", failed.LeaseHash)
+				status.RecordCandidateFailure(key, "tcp", nativeTCPFailureReason(err), failed.LeaseHash)
 				status.RecordHAEvent("tcp", haErrorClass(err), snapshot.Policy.PolicyGeneration)
 			}
 			log.Printf("native tcp candidate failed forward_id=%d selection_ref=%s reason=%s",

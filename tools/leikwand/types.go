@@ -71,18 +71,19 @@ type ForwardConfig struct {
 // endpoint. Everything about it is validated before use: protocol tag, service
 // state, digest binding, TTL window, quota and transport.
 type UltraPolicy struct {
-	Protocol            string `json:"protocol"`
-	ForwardID           int    `json:"forward_id"`
-	PolicyGeneration    string `json:"policy_generation"`
-	SessionTicket       string `json:"session_ticket"`
-	IssuedAt            string `json:"issued_at"`
-	RenewAfter          string `json:"renew_after"`
-	ExpiresAt           string `json:"expires_at"`
-	ServiceState        string `json:"service_state"`
-	Transport           string `json:"transport"`
-	RateLimitMbps       int64  `json:"rate_limit_mbps"`
-	QuotaRemainingBytes int64  `json:"quota_remaining_bytes"`
-	TargetDigest        string `json:"target_digest"`
+	ExternalUoT         *ExternalUoTGrant `json:"external_uot,omitempty"`
+	Protocol            string            `json:"protocol"`
+	ForwardID           int               `json:"forward_id"`
+	PolicyGeneration    string            `json:"policy_generation"`
+	SessionTicket       string            `json:"session_ticket"`
+	IssuedAt            string            `json:"issued_at"`
+	RenewAfter          string            `json:"renew_after"`
+	ExpiresAt           string            `json:"expires_at"`
+	ServiceState        string            `json:"service_state"`
+	Transport           string            `json:"transport"`
+	RateLimitMbps       int64             `json:"rate_limit_mbps"`
+	QuotaRemainingBytes int64             `json:"quota_remaining_bytes"`
+	TargetDigest        string            `json:"target_digest"`
 }
 
 type NativeOutboundCapability struct {

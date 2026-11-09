@@ -529,6 +529,55 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task SignOutAsync_ClearsSessionAndShowsSetupWithoutBlocking()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3-mirror.leikwanhost.com",
+            DesktopSessionToken = "desktop-session-token",
+            ActiveClientId = 26,
+            ClientId = 26,
+            AgentToken = "agent-token-26",
+        });
+
+        await vm.SignOutAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(vm.ShowSetupWizard);
+        Assert.False(vm.IsConnected);
+        Assert.Equal(string.Empty, vm.Config.AgentToken);
+        Assert.Equal(string.Empty, vm.Config.DesktopSessionToken);
+        Assert.Equal(0, vm.Config.ActiveClientId);
+    }
+
+    [Fact]
+    public void ClearSignedInConfig_ForgetsSessionButKeepsPanelUrl()
+    {
+        var vm = new MainViewModel();
+        vm.Initialize(new AgentConfig
+        {
+            MasterUrl = "https://v3-mirror.leikwanhost.com",
+            DesktopSessionToken = "desktop-session-token",
+            SignedInEmail = "ops@example.com",
+            ActiveClientId = 26,
+            ActiveClientName = "Client 26",
+            ClientId = 26,
+            AgentToken = "agent-token-26",
+        });
+
+        var panelUrl = vm.Config.MasterUrl;
+
+        vm.ClearSignedInConfig();
+
+        Assert.Equal(string.Empty, vm.Config.DesktopSessionToken);
+        Assert.Equal(string.Empty, vm.Config.AgentToken);
+        Assert.Equal(string.Empty, vm.Config.SignedInEmail);
+        Assert.Equal(0, vm.Config.ClientId);
+        Assert.Equal(0, vm.Config.ActiveClientId);
+        Assert.Equal(panelUrl, vm.Config.MasterUrl);
+    }
+
+    [Fact]
     public void ShowUpdatePrompt_SetsUpdatePromptState()
     {
         var vm = new MainViewModel();

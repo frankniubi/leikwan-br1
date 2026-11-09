@@ -69,6 +69,26 @@ final class UltraMode
     /** How long before material expiry the panel asks the source agent for fresh material. */
     public const MATERIAL_REFRESH_WINDOW_KEY = 'ULTRA_MATERIAL_REFRESH_WINDOW_SECONDS';
     public const DEFAULT_MATERIAL_REFRESH_WINDOW_SECONDS = 600;
+    /**
+     * A relay refusing a line's credential (05 02) marks that line's material
+     * as due before its refresh window. LeiGod retires relays 10-20 minutes
+     * into a credential, and the window alone only refreshes at minute 20.
+     * Per line, at most one early refresh per this many seconds; 0 disables.
+     */
+    public const CREDENTIAL_REJECTED_REFRESH_INTERVAL_KEY = 'ULTRA_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS';
+    public const DEFAULT_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS = 300;
+    /**
+     * A line with less than this left on its material no longer limits how long
+     * a forward's grant may be, as long as another line of the forward has more.
+     */
+    public const MATERIAL_EXPIRING_MARGIN_SECONDS = 120;
+    /**
+     * A refresh of a line's material changes the forward's material fingerprint
+     * and so its policy_generation. For this long afterwards the lease plane
+     * still honours the generation a client got before the refresh, provided
+     * nothing but the line material differs (see LeigodTokenBroker).
+     */
+    public const PREVIOUS_GENERATION_GRACE_SECONDS = 180;
 
     /**
      * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in

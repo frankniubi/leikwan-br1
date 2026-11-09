@@ -19,6 +19,7 @@ final class UltraMaterialService
     private const CLIENT_SCOPE_PREFIX = 'ultra.client.scope.v2.';
     private const SOURCE_NONCE_PREFIX = 'ultra.source.nonces.v1.';
     private const TICKET_NONCE_PREFIX = 'ultra.source.tickets.v1.';
+    private const CREDENTIAL_REJECTED_PREFIX = 'ultra.material.rejected.v1.';
 
     /** @var callable(): int */
     private $clock;
@@ -85,8 +86,23 @@ final class UltraMaterialService
         return array_values($result);
     }
 
-    /** @return array<int, int> */
-    public function dueLineIds(string|int $sourceIdOrRefreshWindow = '', int $refreshWindowSeconds = 600): array
+    /**
+     * Lines whose material is due for a refresh, most urgent first.
+     *
+     * Only eight are handed out per poll. They used to be the eight lowest line
+     * ids, so a line the source could not acquire kept its place at the front
+     * forever and the lines behind it were only refreshed once their old
+     * material had already expired. Most urgent first (never acquired, then
+     * soonest to expire) fixes that without needing any state; $skipLineIds
+     * are lines the source reports it is backing off from.
+     *
+     * A line whose current material a relay refused (noteCredentialRejected)
+     * is due before its window and sorts like material that expires now.
+     *
+     * @param array<int, mixed> $skipLineIds
+     * @return array<int, int>
+     */
+    public function dueLineIds(string|int $sourceIdOrRefreshWindow = '', int $refreshWindowSeconds = 600, array $skipLineIds = []): array
     {
         $sourceId = '';
         if (is_int($sourceIdOrRefreshWindow)) {
@@ -97,16 +113,84 @@ final class UltraMaterialService
         if ($sourceId === '') {
             $sourceId = $this->primarySourceId();
         }
+        $skip = [];
+        foreach (array_slice($skipLineIds, 0, 64) as $rawLineId) {
+            $skip[(int) $rawLineId] = true;
+        }
         $now = $this->now();
         $due = [];
         foreach ($this->requiredLineIds($sourceId !== '' ? $sourceId : null) as $lineId) {
+            if (isset($skip[$lineId])) {
+                continue;
+            }
             $material = $this->loadMaterial($sourceId, $lineId, false);
             $expiresAt = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
-            if ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
-                $due[] = $lineId;
+            if ($this->credentialRejectedForMaterial($sourceId, $lineId, $material)) {
+                $due[$lineId] = min($expiresAt, $now);
+            } elseif ($expiresAt <= $now + max(60, $refreshWindowSeconds)) {
+                $due[$lineId] = $expiresAt;
             }
         }
-        return array_slice($due, 0, 8);
+        // asort keeps the original (ascending line id) order among equals.
+        asort($due, SORT_NUMERIC);
+        return array_slice(array_keys($due), 0, 8);
+    }
+
+    /**
+     * A relay refused the credential of this line's current material (05 02).
+     * LeiGod retires relays 10-20 minutes into a credential while the refresh
+     * window only fires at minute 20, so clients keep dialling a dead relay for
+     * up to ten minutes. Mark the material so dueLineIds() refreshes it early.
+     *
+     * Rate limited per line: the mark is only taken when the line's material is
+     * at least the configured interval old, and a mark already pending for the
+     * same material is kept, so a burst of reports causes one refresh at most.
+     */
+    public function noteCredentialRejected(string $sourceId, int $lineId): bool
+    {
+        $sourceId = trim($sourceId);
+        $interval = $this->credentialRejectedRefreshIntervalSeconds();
+        if ($sourceId === '' || $lineId <= 0 || $lineId > 45535 || $interval === 0) {
+            return false;
+        }
+        $material = $this->loadMaterial($sourceId, $lineId, true);
+        $acquiredAt = $this->parseTimestamp((string) ($material['acquired_at'] ?? ''));
+        if ($acquiredAt === null || $acquiredAt > $this->now() - $interval) {
+            return false;
+        }
+        if ($this->credentialRejectedForMaterial($sourceId, $lineId, $material)) {
+            return false;
+        }
+        $this->settingSet($this->credentialRejectedKey($sourceId, $lineId), (string) $material['acquired_at']);
+        return true;
+    }
+
+    /** @param array<string, mixed> $material */
+    private function credentialRejectedForMaterial(string $sourceId, int $lineId, array $material): bool
+    {
+        $acquiredAt = (string) ($material['acquired_at'] ?? '');
+        if ($acquiredAt === '') {
+            return false;
+        }
+        // The mark names the material it was raised against; any newer upload
+        // has replaced the refused credential and so clears it by itself.
+        $marked = $this->settingGet($this->credentialRejectedKey($sourceId, $lineId), '');
+        return $marked !== '' && hash_equals($marked, $acquiredAt);
+    }
+
+    private function credentialRejectedRefreshIntervalSeconds(): int
+    {
+        $raw = trim((string) $this->config->get(UltraMode::CREDENTIAL_REJECTED_REFRESH_INTERVAL_KEY, ''));
+        if ($raw === '' || preg_match('/^[0-9]+$/', $raw) !== 1) {
+            return UltraMode::DEFAULT_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS;
+        }
+        $seconds = (int) $raw;
+        return $seconds === 0 ? 0 : max(60, min(3600, $seconds));
+    }
+
+    private function credentialRejectedKey(string $sourceId, int $lineId): string
+    {
+        return self::CREDENTIAL_REJECTED_PREFIX . hash('sha256', trim($sourceId)) . '.line.' . $lineId;
     }
 
     /** @param array<int, int> $lineIds */
@@ -202,14 +286,17 @@ final class UltraMaterialService
 
     /**
      * @param array<int, array{source_id:string,line_id:int}|int> $lineRefs
-     * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int}|null
+     * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int,changed_at:int}|null
+     *         changed_at is the newest acquisition time among the lines: the
+     *         moment the fingerprint last moved because material was refreshed.
      */
     public function lineSnapshot(array $lineRefs): ?array
     {
         $normalized = $this->normalizeLineRefs($lineRefs);
         $ips = [];
         $generations = [];
-        $expiresAt = PHP_INT_MAX;
+        $expiryOfLines = [];
+        $changedAt = 0;
         foreach ($normalized as $lineRef) {
             $sourceId = (string) $lineRef['source_id'];
             $lineId = (int) $lineRef['line_id'];
@@ -218,8 +305,8 @@ final class UltraMaterialService
                 continue;
             }
             $generations[] = $sourceId . ':' . $lineId . ':' . (string) ($material['generation'] ?? '');
-            $materialExpiry = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
-            $expiresAt = min($expiresAt, $materialExpiry);
+            $expiryOfLines[] = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
+            $changedAt = max($changedAt, $this->parseTimestamp((string) ($material['acquired_at'] ?? '')) ?? 0);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -230,13 +317,89 @@ final class UltraMaterialService
                 }
             }
         }
-        if ($ips === [] || $generations === [] || $expiresAt <= $this->now()) {
+        if ($ips === [] || $generations === [] || $expiryOfLines === []) {
+            return null;
+        }
+        $now = $this->now();
+        // A grant can only be as long as the material behind it, and it is not
+        // issued at all when that is under 30 seconds. Capping it by the
+        // soonest-expiring line meant one line whose refresh failed took every
+        // other healthy line of the forward down with it, a few seconds before
+        // its own expiry. A line that is about to expire is left out of the cap
+        // while at least one other line is comfortably valid: the lease plane
+        // resolves candidates from fresh material only, so the dying line is
+        // simply not offered once it is gone.
+        $comfortable = array_filter(
+            $expiryOfLines,
+            static fn(int $expiry): bool => $expiry > $now + UltraMode::MATERIAL_EXPIRING_MARGIN_SECONDS
+        );
+        $expiresAt = min($comfortable !== [] ? $comfortable : $expiryOfLines);
+        if ($expiresAt <= $now) {
             return null;
         }
         return [
             'line_ips' => array_slice(array_keys($ips), 0, 8),
             'fingerprint' => hash('sha256', implode('|', $generations)),
             'expires_at' => $expiresAt,
+            'changed_at' => $changedAt,
+        ];
+    }
+
+    /**
+     * The lines a grant covers as a sorted list of "source:line" keys, for
+     * comparing the lines a client's ticket was minted for with today's.
+     *
+     * @param array<int, mixed> $lineRefs
+     * @return array<int, string>
+     */
+    public function lineKeys(array $lineRefs): array
+    {
+        $keys = [];
+        foreach ($this->normalizeClientScopeLines(['lines' => $lineRefs]) as $line) {
+            $keys[] = (string) $line['source_id'] . ':' . (int) $line['line_id'];
+        }
+        sort($keys, SORT_STRING);
+        return $keys;
+    }
+
+    /**
+     * What a client's own session ticket says it was minted for, once the ticket
+     * is proven to belong to this client, device and forward and to still be
+     * valid. Used to recognise a grant that was current until the line material
+     * was refreshed (see LeigodTokenBroker). Returns [] for anything else,
+     * including tickets minted before the revocation epoch was recorded in them:
+     * those can never be given the benefit of the doubt.
+     *
+     * @return array{policy_generation:string,material_fingerprint:string,revocation_epoch:int,expires_at:int,line_keys:array<int,string>}|array{}
+     */
+    public function presentedTicketScope(string $token, int $clientId, string $deviceId, int $forwardId): array
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return [];
+        }
+        $payload = str_starts_with($token, 'u2')
+            ? $this->open($token)
+            : $this->open((string) $this->settingGet(self::CLIENT_SCOPE_PREFIX . hash('sha256', $token), ''));
+        $now = $this->now();
+        $generation = strtolower(trim((string) ($payload['policy_generation'] ?? '')));
+        $fingerprint = strtolower(trim((string) ($payload['material_fingerprint'] ?? '')));
+        if (($payload['kind'] ?? '') !== 'client-access'
+            || (int) ($payload['client_id'] ?? 0) !== $clientId
+            || (int) ($payload['forward_id'] ?? 0) !== $forwardId
+            || !hash_equals((string) ($payload['device_hash'] ?? ''), hash('sha256', $deviceId !== '' ? $deviceId : 'none'))
+            || (int) ($payload['expires_at'] ?? 0) <= $now
+            || !array_key_exists('revocation_epoch', $payload)
+            || preg_match('/^[a-f0-9]{64}$/', $generation) !== 1
+            || preg_match('/^[a-f0-9]{64}$/', $fingerprint) !== 1) {
+            return [];
+        }
+        return [
+            'policy_generation' => $generation,
+            'material_fingerprint' => $fingerprint,
+            'revocation_epoch' => (int) $payload['revocation_epoch'],
+            'expires_at' => (int) $payload['expires_at'],
+            'line_keys' => $this->lineKeys(is_array($payload['lines'] ?? null) ? $payload['lines'] : []),
         ];
     }
 
