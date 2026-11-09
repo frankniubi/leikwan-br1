@@ -1658,11 +1658,18 @@ final class TenantController extends BaseController
     /**
      * OpenWrt card for the app center.
      *
-     * The router edition (leikwand 1.2.5) onboards exactly like the headless
+     * The router edition (leikwand 1.2.7) onboards exactly like the headless
      * clients: paste the panel-issued client id and agent token into LuCI (or
-     * run `leikwand ctl register` over SSH). The card renders the ipk install
-     * command for the router's architecture and a ready-made register command
-     * carrying this client's identity, so nothing has to be assembled by hand.
+     * run `leikwand ctl register` over SSH). The card renders the install
+     * command for the router's architecture, firmware generation and a
+     * ready-made register command carrying this client's identity, so nothing
+     * has to be assembled by hand.
+     *
+     * Two package generations coexist: OpenWrt 25.12+ dropped opkg for apk,
+     * so those routers get `apk add --allow-untrusted` with .apk files, while
+     * 23.05–24.10 and the 21.02/22.03 legacy lines keep the opkg .ipk path.
+     * The card leads with install/install-openwrt.sh, which picks the right
+     * one on the router itself; the per-version commands are the fallback.
      *
      * Copy is Chinese like the rest of the app center and is not routed through
      * the client-side i18n dictionary (see tenantIosSection for the reason).
@@ -1680,37 +1687,111 @@ final class TenantController extends BaseController
         if ($hasClient) {
             $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
             $amd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.5-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.5-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.7-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.5-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.5-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.0-r1_all.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
+            // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
+            // .ipk files: those routers install .apk packages instead. apk
+            // also refuses plain HTTPS URLs as arguments — it treats them as
+            // repository package names — so the command downloads the three
+            // files to /tmp with curl (shipped with ImmortalWrt/OpenWrt;
+            // wget exists everywhere as the fallback) and hands apk the
+            // local paths. The panel's download is hash-pinned and served
+            // over HTTPS; --allow-untrusted only skips feed-index signing,
+            // which a local file install does not have anyway.
+            $amd64ApkFiles = ['leikwand-1.2.7-r1.apk', 'leikwan-runtime-1.2.7-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
+            $arm64ApkFiles = $amd64ApkFiles;
+            $amd64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/amd64', $amd64ApkFiles) . $register;
+            $arm64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/arm64', $arm64ApkFiles) . $register;
             // OpenWrt 21.02/22.03 ship no ucode, so the LuCI app cannot run
             // there (verified on a 21.02.7 VM: rpcd refuses to load the ucode
             // backend). Old devices get the core packages only — the SSH
             // command-line journey (register/forwards/logs) works everywhere.
             $legacyAmd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.5-r1_x86_64.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.5-r1_x86_64.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.7-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.7-r1_x86_64.ipk') . $register;
             $legacyArm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.5-r1_aarch64_generic.ipk') . ' '
-                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.5-r1_aarch64_generic.ipk') . $register;
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.7-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.7-r1_aarch64_generic.ipk') . $register;
         } else {
             $amd64Command = $ipkBase . '/amd64/';
             $arm64Command = $ipkBase . '/arm64/';
+            $amd64ApkCommand = $ipkBase . '/apk/amd64/';
+            $arm64ApkCommand = $ipkBase . '/apk/arm64/';
         }
 
+        // One command for every firmware: install-openwrt.sh detects apk vs
+        // opkg, x86_64 vs aarch64 and whether LuCI can run, verifies every
+        // package against the panel manifest and registers the router. The
+        // per-version commands below stay as a manual fallback.
+        $artifactBase = rtrim($this->artifactBaseUrl(), '/');
+        $installerUrl = $this->shellQuote($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh'));
+        $universalCommand = '{ wget -qO /tmp/leikwan-install.sh ' . $installerUrl
+            . ' || curl -fsSL -o /tmp/leikwan-install.sh ' . $installerUrl . '; }'
+            . ' && sh /tmp/leikwan-install.sh --panel ' . $this->shellQuote($artifactBase);
+        if ($hasClient) {
+            $universalCommand .= ' --client-id ' . $clientId . ' --agent-token ' . $this->shellQuote($agentToken);
+        }
+        // The same script also reports every version on the router and the one
+        // published for it, so an operator can answer "am I current?" without
+        // guessing at the firmware/arch combination.
+        $versionsUrl = $this->installerScriptUrl('openwrt_versions', '/artifacts/openwrt-versions.sh');
+        $versionsCommand = '{ wget -qO /tmp/leikwan-versions.sh ' . $this->shellQuote($versionsUrl)
+            . ' || curl -fsSL -o /tmp/leikwan-versions.sh ' . $this->shellQuote($versionsUrl) . '; }'
+            . ' && sh /tmp/leikwan-versions.sh --panel ' . $this->shellQuote($artifactBase);
+
         $description = $hasClient
-            ? '刷入固件或在现有 OpenWrt 23.05+ 上安装三个 ipk 包，然后用下面的命令绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
-            : '先在下方创建客户端，再回来复制带身份的安装命令。';
+            ? '在路由器 SSH 里运行上面这一条命令即可：脚本自动识别固件版本（apk / opkg）、CPU 架构（x86_64 / arm64）以及是否带 LuCI，校验软件包哈希后安装，并直接绑定到本客户端。也可以在 LuCI 的配置向导里粘贴 Client ID 与 Agent Token。'
+            : '上面的命令只安装软件；先在下方创建客户端，再回来复制带身份的安装命令即可一步绑定。';
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
-            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.5)', 'openwrt_leikwand')) . '</strong>'
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.7)', 'openwrt_leikwand')) . '</strong>'
+            // Collapsed like the other platforms: the title stays visible, every
+            // command opens on demand.
+            . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
+            . '<pre class="tenant-client-install__command" data-openwrt-universal>' . $this->escape($universalCommand) . '</pre>'
             . '<div class="muted">' . $this->escape($description)
-            . ' 固件直接从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载；本卡片适用于 x86_64 软路由（第一个命令）与 arm64 设备（第二个命令）。</div>'
+            . ' 支持 OpenWrt 21.02 – 25.12+ 及 ImmortalWrt 等衍生固件；固件也可从 <a href="/knowledgebase?thread=openwrt">知识库</a> 下载。'
+            . '面板地址：<code>' . $this->escape($masterUrl) . '</code> · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制安装命令', $universalCommand, 'secondary', '已复制', '复制失败')
+            . '<a class="button secondary" href="' . $this->escape($this->installerScriptUrl('openwrt_installer', '/artifacts/install-openwrt.sh')) . '">安装脚本</a>'
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>查看版本 · 自动识别固件与架构</summary>'
+            . '<pre class="tenant-client-install__command" data-openwrt-versions>' . $this->escape($versionsCommand) . '</pre>'
+            . '<div class="muted">列出已安装 / 正在运行 / 面板已发布的版本；加 <code>--check</code> 时有更新则退出码为 1。</div>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制版本命令', $versionsCommand, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>手动安装（按固件版本选择命令）</summary>'
+            . '<div class="muted" style="margin:6px 0;">一键脚本不可用时使用。OpenWrt 25.12 及以后用 apk 命令；23.05–24.10 用 opkg 命令；每组适用于 x86_64 软路由与 arm64 设备。'
+            . 'arm64 设备若提示 “incompatible with the architectures configured” 或 “uninstallable … arch: aarch64_generic”，说明固件架构是 aarch64_cortex-a53 之类的具体型号，请改用上面的一键脚本，它会自动登记 aarch64_generic 架构。</div>'
+            . '<details style="margin-top:10px;"><summary>OpenWrt 25.12+（apk 包管理器）· x86_64 / amd64</summary>'
+            . '<div class="muted" style="margin:6px 0;">OpenWrt 25.12 起系统包管理器从 opkg 换成了 apk，无法安装 .ipk 包；这些版本请用下面的 apk 命令安装 .apk 包。功能与 opkg 版完全一致。</div>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64ApkCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64ApkCommand, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>OpenWrt 25.12+（apk 包管理器）· arm64 / aarch64</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64ApkCommand) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64ApkCommand, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05 – 24.10，opkg）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
+            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05 – 24.10，opkg）</summary>'
+            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
+            . '<div class="actions">'
+            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
+            . '</div></details>'
             . ($hasClient
                 ? '<details style="margin-top:10px;"><summary>OpenWrt 21.02 / 22.03 老设备（仅命令行，无网页界面）</summary>'
                     . '<div class="muted" style="margin:6px 0;">这些版本的仓库没有 ucode，LuCI 集成无法运行；只装核心包，用 SSH 命令行动线，功能（转发监听 + 原生出口中继）与新版完全一致。</div>'
@@ -1723,19 +1804,51 @@ final class TenantController extends BaseController
                     . $this->renderCopyButton('复制 arm64 命令', $legacyArm64Command, 'secondary', '已复制', '复制失败')
                     . '</div></details>'
                 : '')
-            . '<details style="margin-top:10px;"><summary>x86_64 / amd64 软路由（OpenWrt 23.05+）</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($amd64Command) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制 x86_64 命令', $amd64Command, 'secondary', '已复制', '复制失败')
-            . '</div></details>'
-            . '<details style="margin-top:10px;"><summary>arm64 / aarch64 设备（OpenWrt 23.05+）</summary>'
-            . '<pre class="tenant-client-install__command">' . $this->escape($arm64Command) . '</pre>'
-            . '<div class="actions">'
-            . $this->renderCopyButton('复制 arm64 命令', $arm64Command, 'secondary', '已复制', '复制失败')
-            . '</div></details>'
-            . '<div class="muted" style="margin-top:8px;">面板地址：<code>' . $this->escape($masterUrl) . '</code>'
-            . ' · 固件不含任何机密，刷完机只需要本卡片里的凭据。</div>'
+            . '</details>'
             . '</section>';
+    }
+
+    /**
+     * One-line apk install for OpenWrt 25.12+ routers: download the packages
+     * to /tmp, then install the local files.
+     *
+     * apk rejects plain HTTPS URL arguments (it resolves them as repository
+     * package names, "no such package"), so a remote file install has to go
+     * through a local copy first. curl is used when present — it is on
+     * ImmortalWrt and most 25.12 images — and wget otherwise, so the command
+     * stays a single copy-paste on stock OpenWrt too.
+     *
+     * @param list<string> $files
+     */
+    private function apkInstallCommand(string $dirUrl, array $files): string
+    {
+        // One download per file: `curl -O` names only the URL that follows it,
+        // so a single curl call with several URLs leaves all but the last file
+        // unsaved. Each file is fetched in its own step instead.
+        //
+        // The version is part of the URL: the CDN in front of the panel caches
+        // a package for a year, and an edge that fetched one mid-upload keeps
+        // serving the truncated copy after the origin is fixed. A published
+        // file never changes, so a distinct URL per version is free.
+        $downloads = [];
+        foreach ($files as $file) {
+            $url = $this->shellQuote($dirUrl . '/' . $file . '?v=' . rawurlencode($this->versionInFileName($file)));
+            $downloads[] = '{ command -v curl >/dev/null && curl -fsSL -o ' . $this->shellQuote($file) . ' ' . $url
+                . ' || wget -q -O ' . $this->shellQuote($file) . ' ' . $url . '; }';
+        }
+        $quotedFiles = implode(' ', array_map([$this, 'shellQuote'], $files));
+        return 'cd /tmp && '
+            . implode(' && ', $downloads) . ' && '
+            . 'apk add --allow-untrusted ' . $quotedFiles;
+    }
+
+    /** The "<version>-r<rev>" part of a package file name, for cache-busting. */
+    private function versionInFileName(string $file): string
+    {
+        if (preg_match('/(\d+\.\d+\.\d+-r\d+)/', $file, $m) === 1) {
+            return $m[1];
+        }
+        return '1';
     }
 
     /**

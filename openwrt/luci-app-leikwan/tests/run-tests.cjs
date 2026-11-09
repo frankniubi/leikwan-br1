@@ -331,6 +331,22 @@ function suiteContracts() {
 	}
 }
 
+// The rpcd backend runs leikwand through fs.popen(). ucode on OpenWrt 25.12
+// rejects the argument-vector form with "Invalid argument", which made every
+// call report agent_unavailable while the daemon was healthy. The string form
+// is the only one that works on every supported release, so pin it.
+function suiteRpcdInvocation() {
+	step('rpcd invokes leikwand with a command string');
+
+	const src = fs.readFileSync(RPCD, 'utf8');
+	check('ctl() does not pass an argv array to fs.popen',
+		!/fs\.popen\(\s*argv\s*,/.test(src));
+	check('ctl() quotes each argument for /bin/sh',
+		/function shellQuote\(/.test(src) && /map\(argv, shellQuote\)/.test(src));
+	check('ctl() discards stderr so a diagnostic cannot corrupt the JSON line',
+		/2>\/dev\/null/.test(src));
+}
+
 function suiteMenu() {
 	step('menu and ACL file sanity');
 	const menu = JSON.parse(fs.readFileSync(MENU, 'utf8'));
@@ -474,6 +490,7 @@ async function suitePanelEgress() {
 	await suiteOnlineLimit();
 	await suitePanelEgress();
 	suiteContracts();
+	suiteRpcdInvocation();
 	suiteMenu();
 	step('result');
 	console.log(passed + ' passed, ' + failed + ' failed');

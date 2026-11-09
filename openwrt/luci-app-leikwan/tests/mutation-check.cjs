@@ -63,6 +63,15 @@ const MUTATIONS = [
 		apply: (src) => src.replace(
 			/\tenabled:/,
 			"\tmode: { type: 'enum', default: 'forward', values: [ 'forward' ] },\n\tenabled:")
+	},
+	{
+		// The 25.12 regression: an argv array handed to fs.popen() makes every
+		// rpcd call fail, so the UI reports a running daemon as stopped.
+		name: 'rpcd passes an argv array to fs.popen (25.12 ucode rejects it)',
+		file: 'root/usr/libexec/rpcd/luci.leikwand',
+		apply: (src) => src.replace(
+			"proc = fs.popen(join(' ', map(argv, shellQuote)) + ' 2>/dev/null', 'r');",
+			"proc = fs.popen(argv, 'r');")
 	}
 ];
 

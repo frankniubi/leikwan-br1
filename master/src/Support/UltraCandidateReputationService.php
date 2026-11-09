@@ -69,6 +69,12 @@ final class UltraCandidateReputationService
         // it again.
         'probe_udp_failed',
         'probe_tcp_failed',
+        // The relay refused the lease credential (05 02). A new source login
+        // refuses every earlier credential on every line at once, so every line
+        // would be struck by every client at the same moment; a line that is
+        // really dead is already caught by connect timeouts, probe failures and
+        // the source-side audit. Recorded for the log, never a strike.
+        'credential_rejected',
     ];
 
     /** @var callable():int */
