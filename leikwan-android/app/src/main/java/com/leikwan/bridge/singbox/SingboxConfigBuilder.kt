@@ -804,8 +804,8 @@ class SingboxConfigBuilder(
             })
         }
 
-        // (4) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
-        //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
+        // (4) User clash rules (second priority), then country/category rules (the 用户自定义分流 surface).
+        //     Each compiled rule routes its rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
         if (snapshot != null) {
             effectiveRoutingEngine.compileRouteRules(snapshot).forEach { compiled ->
                 val outbound = when {
@@ -815,14 +815,27 @@ class SingboxConfigBuilder(
                         else "proxy-" + compiled.outbound.removePrefix("<NODE:").removeSuffix(">")
                     else -> compiled.outbound
                 }
-                rules.add(JsonObject().apply {
-                    if (compiled.packageNames.isNotEmpty()) {
-                        add("package_name", JsonArray().apply { compiled.packageNames.forEach { add(it) } })
+
+                // For Clash rules with rawMatch, emit the raw JSON with outbound or action added
+                if (compiled.rawMatch != null) {
+                    val rule = compiled.rawMatch.deepCopy()
+                    if (compiled.outbound == "reject") {
+                        rule.addProperty("action", "reject")
                     } else {
-                        add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                        rule.addProperty("outbound", outbound)
                     }
-                    addProperty("outbound", outbound)
-                })
+                    rules.add(rule)
+                } else {
+                    // Standard rule_set-based routing (app rules, country, category)
+                    rules.add(JsonObject().apply {
+                        if (compiled.packageNames.isNotEmpty()) {
+                            add("package_name", JsonArray().apply { compiled.packageNames.forEach { add(it) } })
+                        } else {
+                            add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                        }
+                        addProperty("outbound", outbound)
+                    })
+                }
             }
         }
 

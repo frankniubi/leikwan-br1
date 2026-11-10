@@ -9,11 +9,18 @@ package com.leikwan.bridge.routing
  * path. User rules resolve only to TUNNEL or DIRECT — never to arbitrary outbound graphs.
  */
 
-/** The only two outcomes a user routing rule (or the global default) may resolve to. */
-enum class UserTrafficOutcome { TUNNEL, DIRECT }
+/** Outcomes a user routing rule (or the global default) may resolve to. */
+enum class UserTrafficOutcome { TUNNEL, DIRECT, REJECT }
 
-/** The kinds of user-authored routing rule supported in v1. */
-enum class RoutingRuleKind { COUNTRY, WEBSITE_CATEGORY }
+/** The kinds of user-authored routing rule supported. */
+enum class RoutingRuleKind {
+    COUNTRY, WEBSITE_CATEGORY,
+    // Clash-style rules:
+    DOMAIN, DOMAIN_SUFFIX, DOMAIN_KEYWORD, DOMAIN_REGEX,
+    IP_CIDR, IP_CIDR6,
+    DST_PORT,
+    GEOSITE, RULE_SET,
+}
 
 /** How a system-protected path is handled. Protected paths are always bypassed direct. */
 enum class ProtectedPathHandling { BYPASS_DIRECT }
@@ -68,13 +75,16 @@ data class RuleSetRef(val tag: String, val url: String)
 
 /**
  * A user rule compiled into a single sing-box `route.rule`. [outbound] is either `"direct"`,
- * the sentinel `"<PROXY>"`, or a node sentinel `"<NODE:{id}>"`.
+ * the sentinel `"<PROXY>"`, or a node sentinel `"<NODE:{id}>"`. When [rawMatch] is non-null,
+ * emit it directly as the rule body with [outbound] or action added.
  */
 data class CompiledRouteRule(
     val ruleSetTags: List<String>,
-    /** "direct" | "<PROXY>" (default node) | "<NODE:{id}>" (pinned node). */
+    /** "direct" | "<PROXY>" (default node) | "<NODE:{id}>" (pinned node) | "reject". */
     val outbound: String,
     val sourceRuleId: String?,
     /** Android package names; when set the rule matches the owning app instead of a rule-set. */
     val packageNames: List<String> = emptyList(),
+    /** Raw match JSON object for Clash-rule compilation; when non-null, emit directly with outbound/action added. */
+    val rawMatch: com.google.gson.JsonObject? = null,
 )

@@ -64,7 +64,7 @@
     "Manage disabled by policy": "Manage disabled by policy",
     "Modify": "Modify",
     "No registered devices.": "No registered devices.",
-    "Paused — endpoints released": "Paused — endpoints released",
+    "Paused \u2014 endpoints released": "Paused \u2014 endpoints released",
     "Restore": "Restore",
     "Review location binding and control devices for this account.": "Review location binding and control devices for this account.",
     "Security": "Security",
@@ -170,13 +170,18 @@
     "Service / Listener": "Service / Listener",
     "Target allowlist (CIDR)": "Target allowlist (CIDR)",
     "UoT Status": "UoT Status",
-    "not reported": "not reported"
+    "not reported": "not reported",
+    "A forward uses exactly one node: the bound port and the node are one-to-one. Reuse a node on another forward only if that forward targets the same server and port with the same protocol and password; otherwise add a new forward and a new node.": "A forward uses exactly one node: the bound port and the node are one-to-one. Reuse a node on another forward only if that forward targets the same server and port with the same protocol and password; otherwise add a new forward and a new node.",
+    "Each forward's listen port and paired node are one-to-one; do not reuse a node across forwards unless port, protocol, and password all match.": "Each forward's listen port and paired node are one-to-one; do not reuse a node across forwards unless port, protocol, and password all match.",
+    "The forward target is not this node's address. Also verify that the protocol and password match. Traffic only reaches the node when all three match: server, port, protocol, and password.": "The forward target is not this node's address. Also verify that the protocol and password match. Traffic only reaches the node when all three match: server, port, protocol, and password.",
+    "Online Device Limit Override": "Online Device Limit Override"
   },
   "attributes": {
     "UUID, IP, CIDR, province, city, or country": "UUID, IP, CIDR, province, city, or country",
     "Confirm kicking all application devices": "Confirm kicking all application devices",
     "Confirm kicking this client": "Confirm kicking this client",
     "Confirm banning this device": "Confirm banning this device",
-    "Reset the API token? Programs using the old token stop working immediately.": "Reset the API token? Programs using the old token stop working immediately."
+    "Reset the API token? Programs using the old token stop working immediately.": "Reset the API token? Programs using the old token stop working immediately.",
+    "blank = plan default": "blank = plan default"
   }
 }

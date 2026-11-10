@@ -32,6 +32,7 @@ final class RoutingTests: XCTestCase {
     }
 
     func testCustomRuleParsingAndValidation() {
+        // Existing tests
         XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-SUFFIX, .Example.COM ,PROXY", id: "1")?.normalizedValue(), "example.com")
         XCTAssertEqual(CustomRoutingRule.parseLine("IP-CIDR6,2001:db8::/32,DIRECT,no-resolve", id: "2")?.normalizedValue(), "2001:db8:0:0:0:0:0:0/32")
         XCTAssertEqual(CustomRoutingRule.parseLine("IP-CIDR,10.0.0.1,REJECT", id: "3")?.normalizedValue(), "10.0.0.1/32")
@@ -42,6 +43,52 @@ final class RoutingTests: XCTestCase {
         XCTAssertNil(CustomRoutingRule.parseLine("USER-AGENT,foo,DIRECT", id: "6"))
         XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN,foo,MAYBE", id: "7"))
         XCTAssertNil(CustomRoutingRule.parseLine("IP-CIDR,1.2.3.4/33,DIRECT", id: "8"))
+
+        // New types: GEOSITE/RULE-SET
+        XCTAssertEqual(CustomRoutingRule.parseLine("GEOSITE,openai,PROXY", id: "g1")?.ruleSetRef?.tag, "geosite-openai")
+        XCTAssertEqual(CustomRoutingRule.parseLine("RULE-SET,telegram,DIRECT", id: "g2")?.ruleSetRef?.tag, "geosite-telegram")
+        XCTAssertNil(CustomRoutingRule.parseLine("GEOSITE,unknown_tag_xyz,PROXY", id: "g3"), "unbundled geosite")
+        XCTAssertNil(CustomRoutingRule.parseLine("RULE-SET,not.a.tag,DIRECT", id: "g4"), "invalid name chars")
+
+        // DST-PORT: single port and range
+        XCTAssertEqual(CustomRoutingRule.parseLine("DST-PORT,443,PROXY", id: "p1")?.normalizedValue(), "443")
+        XCTAssertEqual(CustomRoutingRule.parseLine("DST-PORT,8000:8999,DIRECT", id: "p2")?.normalizedValue(), "8000:8999")
+        XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,65536,PROXY", id: "p3"), "port out of range")
+        XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,9000:8000,PROXY", id: "p4"), "range reversed")
+        XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,8000:8000,PROXY", id: "p5"), "range not strictly increasing")
+
+        // DOMAIN-REGEX
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-REGEX,^ad\\d+\\.example\\.com$,REJECT", id: "r1")?.normalizedValue(), "^ad\\d+\\.example\\.com$")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,[invalid(regex,PROXY", id: "r2"), "invalid regex")
+
+        // 2-field format defaults to PROXY
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN,example.com", id: "2f1")?.outcome, .proxy)
+        XCTAssertEqual(CustomRoutingRule.parseLine("GEOIP,CN", id: "2f2")?.outcome, .proxy)
+
+        // Case insensitive type matching
+        XCTAssertNotNil(CustomRoutingRule.parseLine("domain-suffix,example.com,direct", id: "ci1"))
+        XCTAssertNotNil(CustomRoutingRule.parseLine("geosite,openai,proxy", id: "ci2"))
+    }
+
+    func testParseLinesCollectsErrors() {
+        let text = """
+        DOMAIN,example.com,PROXY
+        GEOSITE,openai,DIRECT
+        INVALID,syntax
+        # This is a comment and ignored
+
+        DST-PORT,invalid_port,PROXY
+        DOMAIN-REGEX,^test\\.com$,REJECT
+        """
+        let result = CustomRoutingRule.parseLines(text)
+        XCTAssertEqual(result.rules.count, 3, "valid rules: domain, geosite, domain-regex")
+        XCTAssertEqual(result.errors.count, 2, "two errors: invalid type on line 3, invalid port on line 6")
+        XCTAssert(result.errors[0].contains("Line 3"), "first error mentions line 3")
+        XCTAssert(result.errors[1].contains("Line 6"), "second error mentions line 6")
+        // Verify rules are in order
+        XCTAssertEqual(result.rules[0].value, "example.com")
+        XCTAssertEqual(result.rules[1].value, "openai")
+        XCTAssertEqual(result.rules[2].value, "^test\\.com$")
     }
 
     func testEngineCompilesInPrecedenceOrderAndDropsInvalidRules() {

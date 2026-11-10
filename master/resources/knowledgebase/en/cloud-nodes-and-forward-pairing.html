@@ -1,0 +1,49 @@
+<p>A forward carries packets from your local listen port to a remote target server, while a cloud node is a saved server configuration that your client can use directly. Understanding how they pair is key to setting up forwards correctly.</p>
+
+<h2>Two Concepts</h2>
+<p><strong>A forward</strong> is a routing rule: from a local listen port on your device, deliver packets to a specific port on a remote target server on the internet.</p>
+<p><strong>A cloud node</strong> is a saved server configuration that a client can use directly. Think of a node as a snapshot of "target server details": it records the server address, port, protocol, password, and other parameters needed to connect.</p>
+
+<h2>The Core Rule</h2>
+<p><strong>A forward is paired with exactly one node: the local port and node are one-to-one. Multiple forwards should not share the same node, except when they fully meet the reuse conditions below.</strong></p>
+
+<h2>When You Can Reuse the Same Node</h2>
+<p>Another forward can reuse a node only if all three of these elements match the node exactly:</p>
+<ol>
+<li><strong>Target server port</strong> — for example, both are 30522.</li>
+<li><strong>Protocol</strong> — for example, both are Shadowsocks 2022.</li>
+<li><strong>Password</strong> — the authentication key to log in to that server.</li>
+</ol>
+<p>If even one item differs, you must create a new forward and a new node. Reusing a node with mismatched settings always fails.</p>
+
+<h2>Example: What Cannot Be Reused</h2>
+<table>
+<thead>
+<tr><th>Forward</th><th>Target</th><th>Protocol</th><th>Password</th><th>Can reuse Node A?</th></tr>
+</thead>
+<tbody>
+<tr><td>Forward A</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>Password X</td><td>—</td></tr>
+<tr><td>Forward B</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>Password Y (≠X)</td><td><strong>No</strong> — password differs → create new forward B and node B</td></tr>
+<tr><td>Forward C</td><td>east.nbwly.com:30522</td><td>VLESS</td><td>Password X</td><td><strong>No</strong> — protocol differs → create new forward C and node C</td></tr>
+<tr><td>Forward D</td><td>east.nbwly.com:30523</td><td>SS2022</td><td>Password X</td><td><strong>No</strong> — port differs → create new forward D and node D</td></tr>
+</tbody>
+</table>
+
+<h2>Automatic Pairing: How the Panel Matches Them</h2>
+<p>The panel automatically finds a matching node based on the forward's target (server and port). If a node's server and port match the forward's target, they pair automatically. This is convenient, but automatic pairing <strong>does not verify protocol or password match</strong>. Before reusing a node, you must verify yourself: all three elements really are identical.</p>
+
+<h2>Common Mistakes</h2>
+<table>
+<thead>
+<tr><th>Symptom</th><th>Root Cause</th></tr>
+</thead>
+<tbody>
+<tr><td>One forward never connects, others work fine</td><td>Reused the same node, but the target port, protocol, or password does not match</td></tr>
+<tr><td>Changed a forward's target port, but it still does not connect</td><td>Did not update the paired node's settings; the node still points to the old port</td></tr>
+<tr><td>Deleted a node, the forward still exists, now it does not work</td><td>The forward lost its paired node, but the forward itself remains; there is no available node anymore</td></tr>
+<tr><td>Created two forwards to the same target, one drops constantly</td><td>Both forwards are paired with the same node, but password or protocol does not match one of them</td></tr>
+</tbody>
+</table>
+
+<h2>Related Guides</h2>
+<p>After reading this, return to <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create Your First Forward</a> to confirm your forward is correct. If the forward's target address, port, or protocol are wrong, see <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a>.</p>

@@ -10,10 +10,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -73,9 +76,11 @@ fun RoutingScreen(
         onSelectCountrySuggestion = viewModel::selectCountrySuggestion,
         onAddCountry = viewModel::addCountryRule,
         onAddCategory = viewModel::addCategoryRule,
+        onImportClash = viewModel::importClash,
         onToggle = viewModel::toggleRule,
         onSetTargetNode = viewModel::setRuleTargetNode,
         onDelete = viewModel::deleteRule,
+        onRefreshRules = viewModel::refreshRules,
         showTitle = showTitle,
     )
 }
@@ -91,9 +96,11 @@ internal fun RoutingScreenContent(
     onSelectCountrySuggestion: (com.leikwan.bridge.routing.Country) -> Unit,
     onAddCountry: (String, UserTrafficOutcome) -> Unit,
     onAddCategory: (String, UserTrafficOutcome) -> Unit,
+    onImportClash: (String) -> Unit,
     onToggle: (String) -> Unit,
     onSetTargetNode: (String, Long?) -> Unit,
     onDelete: (String) -> Unit,
+    onRefreshRules: () -> Unit,
     showTitle: Boolean = true,
 ) {
     val zh = isZhLocale()
@@ -104,7 +111,16 @@ internal fun RoutingScreenContent(
             .padding(16.dp),
     ) {
         if (showTitle) {
-            Text(stringResource(R.string.routing_title), style = MaterialTheme.typography.titleLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.routing_title), style = MaterialTheme.typography.titleLarge)
+                IconButton(onClick = onRefreshRules) {
+                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.routing_refresh_rules))
+                }
+            }
             Spacer(Modifier.height(16.dp))
         }
 
@@ -316,10 +332,68 @@ internal fun RoutingScreenContent(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
+        // Import Clash rules
+        Text(stringResource(R.string.routing_clash_import_title), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        var clashImportText by remember { mutableStateOf("") }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
+            ClashPresets.all.forEach { preset ->
+                AssistChip(
+                    onClick = { clashImportText = preset.lines },
+                    label = { Text(preset.name) },
+                    enabled = state.selectorEnabled,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = clashImportText,
+            onValueChange = { clashImportText = it },
+            label = { Text(stringResource(R.string.routing_clash_import_hint)) },
+            minLines = 6,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = state.selectorEnabled,
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                onImportClash(clashImportText)
+                clashImportText = ""
+            },
+            enabled = state.selectorEnabled && clashImportText.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.routing_clash_import_button))
+        }
+        if (state.importErrors.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.routing_clash_import_errors),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            state.importErrors.forEach { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
         // Existing rules
         Text(stringResource(R.string.routing_rules), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        val rules = state.countryRules + state.categoryRules
+        val rules = state.countryRules + state.categoryRules + state.clashRules
         if (rules.isEmpty()) {
             Text(
                 stringResource(R.string.routing_no_custom_rules),
@@ -350,16 +424,21 @@ private fun OutcomeToggle(
     enabled: Boolean = true,
     onChange: (UserTrafficOutcome) -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(outcome.label(), style = MaterialTheme.typography.labelMedium)
-        Spacer(Modifier.width(4.dp))
-        Switch(
-            checked = outcome == UserTrafficOutcome.TUNNEL,
-            enabled = enabled,
-            onCheckedChange = {
-                onChange(if (it) UserTrafficOutcome.TUNNEL else UserTrafficOutcome.DIRECT)
-            },
-        )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        UserTrafficOutcome.entries.forEach { opt ->
+            FilterChip(
+                selected = outcome == opt,
+                onClick = { onChange(opt) },
+                enabled = enabled,
+                label = { Text(opt.label(), style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -399,6 +478,7 @@ private fun RuleRow(
                     )
                 }
             }
+            // Show node picker only for TUNNEL outcome (DIRECT and REJECT don't use nodes)
             if (rule.outcome == UserTrafficOutcome.TUNNEL) {
                 Spacer(Modifier.height(8.dp))
                 NodePicker(
@@ -497,6 +577,7 @@ private fun UserTrafficOutcome.label(): String =
     when (this) {
         UserTrafficOutcome.TUNNEL -> stringResource(R.string.routing_outcome_tunnel)
         UserTrafficOutcome.DIRECT -> stringResource(R.string.routing_outcome_direct)
+        UserTrafficOutcome.REJECT -> stringResource(R.string.routing_outcome_reject)
     }
 
 @Composable

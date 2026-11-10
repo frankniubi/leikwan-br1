@@ -1,0 +1,49 @@
+<p>一条转发把本地监听端口的数据包转送到目标机器，而云端节点是你在 App 里可以直接选用的服务器配置。理解它们之间的配对规则，是把转发用对的关键。</p>
+
+<h2>两个概念</h2>
+<p><strong>转发</strong>是一条通路规则：从你的设备上的本地监听端口，把数据包转送到互联网上某个远端目标机器的特定端口。</p>
+<p><strong>云端节点</strong>是一个被保存的服务器配置，客户端可以直接使用。你可以把节点看作「转发目标机器的细节」的一个快照：它记录了目标服务器地址、端口、连接协议、密码等参数。</p>
+
+<h2>核心规则</h2>
+<p><strong>一条转发绑定一个节点，端口与节点一一对应。多个转发不应共用同一个节点，除非它们完全满足下面的复用条件。</strong></p>
+
+<h2>什么时候才能复用同一个节点</h2>
+<p>只有当另一条转发的以下三个要素与该节点 <strong>全部相同</strong> 时，才可以复用：</p>
+<ol>
+<li><strong>目标机器的端口</strong>：比如都是 30522。</li>
+<li><strong>连接协议</strong>：比如都是 Shadowsocks 2022。</li>
+<li><strong>密码</strong>：登录该服务器的认证密钥。</li>
+</ol>
+<p>只要有一项不同，就必须新建一条转发并新建一个节点。重用节点必然导致不通。</p>
+
+<h2>实例：什么不能复用</h2>
+<table>
+<thead>
+<tr><th>转发</th><th>目标</th><th>协议</th><th>密码</th><th>能否复用节点 A？</th></tr>
+</thead>
+<tbody>
+<tr><td>转发 A</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密码 X</td><td>—</td></tr>
+<tr><td>转发 B</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密码 Y（≠X）</td><td><strong>不能</strong>，密码不同 → 必须新建转发 B 和节点 B</td></tr>
+<tr><td>转发 C</td><td>east.nbwly.com:30522</td><td>VLESS</td><td>密码 X</td><td><strong>不能</strong>，协议不同 → 必须新建转发 C 和节点 C</td></tr>
+<tr><td>转发 D</td><td>east.nbwly.com:30523</td><td>SS2022</td><td>密码 X</td><td><strong>不能</strong>，端口不同 → 必须新建转发 D 和节点 D</td></tr>
+</tbody>
+</table>
+
+<h2>自动配对：面板如何帮你匹配</h2>
+<p>面板会根据转发的「目标机器:端口」自动寻找相匹配的节点（「节点地址:节点端口」）。这样可以帮你省事，但自动配对 <strong>不会检查协议和密码是否一致</strong>。因此，复用节点前，你必须自己验证：三个要素都确实相同。</p>
+
+<h2>常见错误</h2>
+<table>
+<thead>
+<tr><th>症状</th><th>根本原因</th></tr>
+</thead>
+<tbody>
+<tr><td>某条转发始终连不上，其他转发正常</td><td>复用了同一个节点，但目标端口、协议或密码其中之一不匹配</td></tr>
+<tr><td>改了转发的目标端口，但转发仍连不上</td><td>没有相应修改配对的节点信息；节点仍然指向旧端口</td></tr>
+<tr><td>删除了一个节点，转发却仍在，现在用不了</td><td>转发失去了配对的节点，但转发本身还存在，只是没有可用节点了</td></tr>
+<tr><td>新建两条相同目标的转发，其中一条频繁掉线</td><td>两条转发都配对了同一个节点，但密码或协议不匹配其中某一条</td></tr>
+</tbody>
+</table>
+
+<h2>相关指南</h2>
+<p>看完这篇，回到<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>确认转发建立无误。如果转发本身的目标地址、端口或协议有问题，请参考<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>。</p>

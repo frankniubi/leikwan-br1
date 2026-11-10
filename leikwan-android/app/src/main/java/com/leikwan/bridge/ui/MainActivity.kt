@@ -153,6 +153,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         checkClipboard()
+        RefreshBus.request()
     }
 
     private fun handleIncomingIntent(intent: Intent?) {

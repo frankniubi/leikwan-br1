@@ -415,7 +415,7 @@ final class HostedNodeController extends BaseController
                 $paired = $nodesById[(int) $current['node_id']] ?? null;
                 $state = ($current['source'] === 'target_match' ? 'Automatic: ' : 'Paired: ') . (string) ($paired['name'] ?? '');
                 if ($paired !== null && !$this->targetMatches($forward, $paired)) {
-                    $warning = '<div class="muted">The forward target is not this node\'s address. Traffic only reaches the node when the forward targets its server and port.</div>';
+                    $warning = '<div class="muted">The forward target is not this node\'s address. Also verify that the protocol and password match. Traffic only reaches the node when all three match: server, port, protocol, and password.</div>';
                 }
             }
             $target = (string) $forward['target_host'] . ':' . (int) $forward['target_port'];
@@ -435,6 +435,7 @@ final class HostedNodeController extends BaseController
             $pairRows = '<tr><td colspan="4" class="muted">This client has no forwards yet.</td></tr>';
         }
         $pairCard = '<section class="card"><h3>Pairing</h3>'
+            . '<p class="muted">A forward uses exactly one node: the bound port and the node are one-to-one. Reuse a node on another forward only if that forward targets the same server and port with the same protocol and password; otherwise add a new forward and a new node.</p>'
             . '<div class="table-wrap"><table><thead><tr><th>Forward</th><th>Target</th><th>Node</th><th></th></tr></thead><tbody>'
             . $pairRows . '</tbody></table></div></section>';
 

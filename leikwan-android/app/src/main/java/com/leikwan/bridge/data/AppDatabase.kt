@@ -21,7 +21,7 @@ import com.leikwan.bridge.data.routing.UserRoutingRuleEntity
         RoutingExplainabilityEntity::class,
         UserRoutingRuleEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -98,13 +98,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** No schema change: version bump for future extensions. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No schema changes in this migration; enum values (kind, outcome) are stored as TEXT
+                // and can be extended without schema modification.
+            }
+        }
+
         fun get(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "leikwan_bridge.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

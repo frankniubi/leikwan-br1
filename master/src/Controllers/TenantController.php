@@ -18,6 +18,7 @@ use Leikwan\Master\Support\ProvisioningService;
 use Leikwan\Master\Support\ServiceStatus;
 use Leikwan\Master\Support\SessionAuth;
 use Leikwan\Master\Support\UltraLeaseService;
+use Leikwan\Master\Support\UserDeviceLimit;
 use Leikwan\Master\Support\WhmcsIdentityService;
 
 final class TenantController extends BaseController
@@ -1281,7 +1282,8 @@ final class TenantController extends BaseController
         $iosSection = $this->tenantIosSection($user);
         $sessionService = new ClientOnlineSessionService($this->db);
         $onlineCount = $sessionService->activeCountForClient($clientId);
-        $onlineLimit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $onlineLimit = UserDeviceLimit::effectiveForClient($client, $this->db);
+        $limitSource = UserDeviceLimit::sourceForClient($client, $this->db);
         $sessions = $sessionService->activeSessionsForClient($clientId);
         $controlRows = DeviceControlService::fromConfig($this->config, $this->db)->controlsForClient($clientId);
         $controlsByDevice = [];
@@ -1492,7 +1494,8 @@ final class TenantController extends BaseController
             . '<div class="actions">' . $this->renderCommandLink('Download APK', $this->androidClientApkUrl(), 'secondary') . '</div>'
             . '</section></div>'
             . '<div class="tenant-client-install__online"><span>最大在线</span><strong>'
-            . $onlineCount . ' / ' . $onlineLimit . '</strong>'
+            . $onlineCount . ' / ' . $onlineLimit
+            . ($limitSource === 'user' ? '（管理员设定）' : '') . '</strong>'
             . ($onlineCount >= $onlineLimit
                 ? '<div class="muted">已达上限：新设备会被拒绝连接并提示“设备数量已达上限”。在线设备不受影响；可移除下方设备，或等其他设备断开约 3 分钟后自动释放名额。</div>'
                 : '')
@@ -2824,7 +2827,7 @@ final class TenantController extends BaseController
                   ' . ($nativeAllowed ? '<div class="field"><label><input type="checkbox" name="native_outbound" value="1" id="native-outbound-toggle"> Native outbound</label><div class="field-note">Use the plan-provided Ultra SOCKS5 exit. The panel will assign a local loopback target.</div></div>' : '') . '
                   <div class="field"><label>Target Host</label><input type="text" name="target_host" id="native-target-host" placeholder="10.0.0.5 or example.com" required></div>
                   <div class="field"><label>Target Port</label><input type="number" name="target_port" id="native-target-port" placeholder="443" required></div>
-                  <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"></div>
+                  <div class="field"><label>Local Listen Port</label><input type="number" name="listen_port" placeholder="auto from line range"><div class="field-note">Each forward\'s listen port and paired node are one-to-one; do not reuse a node across forwards unless port, protocol, and password all match.</div></div>
                   <div class="field"><label>Transport</label><select name="transport_mode"><option value="tcp">TCP</option><option value="tcp+udp">TCP + UDP</option><option value="udp">UDP</option></select></div>
                 </div>
                 <div class="field-note" id="forward-combination-help">Choose one admin-defined route package. The panel keeps routing details hidden until you create the forward.</div>
