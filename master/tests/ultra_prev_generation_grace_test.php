@@ -208,10 +208,57 @@ namespace {
     assertGrace(!isset($revoked['previous_generation_grace']), 'a revoked generation must never be granted a grace');
     Database::$revokedRows = [];
 
-    // 9. After the window: refused.
+    // 9. After the window (past both changed_at and ticket issued_at): refused.
     $clock = $start + 60 + UltraMode::PREVIOUS_GENERATION_GRACE_SECONDS + 1;
     $late = $grantFor($presenting($forward, $before));
     assertGrace(!isset($late['previous_generation_grace']), 'the grace must end with its window');
+
+    // 10. Expiring-line dropout: when a combo has two lines and one line's
+    // material expires without any new upload (so changed_at stays far in the
+    // past), a ticket minted just before the dropout still earns grace up to
+    // PREVIOUS_GENERATION_GRACE_SECONDS from its own issued_at.
+    $clock = $start + 2000;
+    $ticketA = $materials->issueUploadTicket('source-a', [453, 916]);
+    $materials->acceptSourceUpload('source-a', $ticketA, [
+        [
+            'line_id' => 453,
+            'generation' => 'stable-453',
+            'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock - 500),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 1200),
+            'user' => 'u453',
+            'credential' => '1234567890123456',
+            'relays' => [['ip' => '203.0.113.20', 'port' => 5438]],
+        ],
+        [
+            'line_id' => 916,
+            'generation' => 'expiring-916',
+            'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock - 500),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 40),
+            'user' => 'u916',
+            'credential' => '1234567890123456',
+            'relays' => [['ip' => '203.0.113.21', 'port' => 5438]],
+        ],
+    ]);
+    $twoLineForward = $forward;
+    $twoLineForward['_ultra_line_ids'] = [453, 916];
+    $twoLineForward['_ultra_lines'][] = [
+        'ultra_line_id' => 11,
+        'line_id' => 916,
+        'source_id' => 'source-a',
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+        'sort_order' => 20,
+    ];
+    $preDropout = $grantFor($twoLineForward);
+    // Advance 50s: line 916 has expired (dropped out of snapshot), while line 453
+    // was acquired 550s ago (> 300s). Ticket was issued 50s ago, so grace applies.
+    $clock += 50;
+    $postDropout = $grantFor($presenting($twoLineForward, $preDropout));
+    assertGrace(
+        isset($postDropout['previous_generation_grace'])
+            && $postDropout['previous_generation_grace']['policy_generation'] === $preDropout['policy_generation'],
+        'expiring-line dropout must still honour a recently issued ticket within the grace window'
+    );
 
     fwrite(STDOUT, 'ok' . PHP_EOL);
     exit(0);

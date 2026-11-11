@@ -2149,14 +2149,35 @@ final class ClientAgentController extends BaseController
     private function accessPolicyPlatform(Request $request): string
     {
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? $request->input('platform', ''))));
-        // Routers join the location protocol through the same classifier the
-        // access policy applies, so openwrt/openwrt-* and the router form
-        // factor cannot drift between the two surfaces.
-        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)
-            && !AccessPolicyService::isRouterPlatform($platform)) {
+        if ($platform === '') {
+            $ua = strtolower((string) ($request->header('user-agent') ?? ''));
+            if (str_contains($ua, 'windows')) {
+                $platform = 'windows';
+            } elseif (str_contains($ua, 'mac')) {
+                $platform = 'macos';
+            } elseif (str_contains($ua, 'android')) {
+                $platform = 'android';
+            } elseif (str_contains($ua, 'ios')) {
+                $platform = 'ios';
+            }
+        }
+        // Desktop and mobile clients send suffixed identifiers such as
+        // 'windows-desktop', 'macos-desktop', or 'android-host'; normalize them
+        // the same way AccessPolicyService::normalizeLocationContext() does,
+        // and join routers through AccessPolicyService::isRouterPlatform().
+        $normalized = match (true) {
+            $platform === 'win' || str_starts_with($platform, 'windows') => 'windows',
+            $platform === 'mac' || $platform === 'osx' || str_starts_with($platform, 'macos') || str_starts_with($platform, 'darwin') => 'macos',
+            str_starts_with($platform, 'android') => 'android',
+            str_starts_with($platform, 'ios') => 'ios',
+            str_starts_with($platform, 'linux') => 'linux',
+            AccessPolicyService::isRouterPlatform($platform) => $platform,
+            default => '',
+        };
+        if ($normalized === '') {
             throw new ApiException('location_platform_invalid', 422);
         }
-        return $platform;
+        return $normalized;
     }
 
     private function accessPolicyDeviceUuid(Request $request): string
