@@ -71,15 +71,15 @@ public static class SS2022KeyNormalizer
 
         if (decoded.Length == requiredLength)
         {
-            // Exact match: re-encode to canonical base64 (unpadded)
-            return new Result(UnpaddedBase64(decoded), null);
+            // Exact match: re-encode to canonical padded base64
+            return new Result(Convert.ToBase64String(decoded), null);
         }
 
         if (decoded.Length > requiredLength)
         {
             // Over-long: hash via SHA256 and truncate (sing-box server compat)
             var sha = SHA256.HashData(decoded);
-            return new Result(UnpaddedBase64(sha.AsSpan(0, requiredLength).ToArray()), null);
+            return new Result(Convert.ToBase64String(sha.AsSpan(0, requiredLength).ToArray()), null);
         }
 
         var methodName = requiredLength == 16
@@ -88,8 +88,4 @@ public static class SS2022KeyNormalizer
         return new Result(null, $"密钥长度 {decoded.Length} 字节，{methodName} 需要 {requiredLength} 字节");
     }
 
-    private static string UnpaddedBase64(byte[] bytes)
-    {
-        return Convert.ToBase64String(bytes).TrimEnd('=');
-    }
 }

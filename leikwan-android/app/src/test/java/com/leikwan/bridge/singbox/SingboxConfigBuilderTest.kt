@@ -236,7 +236,7 @@ class SingboxConfigBuilderTest {
         assertEquals("127.0.0.1", proxy.get("server").asString)
         assertEquals(11090, proxy.get("server_port").asInt)
         assertEquals("2022-blake3-aes-256-gcm", proxy.get("method").asString)
-        assertEquals("c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg", proxy.get("password").asString)
+        assertEquals("c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg=", proxy.get("password").asString)
         assertFalse(
             config.getAsJsonObject("route").getAsJsonArray("rules").any {
                 val rule = it.asJsonObject

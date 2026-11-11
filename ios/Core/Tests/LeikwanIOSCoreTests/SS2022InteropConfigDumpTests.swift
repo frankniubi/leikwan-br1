@@ -32,10 +32,10 @@ final class SS2022InteropConfigDumpTests: XCTestCase {
         XCTAssertEqual(proxy?["type"] as? String, "shadowsocks")
         XCTAssertEqual(proxy?["method"] as? String, "2022-blake3-aes-256-gcm")
         // The stored iPSK (47 decoded bytes) must come out as base64(SHA256(decoded)[:32]),
-        // unpadded; the exact-length uPSK passes through unchanged.
+        // padded; the exact-length uPSK passes through unchanged.
         XCTAssertEqual(
             proxy?["password"] as? String,
-            "ahzdXvlNZcEOt6YAg8YPZa5ouTl+KJRvtXPaH1ayyAA:dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU"
+            "ahzdXvlNZcEOt6YAg8YPZa5ouTl+KJRvtXPaH1ayyAA=:dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU="
         )
 
         let outDir: URL

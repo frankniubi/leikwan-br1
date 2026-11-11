@@ -47,13 +47,13 @@ class SS2022InteropConfigDumpTest {
         assertEquals("shadowsocks", outbound.get("type").asString)
         assertEquals("2022-blake3-aes-256-gcm", outbound.get("method").asString)
         // The stored iPSK (47 decoded bytes) must come out as base64(SHA256(decoded)[:32]),
-        // unpadded; the exact-length uPSK passes through unchanged.
+        // padded; the exact-length uPSK passes through unchanged.
         assertEquals(
-            "ahzdXvlNZcEOt6YAg8YPZa5ouTl+KJRvtXPaH1ayyAA:dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU",
+            "ahzdXvlNZcEOt6YAg8YPZa5ouTl+KJRvtXPaH1ayyAA=:dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU=",
             outbound.get("password").asString,
         )
         val password = outbound.get("password").asString
-        assertTrue("normalized iPSK must be 43 chars", password.split(":")[0].length == 43)
+        assertTrue("normalized iPSK must be 44 chars", password.split(":")[0].length == 44)
 
         val outDir = System.getenv("SS2022_INTEROP_OUT")?.takeIf { it.isNotBlank() }?.let(::File)
             ?: Files.createTempDirectory("ss2022-interop").toFile()
