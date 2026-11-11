@@ -17,17 +17,17 @@ final class SS2022KeyNormalizerTests: XCTestCase {
     }
 
     func testColonSeparatedPair() {
-        let key = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY"
+        let key = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY="
         let result = SS2022KeyNormalizer.normalizePassword(key, method: "2022-blake3-aes-256-gcm")
         XCTAssertNil(result.error)
-        XCTAssertEqual(result.normalized, "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY")
+        XCTAssertEqual(result.normalized, "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY=")
     }
 
     func testColonSeparatedPairWithPadding() {
         let key = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY="
         let result = SS2022KeyNormalizer.normalizePassword(key, method: "2022-blake3-aes-256-gcm")
         XCTAssertNil(result.error)
-        XCTAssertEqual(result.normalized, "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY")
+        XCTAssertEqual(result.normalized, "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=:MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXY=")
     }
 
     func testRawASCII32CharKeyAcceptedAndReencoded() {
@@ -43,7 +43,7 @@ final class SS2022KeyNormalizerTests: XCTestCase {
         let result = SS2022KeyNormalizer.normalizePassword(key, method: "2022-blake3-aes-256-gcm")
         XCTAssertNil(result.error)
         // SHA256 of the decoded bytes, truncated to 32, re-encoded unpadded
-        XCTAssertEqual(result.normalized, "NqNX0VGXr0Tvoc7+bFbeqUol4l1isa6GVPwNfzS/NfM")
+        XCTAssertEqual(result.normalized, "NqNX0VGXr0Tvoc7+bFbeqUol4l1isa6GVPwNfzS/NfM=")
     }
 
     func testUnderLengthKeyRejected() {
