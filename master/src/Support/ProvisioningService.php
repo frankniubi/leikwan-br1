@@ -5906,6 +5906,22 @@ final class ProvisioningService
         foreach ($rows as $row) {
             $map[(int) $row['forward_id']] = (int) $row['used_bytes'];
         }
+        // Ultra forwards carry no service_endpoints: their usage is recorded
+        // per forward in ultra_usage_events (recordUltraUsage), so add it here
+        // or every Ultra line shows 0 while the service total keeps growing.
+        $ultraRows = $this->db->fetchAll(
+            'SELECT uue.forward_id, COALESCE(SUM(uue.bytes_in + uue.bytes_out), 0) AS used_bytes
+             FROM ultra_usage_events uue
+             INNER JOIN forwards f ON f.id = uue.forward_id
+             WHERE f.service_id = :service_id
+               AND uue.created_at >= :cycle_started_at
+             GROUP BY uue.forward_id',
+            ['service_id' => $serviceId, 'cycle_started_at' => $cycleStartedAt]
+        );
+        foreach ($ultraRows as $row) {
+            $forwardId = (int) $row['forward_id'];
+            $map[$forwardId] = ($map[$forwardId] ?? 0) + (int) $row['used_bytes'];
+        }
         return $map;
     }
 
