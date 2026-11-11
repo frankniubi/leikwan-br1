@@ -23,8 +23,9 @@ final class DebugLogUploaderTests: XCTestCase {
             .respond(200, #"{"ok":true,"accepted":true}"#),
             .respond(200, #"{"ok":true,"accepted":true}"#),
         ])
+        let endpoint = try PanelEndpoint.parse("https://panel.example.test").get()
         let client = PanelClient(
-            endpoint: PanelEndpoint(label: "main", urlString: "https://panel.example.test"),
+            endpoint: endpoint,
             credentials: PanelCredentials(
                 clientId: 1,
                 agentToken: "tok",
