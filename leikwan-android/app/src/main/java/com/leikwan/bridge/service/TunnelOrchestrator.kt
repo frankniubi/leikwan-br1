@@ -14,9 +14,11 @@ import com.leikwan.bridge.data.routing.RoutingExplainabilitySnapshot
 import com.leikwan.bridge.data.routing.RoutingExplainabilityStore
 import com.leikwan.bridge.data.routing.RulePackManifest
 import com.leikwan.bridge.data.routing.RulePackManager
+import com.leikwan.bridge.data.routing.ImportedRuleListStore
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingPolicyEngine
+import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.RoutingPolicySnapshot
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.SafePathRegistry
@@ -149,6 +151,7 @@ class TunnelOrchestrator internal constructor(
     private val explainabilityStore: RoutingExplainabilityStore,
     private val routingEngine: RoutingPolicyEngine,
     private val routeRuleStore: ClientRouteRuleStore = ClientRouteRuleStore.from(context),
+    private val importedRuleLists: ImportedRuleListStore = ImportedRuleListStore.from(context),
     // Network/process collaborators are only exercised by startForForward(). They are constructed
     // lazily so snapshot-only seams (buildRoutingSnapshot) stay unit-testable without an
     // EncryptedSharedPreferences-backed PanelRepository (no AndroidKeyStore under Robolectric).
@@ -321,7 +324,15 @@ class TunnelOrchestrator internal constructor(
         val appRules = prefs.appRouting.routingRules().map { rule ->
             rule.copy(targetNodeId = rule.targetNodeId?.takeIf { it in pinnable })
         }
-        val clashRules = userRuleStore.clashRules()
+        // Imported lists are stored by id; the engine and sing-box need the file path. A list whose
+        // file is gone resolves to "" and is dropped by the engine with a warning.
+        val clashRules = userRuleStore.clashRules().map { rule ->
+            if (rule.kind == RoutingRuleKind.IMPORTED_LIST) {
+                rule.copy(matchValue = importedRuleLists.pathFor(rule.matchValue).orEmpty())
+            } else {
+                rule
+            }
+        }
         if (ignoreProxyNodeTargets) {
             return effectiveRoutingEngine.compile(
                 globalDefault = UserTrafficOutcome.TUNNEL,

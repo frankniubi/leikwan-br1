@@ -37,6 +37,7 @@ class UserRoutingRuleStore(private val db: AppDatabase) {
             RoutingRuleKind.DOMAIN, RoutingRuleKind.DOMAIN_SUFFIX, RoutingRuleKind.DOMAIN_KEYWORD,
             RoutingRuleKind.DOMAIN_REGEX, RoutingRuleKind.IP_CIDR, RoutingRuleKind.IP_CIDR6,
             RoutingRuleKind.DST_PORT, RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET,
+            RoutingRuleKind.IMPORTED_LIST,
         )
         return db.userRoutingRuleDao().byKinds(clashKinds.map { it.name }).map { it.toRule() }
     }

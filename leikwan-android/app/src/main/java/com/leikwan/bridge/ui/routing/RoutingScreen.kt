@@ -1,5 +1,6 @@
 package com.leikwan.bridge.ui.routing
 
+import com.leikwan.bridge.data.routing.ImportedRuleListStore
 import android.app.Application
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -82,6 +83,8 @@ fun RoutingScreen(
         onDelete = viewModel::deleteRule,
         onRefreshRules = viewModel::refreshRules,
         showTitle = showTitle,
+        onImportRuleList = viewModel::importRuleList,
+        onRefreshImportedList = viewModel::refreshImportedList,
     )
 }
 
@@ -102,6 +105,8 @@ internal fun RoutingScreenContent(
     onDelete: (String) -> Unit,
     onRefreshRules: () -> Unit,
     showTitle: Boolean = true,
+    onImportRuleList: (url: String, name: String, outcome: UserTrafficOutcome) -> Unit = { _, _, _ -> },
+    onRefreshImportedList: (ruleId: String) -> Unit = {},
 ) {
     val zh = isZhLocale()
     Column(
@@ -332,6 +337,62 @@ internal fun RoutingScreenContent(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
+        // Import a Surge/Clash rule list by URL
+        Text(stringResource(R.string.routing_list_import_title), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            stringResource(R.string.routing_list_import_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        var listUrl by remember { mutableStateOf("") }
+        var listName by remember { mutableStateOf("") }
+        var listOutcome by remember { mutableStateOf(UserTrafficOutcome.TUNNEL) }
+        OutlinedTextField(
+            value = listUrl,
+            onValueChange = { listUrl = it },
+            label = { Text(stringResource(R.string.routing_list_import_url)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("routing-list-url"),
+            enabled = state.selectorEnabled && !state.listImportBusy,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = listName,
+            onValueChange = { listName = it },
+            label = { Text(stringResource(R.string.routing_list_import_name)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = state.selectorEnabled && !state.listImportBusy,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutcomeToggle(outcome = listOutcome, enabled = state.selectorEnabled && !state.listImportBusy) { listOutcome = it }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                onImportRuleList(listUrl, listName, listOutcome)
+                listUrl = ""
+                listName = ""
+            },
+            enabled = state.selectorEnabled && !state.listImportBusy && listUrl.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                stringResource(
+                    if (state.listImportBusy) R.string.routing_list_import_busy else R.string.routing_list_import_button,
+                ),
+            )
+        }
+        state.listImportMessage?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
         // Import Clash rules
         Text(stringResource(R.string.routing_clash_import_title), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
@@ -410,6 +471,8 @@ internal fun RoutingScreenContent(
                     onDelete = onDelete,
                     controlsEnabled = state.selectorEnabled,
                     zh = zh,
+                    importedList = state.importedLists[rule.matchValue].takeIf { rule.kind == RoutingRuleKind.IMPORTED_LIST },
+                    onRefreshList = onRefreshImportedList.takeIf { !state.listImportBusy },
                 )
                 Spacer(Modifier.height(8.dp))
             }
@@ -451,6 +514,8 @@ private fun RuleRow(
     onDelete: (String) -> Unit,
     controlsEnabled: Boolean = true,
     zh: Boolean,
+    importedList: ImportedRuleListStore.ImportedRuleList? = null,
+    onRefreshList: ((String) -> Unit)? = null,
 ) {
     Card(modifier = Modifier.fillMaxWidth().testTag("routing-rule-${rule.id}")) {
         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
@@ -459,12 +524,24 @@ private fun RuleRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(rule.displayMatchValue(zh), style = MaterialTheme.typography.titleSmall)
                     Text(
-                        rule.outcome.label(),
+                        importedList?.name ?: rule.displayMatchValue(zh),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        if (importedList != null) {
+                            stringResource(R.string.routing_list_rule_summary_format, rule.outcome.label(), importedList.ruleCount)
+                        } else {
+                            rule.outcome.label()
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                if (importedList?.sourceUrl != null && onRefreshList != null) {
+                    IconButton(onClick = { onRefreshList(rule.id) }, enabled = controlsEnabled) {
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.routing_list_refresh))
+                    }
                 }
                 Switch(
                     checked = rule.enabled,

@@ -32,6 +32,10 @@ class RoutingPolicyEngine(
         private fun geoipTag(countryCode: String): String = "geoip-${countryCode.trim().lowercase()}"
 
         private fun geoipUrl(tag: String): String = "$GEOIP_BASE$tag.srs"
+
+        /** Rule-set tag of an imported list: `user-list-<file name>` (file = `<list id>.json`). */
+        fun importedListTag(path: String): String =
+            "user-list-" + java.io.File(path).name.removeSuffix(".json")
     }
 
     fun withCategoryCatalog(categoryCatalog: RoutingCategoryCatalog): RoutingPolicyEngine =
@@ -91,6 +95,14 @@ class RoutingPolicyEngine(
                     RoutingRuleKind.DOMAIN_REGEX, RoutingRuleKind.IP_CIDR, RoutingRuleKind.IP_CIDR6,
                     RoutingRuleKind.DST_PORT, RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET,
                 ) -> true
+                rule.kind == RoutingRuleKind.IMPORTED_LIST -> {
+                    if (rule.matchValue.isNotEmpty() && java.io.File(rule.matchValue).isAbsolute) {
+                        true
+                    } else {
+                        warnings += "Dropped rule '${rule.id}': imported list file is missing."
+                        false
+                    }
+                }
                 else -> {
                     warnings += "Dropped rule '${rule.id}': kind ${rule.kind} is not a supported Clash rule."
                     false
@@ -222,6 +234,11 @@ class RoutingPolicyEngine(
         }
         // Add clash rules' geosite/rule-set tags
         snapshot.userClashRules.forEach { rule ->
+            if (rule.kind == RoutingRuleKind.IMPORTED_LIST) {
+                val tag = importedListTag(rule.matchValue)
+                refs.putIfAbsent(tag, RuleSetRef(tag, url = "", localPath = rule.matchValue))
+                return@forEach
+            }
             if (rule.kind == RoutingRuleKind.GEOSITE || rule.kind == RoutingRuleKind.RULE_SET) {
                 val tag = rule.matchValue
                 if (!refs.containsKey(tag)) {
@@ -272,6 +289,9 @@ class RoutingPolicyEngine(
                 RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET -> {
                     add("rule_set", com.google.gson.JsonArray().apply { add(rule.matchValue) })
                 }
+                RoutingRuleKind.IMPORTED_LIST -> {
+                    add("rule_set", com.google.gson.JsonArray().apply { add(importedListTag(rule.matchValue)) })
+                }
                 else -> {
                     // Shouldn't happen for valid Clash rules
                 }
@@ -281,6 +301,7 @@ class RoutingPolicyEngine(
         return CompiledRouteRule(
             ruleSetTags = when (rule.kind) {
                 RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET -> listOf(rule.matchValue)
+                RoutingRuleKind.IMPORTED_LIST -> listOf(importedListTag(rule.matchValue))
                 else -> emptyList()
             },
             outbound = outbound,

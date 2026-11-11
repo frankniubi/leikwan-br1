@@ -283,7 +283,8 @@ final class AppModel: ObservableObject {
             customBypassRules: routing.customBypass,
             enableIPv6: routing.enableIPv6,
             cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path,
-            ruleSetDirectory: AppGroup.ruleSetDirectory.path
+            ruleSetDirectory: AppGroup.ruleSetDirectory.path,
+            userRuleSetDirectory: AppGroup.userRuleSetDirectory.path
         )
         return SingboxConfigBuilder(settings: settings, safePathRegistry: .iosBaseline(panelHosts: profile?.panelHosts ?? []))
     }
@@ -490,7 +491,7 @@ final class AppModel: ObservableObject {
         let builder = makeSingboxBuilder()
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
-            customRules: routing.customRules,
+            customRules: compilableCustomRules,
             appPresetRules: routing.appPresets.sorted { $0.key < $1.key }.map { key, outcome in
                 RoutingRule(id: "app-\(key)", kind: .appPreset, matchValue: key, outcome: outcome)
             },

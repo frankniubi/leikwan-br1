@@ -30,6 +30,9 @@ public struct SingboxSettings: Equatable {
     /// Directory holding the bundled `<tag>.srs` files (the app group copy the tunnel installs).
     /// Empty writes bare file names.
     public var ruleSetDirectory: String
+    /// Directory holding imported list rule-sets (`<id>.json`, `ImportedRuleListStore`);
+    /// separate from `ruleSetDirectory`, which the tunnel rewrites on app updates.
+    public var userRuleSetDirectory: String
 
     public init(
         dnsServer: String = "1.1.1.1",
@@ -42,7 +45,8 @@ public struct SingboxSettings: Equatable {
         tunMTU: Int = 9000,
         enableIPv6: Bool = false,
         cacheFilePath: String? = nil,
-        ruleSetDirectory: String = ""
+        ruleSetDirectory: String = "",
+        userRuleSetDirectory: String = ""
     ) {
         self.dnsServer = dnsServer
         self.dnsFallback = dnsFallback
@@ -55,6 +59,7 @@ public struct SingboxSettings: Equatable {
         self.enableIPv6 = enableIPv6
         self.cacheFilePath = cacheFilePath
         self.ruleSetDirectory = ruleSetDirectory
+        self.userRuleSetDirectory = userRuleSetDirectory
     }
 }
 
