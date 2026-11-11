@@ -29,13 +29,14 @@ type AppliedForward struct {
 // is only cleared once the Panel acknowledges the batch, so a failed heartbeat
 // never loses billable traffic.
 type UsageState struct {
-	PendingUltra    []UltraUsageSnapshot     `json:"pending_ultra_usage"`
-	PendingFeedback []UltraCandidateFeedback `json:"pending_candidate_feedback"`
-	Sequence        int64                    `json:"sequence"`
-	LastTotals      map[string]int64         `json:"last_totals"`
-	ReportedIn      int64                    `json:"reported_bytes_in"`
-	ReportedOut     int64                    `json:"reported_bytes_out"`
-	LastHeartbeatAt time.Time                `json:"last_heartbeat_at"`
+	PendingUltra         []UltraUsageSnapshot     `json:"pending_ultra_usage"`
+	PendingFeedback      []UltraCandidateFeedback `json:"pending_candidate_feedback"`
+	AcknowledgedFeedback []string                 `json:"acknowledged_feedback_evidence,omitempty"`
+	Sequence             int64                    `json:"sequence"`
+	LastTotals           map[string]int64         `json:"last_totals"`
+	ReportedIn           int64                    `json:"reported_bytes_in"`
+	ReportedOut          int64                    `json:"reported_bytes_out"`
+	LastHeartbeatAt      time.Time                `json:"last_heartbeat_at"`
 }
 
 // PullState records the long-poll cursor so a daemon restart resumes without a
@@ -141,6 +142,7 @@ func (s *Store) Usage() UsageState {
 	copyState := s.usage
 	copyState.PendingUltra = append([]UltraUsageSnapshot(nil), s.usage.PendingUltra...)
 	copyState.PendingFeedback = append([]UltraCandidateFeedback(nil), s.usage.PendingFeedback...)
+	copyState.AcknowledgedFeedback = append([]string(nil), s.usage.AcknowledgedFeedback...)
 	return copyState
 }
 

@@ -10,6 +10,7 @@ require_once __DIR__ . '/../src/Database/Database.php';
 require_once __DIR__ . '/../src/Support/LocaleResolver.php';
 require_once __DIR__ . '/../src/Support/KnowledgebaseHtmlSanitizer.php';
 require_once __DIR__ . '/../src/Support/MermaidSourcePolicy.php';
+require_once __DIR__ . '/../src/Support/KnowledgebaseAddressGuard.php';
 require_once __DIR__ . '/../src/Support/KnowledgebaseService.php';
 
 function fail(string $message): never

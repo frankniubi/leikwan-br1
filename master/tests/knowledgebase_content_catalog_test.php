@@ -403,7 +403,10 @@ $localizedDiagramRequirements = [
         'no-gui-clients' => ['不用螢幕的電腦設定流程', '選擇電腦', '哪個系統', 'macOS', '先裝應用，再執行一條命令', 'Windows', '解壓下載包，再執行一條命令'],
     ],
 ];
-$allTopicKeys = array_keys($expectedTopics);
+// Catalog guides may also link to the supplementary topics published by
+// scripts/publish_knowledgebase_topics.php.
+$supplementaryTopics = require __DIR__ . '/../resources/knowledgebase/supplementary_topics.php';
+$allTopicKeys = array_merge(array_keys($expectedTopics), array_keys($supplementaryTopics));
 // Reference articles explain concepts rather than walk through an operation,
 // so the tutorial-structure assertions (fixed headings, ordered steps, screenshot,
 // Mermaid diagram) do not apply to them; language-hygiene checks still do.

@@ -195,6 +195,7 @@ SELECT
 <li>Your panel email and password.</li>
 <li>The device you play on. The app runs on Windows, macOS, Android, and Linux.</li>
 <li>Android 8.0+ for phones and tablets.</li>
+<li>iPhone and iPad install through TestFlight instead: see <a href="/knowledgebase?thread=ios-testflight">install the iOS app with TestFlight</a>.</li>
 <li>On Linux, Debian 11, 12 or 13 (x86_64 or arm64) and one root command.</li>
 </ul>
 
@@ -678,6 +679,7 @@ SELECT
 <li>你的控制台邮箱和密码。</li>
 <li>你玩游戏用的设备。客户端支持 Windows、macOS、Android 和 Linux。</li>
 <li>手机或平板需要 Android 8.0 以上。</li>
+<li>iPhone 和 iPad 通过 TestFlight 安装，步骤见<a href="/knowledgebase?thread=ios-testflight">通过 TestFlight 安装 iOS 版</a>。</li>
 <li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），并且能用 root 执行命令。</li>
 </ul>
 
@@ -1162,6 +1164,7 @@ SELECT
 <li>你的控制台郵箱和密碼。</li>
 <li>你玩遊戲用的裝置。用戶端支援 Windows、macOS、Android 和 Linux。</li>
 <li>手機或平板需要 Android 8.0 以上。</li>
+<li>iPhone 和 iPad 透過 TestFlight 安裝，步驟見<a href="/knowledgebase?thread=ios-testflight">透過 TestFlight 安裝 iOS 版</a>。</li>
 <li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），並且能用 root 執行命令。</li>
 </ul>
 

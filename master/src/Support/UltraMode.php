@@ -78,6 +78,15 @@ final class UltraMode
     public const CREDENTIAL_REJECTED_REFRESH_INTERVAL_KEY = 'ULTRA_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS';
     public const DEFAULT_CREDENTIAL_REJECTED_REFRESH_INTERVAL_SECONDS = 300;
     /**
+     * Maximum clock/delivery age accepted on a client-reported candidate
+     * feedback observation, and maximum time past lease expiry a consumed lease
+     * still binds telemetry. Prevents historical rolling feedback from marking
+     * newly acquired material after the client has moved on.
+     */
+    public const FEEDBACK_MAX_AGE_SECONDS = 300;
+    public const FEEDBACK_FUTURE_SKEW_SECONDS = 60;
+    public const FEEDBACK_LEASE_EXPIRY_GRACE_SECONDS = 300;
+    /**
      * A line with less than this left on its material no longer limits how long
      * a forward's grant may be, as long as another line of the forward has more.
      */

@@ -190,9 +190,10 @@ final class UltraClientStatusService
             }
             $forwardId = (int) ($item['forward_id'] ?? 0);
             $candidateHash = strtolower(trim((string) ($item['candidate_key_hash'] ?? '')));
+            $leaseRow = $this->boundLeaseForFeedback($clientId, $deviceId, $forwardId, $candidateHash, $item['lease_hash'] ?? null);
             if ($forwardId <= 0 || !isset($allowed[$forwardId])
                 || preg_match('/^[a-f0-9]{64}$/', $candidateHash) !== 1
-                || !$this->feedbackBoundToLease($clientId, $deviceId, $forwardId, $candidateHash, $item['lease_hash'] ?? null)
+                || $leaseRow === null
                 || isset($seen[$forwardId . ':' . $candidateHash])) {
                 continue;
             }
@@ -224,6 +225,21 @@ final class UltraClientStatusService
             if (!in_array($outcome, ['failure', 'success'], true) || $reason === 'process_stderr') {
                 continue;
             }
+            $evidenceId = trim((string) ($item['evidence_id'] ?? ''));
+            if ($evidenceId !== '' && preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $evidenceId) !== 1) {
+                continue;
+            }
+            $hasObservedAt = array_key_exists('observed_at', $item) && trim((string) ($item['observed_at'] ?? '')) !== '';
+            $observedAt = $hasObservedAt ? self::feedbackTimestamp($item['observed_at']) : null;
+            if ($hasObservedAt && $observedAt === null) {
+                continue;
+            }
+            $now = $this->now();
+            if ($observedAt !== null
+                && ($observedAt < $now - UltraMode::FEEDBACK_MAX_AGE_SECONDS
+                    || $observedAt > $now + UltraMode::FEEDBACK_FUTURE_SKEW_SECONDS)) {
+                continue;
+            }
             if ($outcome === 'failure' && UltraCandidateReputationService::isTransportReason($reason)) {
                 // A candidate that was never armed is not evidence about the
                 // line, and the runtime emits one of these every few seconds
@@ -231,20 +247,24 @@ final class UltraClientStatusService
                 $transport[$reason] = (int) ($transport[$reason] ?? 0) + 1;
                 if ($reason === 'credential_rejected' && $this->materials !== null) {
                     // Not a strike, but the line's material holds a relay that
-                    // no longer takes its credential: refresh it early.
+                    // no longer takes its credential: refresh it early when the
+                    // report actually belongs to the current material window.
+                    $leaseIssuedAt = isset($leaseRow['issued_at'])
+                        ? self::utcTimestamp($leaseRow['issued_at'])
+                        : 0;
                     $this->materials->noteCredentialRejected(
                         (string) ($scope['source_id'] ?? ''),
-                        (int) ($scope['line_id'] ?? 0)
+                        (int) ($scope['line_id'] ?? 0),
+                        $observerHash,
+                        $evidenceId,
+                        $observedAt,
+                        $leaseIssuedAt > 0 ? $leaseIssuedAt : null
                     );
                 }
                 continue;
             }
             if (($outcome === 'failure' && !UltraCandidateReputationService::isFailureReason($reason))
                 || ($outcome === 'success' && $reason !== 'canary_probe_ok')) {
-                continue;
-            }
-            $evidenceId = trim((string) ($item['evidence_id'] ?? ''));
-            if ($evidenceId !== '' && preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $evidenceId) !== 1) {
                 continue;
             }
             $result = $outcome === 'failure'
@@ -271,25 +291,29 @@ final class UltraClientStatusService
     /**
      * A candidate hash alone is not an authentication factor. Require the
      * client/device/forward tuple to point at a consumed, non-revoked lease
-     * carrying the same opaque candidate and lease hashes. The lookup is
+     * carrying the same opaque candidate and lease hashes, and refuse leases
+     * that expired beyond FEEDBACK_LEASE_EXPIRY_GRACE_SECONDS. The lookup is
      * deliberately fail-closed so telemetry cannot weaken the lease boundary.
+     *
+     * @return array<string, mixed>|null
      */
-    private function feedbackBoundToLease(
+    private function boundLeaseForFeedback(
         int $clientId,
         string $deviceId,
         int $forwardId,
         string $candidateKeyHash,
         mixed $leaseHash,
-    ): bool {
+    ): ?array {
         $leaseHash = strtolower(trim((string) $leaseHash));
         if ($clientId <= 0 || $forwardId <= 0
             || preg_match('/^[a-f0-9]{64}$/', $candidateKeyHash) !== 1
             || preg_match('/^[a-f0-9]{64}$/', $leaseHash) !== 1) {
-            return false;
+            return null;
         }
         try {
+            $cutoff = gmdate('Y-m-d H:i:s', $this->now() - UltraMode::FEEDBACK_LEASE_EXPIRY_GRACE_SECONDS);
             $row = $this->db->fetchOne(
-                'SELECT id
+                'SELECT id, policy_generation, issued_at, expires_at
                  FROM ultra_client_leases
                  WHERE client_id = :client_id
                    AND device_hash = :device_hash
@@ -298,6 +322,7 @@ final class UltraClientStatusService
                    AND lease_hash = :lease_hash
                    AND consumed_at IS NOT NULL
                    AND revoked_at IS NULL
+                   AND expires_at >= :min_expires_at
                  LIMIT 1',
                 [
                     'client_id' => $clientId,
@@ -305,11 +330,37 @@ final class UltraClientStatusService
                     'forward_id' => $forwardId,
                     'candidate_key_hash' => $candidateKeyHash,
                     'lease_hash' => $leaseHash,
+                    'min_expires_at' => $cutoff,
                 ]
             );
-            return is_array($row) && isset($row['id']);
+            if (!is_array($row) || !isset($row['id'])) {
+                return null;
+            }
+            if (isset($row['expires_at'])) {
+                $expiresTs = self::utcTimestamp($row['expires_at']);
+                if ($expiresTs > 0 && $expiresTs < $this->now() - UltraMode::FEEDBACK_LEASE_EXPIRY_GRACE_SECONDS) {
+                    return null;
+                }
+            }
+            return $row;
         } catch (\Throwable) {
-            return false;
+            return null;
+        }
+    }
+
+    private static function feedbackTimestamp(mixed $value): ?int
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        $text = trim($value);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/', $text) !== 1) {
+            return null;
+        }
+        try {
+            return (new \DateTimeImmutable($text, new \DateTimeZone('UTC')))->getTimestamp();
+        } catch (\Throwable) {
+            return null;
         }
     }
 
