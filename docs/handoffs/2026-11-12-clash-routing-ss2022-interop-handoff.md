@@ -1,7 +1,7 @@
 # Handoff: Clash 分流 + SS2022 互通 + 用户功能包（2026-11-11 → 2026-11-12）
 
 **分支**: `feat/clash-routing-user-device-limit`（worktree `C:\Users\frankniubi\Downloads\leikwan-feature`）
-**HEAD**: `d3dd335c`（第二轮：F4 面板 + F3 双端 + iOS 内存守护 + Ultra 延迟，见「第二轮（2026-11-12）」）
+**HEAD**: `fcf2c20c`（第二轮：F4 面板 + F3 双端 + iOS 内存守护 + Ultra 延迟，见「第二轮（2026-11-12）」）
 **CI 状态**: 全绿 —— Android/Windows/Linux/macOS client、Routing E2E、**SS2022 Interop 4/4**（iOS/Android × sing-box/Xray 真实握手成功）
 **生产状态**: 面板侧已部署（2026-11-11 04:00Z，备份 clash-devlimit-20261111-035857）；**客户端未发版、分支未合 master**。用户明确要求：现阶段不动生产。
 
@@ -61,6 +61,13 @@
 | `cf95a94c` | F3 iOS：同规格 Core 转换器；app group `user-rule-sets/`（**不在** `rule-sets/`，RuleSetInstaller 会清空它）；`USER-LIST` 规则仅导入器可建；5 语言文案 |
 | `8e1ee2bc` | iOS 内存守护：phys_footprint 5 s 采样 + memory-pressure；44 MB 或压力事件 → CloseConnections（20 s 冷却），36 MB 记日志 |
 | `ddb24c9b` / `d3dd335c` | F2 phase 2：Ultra 模式（无 probe 组）对正在用的 relay 计时 TCP 握手（RST 也算一个 RTT），两端 |
+| `a2e2e4fe` | iOS F2 修复：`LibboxOutboundGroupIteratorProtocol` 改为 `hasNext()/next()` + 更新合成 `probe` 组单测断言 |
+| `8da72510` | 合并 `master`（含 `0c4a426c` Ultra candidate feedback 去重 + lease-to-material 绑定、`f52b9cc9` KB 地址门卫、`ebbd1647` WHMCS 过户清理） |
+| `f456faf9` | 全平台日志上传（面板）：`POST /api/client/debug/start` 客户端自开窗口返回 8 位编号、`DebugCollectionStore::assembleText()`、`GET /admin/clients/{id}/debug-log` 在线查看/下载（零新 DB 迁移，复用已有 `client_debug_chunks`） |
+| `fbd597a0` | 全平台日志上传（Desktop）：Windows 日志页「上传日志」、macOS 活动页「上传日志」、Headless CLI `leikwan upload-logs`（未连接时也可上传） |
+| `562e8a15` | 全平台日志上传（Linux + OpenWrt）：`client_agent.py upload-logs` + `leikwand upload-logs` / `ctl upload_logs` 及 pull 被动上传 |
+| `ffc2b168` | 全平台日志上传（Android）：`DebugLogUploader`（采集本进程 logcat + status.json 脱敏分片）+ 设置页「上传诊断日志」+ pull 被动上传 |
+| `fcf2c20c` | 全平台日志上传（iOS）+ CI 修复：`DebugLogUploader` + `LogsView` 工具栏上传按钮并复制编号 + pull 被动上传；修 iOS 16 `onChange` / `TooLargeError.init` / TestFlight job 分支门禁 |
 
 与批准方案的有意偏差（都写在 commit message 里）：规则摘要进 config_revision；ready 绑定必须同一个 TCP/UDP 端口；URL 之类带冒号的垃圾报 `invalid_destination_ip`；pull 中 route-rule 查询失败不影响 pull。
 
