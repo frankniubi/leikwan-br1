@@ -111,12 +111,12 @@ final class StatusMonitor {
 
         func writeGroups(_ groupList: LibboxOutboundGroupIteratorProtocol?) {
             guard let groupList else { return }
-            for group in groupList {
-                if group.tag != "probe" { continue }
-                for item in group.items {
+            while groupList.hasNext() {
+                guard let group = groupList.next(), group.tag == "probe", let items = group.getItems() else { continue }
+                while items.hasNext() {
                     // The probe group holds the active exit and "direct"; the exit's
                     // URL-test delay is the in-tunnel latency.
-                    if item.tag == "direct" { continue }
+                    guard let item = items.next(), item.tag != "direct", item.urlTestDelay > 0 else { continue }
                     monitor?.updateLatency(Int(item.urlTestDelay))
                 }
             }
