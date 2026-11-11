@@ -92,6 +92,8 @@ class RoutingE2eConfigDumpTest {
     private fun assertConfigShape(config: JsonObject, expectedFinal: String) {
         val route = config.getAsJsonObject("route")
         assertEquals(expectedFinal, route.get("final").asString)
+        // sing-box 1.14 makes a missing outbound domain resolver fatal at startup.
+        assertEquals("direct-dns", route.get("default_domain_resolver")?.asString)
 
         val proxy = config.getAsJsonArray("outbounds").map { it.asJsonObject }
             .single { it.get("tag").asString == PROXY_TAG }
