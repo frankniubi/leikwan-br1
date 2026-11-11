@@ -60,7 +60,7 @@ public sealed class MacConnectionConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = "2022-blake3-aes-256-gcm",
-            Password = "memory-only-secret",
+            Password = "bWVtb3J5LW9ubHktc2VjcmV0LTAxMjM0NTY3ODlhYmM",
         };
 
         var result = MacConnectionConfigBuilder.Build(
@@ -73,7 +73,7 @@ public sealed class MacConnectionConfigBuilderTests
         var outbound = root.GetProperty("outbounds")[0];
         Assert.Equal("shadowsocks", outbound.GetProperty("type").GetString());
         Assert.Equal("198.51.100.7", outbound.GetProperty("server").GetString());
-        Assert.Equal("memory-only-secret", outbound.GetProperty("password").GetString());
+        Assert.Equal("bWVtb3J5LW9ubHktc2VjcmV0LTAxMjM0NTY3ODlhYmM", outbound.GetProperty("password").GetString());
         var rules = root.GetProperty("route").GetProperty("rules");
         Assert.Contains(rules.EnumerateArray(), rule =>
             rule.TryGetProperty("ip_cidr", out var cidrs)

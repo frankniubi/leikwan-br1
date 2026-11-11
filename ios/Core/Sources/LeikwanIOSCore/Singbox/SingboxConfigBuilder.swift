@@ -66,7 +66,7 @@ public struct SingboxConfigBuilder {
             bypassChina: bypassChinaActive
         )
         root["inbounds"] = [buildTunInbound()]
-        root["outbounds"] = buildOutbounds(activeNodes, runtime: runtime, connectionMode: connectionMode)
+        root["outbounds"] = try buildOutbounds(activeNodes, runtime: runtime, connectionMode: connectionMode)
 
         var bridgeOverride: Int?
         if runtimeOnlyProxy && connectionMode == .services && activeNodes.isEmpty && mode != .direct, let runtime = runtime {
@@ -113,7 +113,7 @@ public struct SingboxConfigBuilder {
         }
     }
 
-    func buildOutbounds(_ nodes: [ProxyNode], runtime: SingboxRuntimeContext?, connectionMode: ProxyConnectionMode) -> [[String: Any]] {
+    func buildOutbounds(_ nodes: [ProxyNode], runtime: SingboxRuntimeContext?, connectionMode: ProxyConnectionMode) throws -> [[String: Any]] {
         var outbounds: [[String: Any]] = []
         var proxyTags: [String] = []
         for node in nodes {
@@ -131,7 +131,7 @@ public struct SingboxConfigBuilder {
                 server = node.server
                 port = node.port
             }
-            outbounds.append(proxyOutbound(node, server: server, port: port))
+            outbounds.append(try proxyOutbound(node, server: server, port: port))
             proxyTags.append(node.outboundTag)
         }
         if proxyTags.count > 1 {
@@ -148,16 +148,29 @@ public struct SingboxConfigBuilder {
         return outbounds
     }
 
-    func proxyOutbound(_ node: ProxyNode, server: String, port: Int) -> [String: Any] {
+    func proxyOutbound(_ node: ProxyNode, server: String, port: Int) throws -> [String: Any] {
         switch node.settings {
         case .shadowsocks(let ss):
+            // Normalize SS2022 keys: ensures compatibility with sing-box client libs and
+            // sing-box/Xray servers that accept over-long or raw-ASCII keys
+            let password: String
+            if ss.method.lowercased().hasPrefix("2022-") {
+                let result = SS2022KeyNormalizer.normalizePassword(ss.password, method: ss.method)
+                if let error = result.error {
+                    throw SingboxConfigError("SS2022 密钥无效: \(error)")
+                }
+                password = result.normalized
+            } else {
+                password = ss.password
+            }
+
             var outbound: [String: Any] = [
                 "type": "shadowsocks",
                 "tag": node.outboundTag,
                 "server": server,
                 "server_port": port,
                 "method": ss.method,
-                "password": ss.password,
+                "password": password,
             ]
             if let plugin = ss.plugin, !plugin.trimmingCharacters(in: .whitespaces).isEmpty { outbound["plugin"] = plugin }
             if let opts = ss.pluginOpts, !opts.trimmingCharacters(in: .whitespaces).isEmpty { outbound["plugin_opts"] = opts }

@@ -1,0 +1,19 @@
+{
+  "_comment": "Xray server, single-user SS2022 with a raw 32-char ASCII password. Xray's ParseKey accepts raw bytes; sing-box clients only accept base64. The app's normalizer must re-encode the raw key as base64 (YSFiQGMjZCRlJWZeZyZoKmkoailrLWw9bVtuXW97cH0) for the handshake to succeed.",
+  "log": { "loglevel": "info" },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 18389,
+      "protocol": "shadowsocks",
+      "settings": {
+        "method": "2022-blake3-aes-256-gcm",
+        "password": "a!b@c#d$e%f^g&h*i(j)k-l=m[n]o{p}",
+        "network": "tcp,udp"
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom", "tag": "direct" }
+  ]
+}

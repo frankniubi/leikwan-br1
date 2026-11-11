@@ -178,7 +178,7 @@ class SingboxConfigBuilderTest {
             type = "ss",
             originalServer = "sh36.ctyun.mcbar.cc",
             originalPort = 30522,
-            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"secret"}""",
+            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg"}""",
             enabled = true,
         )
 
@@ -196,7 +196,7 @@ class SingboxConfigBuilderTest {
         assertEquals("127.0.0.1", proxy.get("server").asString)
         assertEquals(11090, proxy.get("server_port").asInt)
         assertEquals("2022-blake3-aes-256-gcm", proxy.get("method").asString)
-        assertEquals("secret", proxy.get("password").asString)
+        assertEquals("c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg", proxy.get("password").asString)
         assertFalse(
             config.getAsJsonObject("route").getAsJsonArray("rules").any {
                 val rule = it.asJsonObject
@@ -547,7 +547,7 @@ class SingboxConfigBuilderTest {
             type = "ss",
             originalServer = "14.103.220.245",
             originalPort = 32469,
-            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"server:user"}""",
+            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"c2VydmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg:dXNlci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWE"}""",
             forwardId = null,
         )
 

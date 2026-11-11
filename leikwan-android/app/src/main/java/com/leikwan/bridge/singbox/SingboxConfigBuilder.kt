@@ -28,6 +28,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
+import com.leikwan.bridge.shadowsocks.SS2022KeyNormalizer
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
@@ -548,8 +549,19 @@ class SingboxConfigBuilder(
                 addProperty("tag", "proxy-${node.id}")
                 addProperty("server", outboundServer)
                 addProperty("server_port", outboundPort)
-                addProperty("method", config.get("method")?.asString ?: "")
-                addProperty("password", config.get("password")?.asString ?: "")
+                val method = config.get("method")?.asString ?: ""
+                val rawPassword = config.get("password")?.asString ?: ""
+                // Normalize SS2022 keys: ensures compatibility with sing-box client libs and
+                // sing-box/Xray servers that accept over-long or raw-ASCII keys
+                val password = if (method.startsWith("2022-", ignoreCase = true)) {
+                    val result = SS2022KeyNormalizer.normalizePassword(rawPassword, method)
+                    result.error?.let { throw IllegalArgumentException("SS2022 密钥无效: $it") }
+                    result.normalized
+                } else {
+                    rawPassword
+                }
+                addProperty("method", method)
+                addProperty("password", password)
                 config.get("plugin")?.asString?.takeIf { it.isNotBlank() }?.let {
                     addProperty("plugin", it)
                 }
