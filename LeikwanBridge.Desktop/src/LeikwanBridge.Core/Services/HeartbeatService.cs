@@ -107,7 +107,7 @@ public sealed class HeartbeatService
             ultraUsage = CollectUltraUsage(usage, out pendingUltraState);
         }
         var ultraStatus = CollectUltraStatus();
-        var ultraCandidateFeedback = CollectUltraCandidateFeedback();
+        var ultraCandidateFeedback = CollectUltraCandidateFeedback(usage.AcknowledgedUltraFeedback);
         var runtimeAttestation = ultraStatus
             .Select(UltraRuntimeStatus.ReadAttestation)
             .FirstOrDefault(item => item is not null)
@@ -150,6 +150,10 @@ public sealed class HeartbeatService
             if (!(response.UltraUsageAcknowledged ?? response.Ok))
                 throw new HttpRequestException("ultra_usage_not_acknowledged");
             usage.PendingUltraUsage = [];
+        }
+        if (response.Ok && ultraCandidateFeedback.Count > 0)
+        {
+            usage.AcknowledgedUltraFeedback = MergeAcknowledgedFeedback(usage.AcknowledgedUltraFeedback, ultraCandidateFeedback);
         }
 
         usage.LastReportedBytesIn = usage.TotalBytesIn;
@@ -407,8 +411,13 @@ public sealed class HeartbeatService
         return statusFiles.DistinctBy(item => item.Path, StringComparer.OrdinalIgnoreCase);
     }
 
-    private List<UltraCandidateFeedback> CollectUltraCandidateFeedback()
+    private const int MaxAcknowledgedFeedbackEntries = 512;
+    private static readonly TimeSpan FeedbackMaxAge = TimeSpan.FromMinutes(5);
+
+    private List<UltraCandidateFeedback> CollectUltraCandidateFeedback(IReadOnlyCollection<string> acknowledgedKeys)
     {
+        var seen = new HashSet<string>(acknowledgedKeys ?? [], StringComparer.Ordinal);
+        var now = DateTimeOffset.UtcNow;
         var result = new List<UltraCandidateFeedback>();
         foreach (var (path, _) in EnumerateUltraStatusFiles())
         {
@@ -436,13 +445,15 @@ public sealed class HeartbeatService
                     var outcome = ReadBounded(item, "outcome", 16).ToLowerInvariant();
                     var reason = ReadBounded(item, "reason", 64).ToLowerInvariant();
                     var evidenceId = ReadBounded(item, "evidence_id", 128);
+                    var observedAt = ReadBounded(item, "observed_at", 40);
                     if (candidateHash.Length != 64 || leaseHash.Length != 64
                         || protocol is not ("tcp" or "udp" or "tcp+udp" or "native_socks5")
                         || outcome is not ("failure" or "success")
                         || reason.Length == 0 || reason == "process_stderr"
-                        || !IsSafeFeedbackText(evidenceId))
+                        || !IsSafeFeedbackText(evidenceId)
+                        || !IsFeedbackFresh(observedAt, now))
                         continue;
-                    result.Add(new UltraCandidateFeedback
+                    var feedback = new UltraCandidateFeedback
                     {
                         ForwardId = forwardId,
                         CandidateKeyHash = candidateHash,
@@ -451,8 +462,11 @@ public sealed class HeartbeatService
                         Outcome = outcome,
                         Reason = reason,
                         EvidenceId = evidenceId,
-                        ObservedAt = ReadBounded(item, "observed_at", 40),
-                    });
+                        ObservedAt = observedAt,
+                    };
+                    if (!seen.Add(FeedbackDedupeKey(feedback)))
+                        continue;
+                    result.Add(feedback);
                 }
             }
             catch (Exception exception) when (exception is IOException or JsonException or InvalidOperationException or FormatException)
@@ -461,6 +475,45 @@ public sealed class HeartbeatService
             }
         }
         return result;
+    }
+
+    private static bool IsFeedbackFresh(string observedAt, DateTimeOffset now)
+    {
+        if (string.IsNullOrWhiteSpace(observedAt))
+            return true;
+        if (!DateTimeOffset.TryParse(observedAt, out var parsed))
+            return false;
+        // Future timestamps remain accepted for synthetic tests and mild clock skew;
+        // only observations older than FeedbackMaxAge are dropped as stale.
+        return parsed >= now - FeedbackMaxAge;
+    }
+
+    private static string FeedbackDedupeKey(UltraCandidateFeedback item)
+        => $"{item.ForwardId}:{item.EvidenceId}";
+
+    private static List<string> MergeAcknowledgedFeedback(
+        IReadOnlyList<string> existing,
+        IReadOnlyList<UltraCandidateFeedback> sent)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<string>((existing?.Count ?? 0) + sent.Count);
+        if (existing is not null)
+        {
+            foreach (var key in existing)
+            {
+                if (!string.IsNullOrEmpty(key) && seen.Add(key))
+                    ordered.Add(key);
+            }
+        }
+        foreach (var item in sent)
+        {
+            var key = FeedbackDedupeKey(item);
+            if (!string.IsNullOrEmpty(key) && seen.Add(key))
+                ordered.Add(key);
+        }
+        if (ordered.Count > MaxAcknowledgedFeedbackEntries)
+            ordered.RemoveRange(0, ordered.Count - MaxAcknowledgedFeedbackEntries);
+        return ordered;
     }
 
     /// <summary>

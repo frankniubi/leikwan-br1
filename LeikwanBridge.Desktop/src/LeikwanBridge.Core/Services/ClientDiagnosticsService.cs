@@ -93,6 +93,12 @@ public sealed partial class ClientDiagnosticsService
     public void QueueDebugLogUpload(ClientMeta client, MasterApiClient api, CancellationToken ct = default)
         => _debugLogUploader.Queue(client, api, ct);
 
+    public Task<DebugManualUploadResult> UploadDebugLogsNowAsync(
+        MasterApiClient api,
+        IReadOnlyList<string>? extraLines = null,
+        CancellationToken ct = default)
+        => _debugLogUploader.UploadNowAsync(api, extraLines, ct);
+
     private static string BoundErrorCode(string value)
     {
         return ErrorCodePattern().IsMatch(value) ? value : "diagnostic_error";

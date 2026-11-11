@@ -258,3 +258,6 @@
 ", skipped %@ (%@)" = ", skipped %@ (%@)";
 "; the list mixes policies, all of it uses the exit you chose" = "; the list mixes policies, all of it uses the exit you chose";
 "; FINAL was not imported, unmatched traffic follows the global mode" = "; FINAL was not imported, unmatched traffic follows the global mode";
+"Sign in before uploading logs" = "Sign in before uploading logs";
+"Upload diagnostic logs" = "Upload diagnostic logs";
+"Uploaded diagnostic logs (ref %@, copied)" = "Uploaded diagnostic logs (ref %@, copied)";

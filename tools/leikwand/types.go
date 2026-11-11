@@ -26,14 +26,21 @@ type PullResponse struct {
 	NativeOutbound  *NativeOutboundCapability `json:"native_outbound,omitempty"`
 }
 
+type DebugCollectionMeta struct {
+	UUID      string `json:"uuid"`
+	Status    string `json:"status"`
+	ExpiresAt string `json:"expires_at"`
+}
+
 type ClientMeta struct {
-	ID                 int             `json:"id"`
-	Name               string          `json:"name"`
-	DisplayHost        string          `json:"display_host"`
-	GroupID            *int            `json:"group_id"`
-	DiagRequestToken   string          `json:"diag_request_token"`
-	DiagStatus         string          `json:"diag_status"`
-	AgentConfigJSON    json.RawMessage `json:"agent_config_json"`
+	ID                 int                  `json:"id"`
+	Name               string               `json:"name"`
+	DisplayHost        string               `json:"display_host"`
+	GroupID            *int                 `json:"group_id"`
+	DiagRequestToken   string               `json:"diag_request_token"`
+	DiagStatus         string               `json:"diag_status"`
+	DebugCollection    *DebugCollectionMeta `json:"debug_collection"`
+	AgentConfigJSON    json.RawMessage      `json:"agent_config_json"`
 	UpdateRequestToken string          `json:"agent_update_request_token"`
 	DesiredAgentVer    string          `json:"desired_agent_version"`
 	DesiredAgentSHA    string          `json:"desired_agent_sha256"`

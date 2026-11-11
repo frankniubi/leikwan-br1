@@ -264,6 +264,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin-transport-endpoints/{id}/delete', [$admin, 'deleteSidecarPoint']);
         $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
+        $this->router->add('GET', '/admin/clients/{id}/debug-log', [$admin, 'downloadClientDebugLog']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/openwrt-pairing-code', [$admin, 'createOpenWrtPairingCode']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
@@ -404,6 +405,7 @@ final class Bootstrap
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
+        $this->router->add('POST', '/api/client/debug/start', [$clientAgent, 'startDebugCollection']);
         $this->router->add('POST', '/api/client/debug/log', [$clientAgent, 'debugLogChunk']);
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);

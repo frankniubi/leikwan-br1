@@ -64,6 +64,55 @@ public sealed class ClientDiagnosticsServiceTests
     }
 
     [Fact]
+    public async Task UploadNowStartsCollectionAndReturnsReferenceCode()
+    {
+        var root = Directory.CreateTempSubdirectory("leikwan-debug-now-");
+        try
+        {
+            var logs = Path.Combine(root.FullName, "logs");
+            var state = Path.Combine(root.FullName, "state");
+            Directory.CreateDirectory(logs);
+            await File.WriteAllTextAsync(Path.Combine(logs, "client.log"), "token=secret123\nok line");
+            var paths = new List<string>();
+            using var api = new MasterApiClient(
+                "https://panel.example.test",
+                "agent-token",
+                httpClientFactory: () => new HttpClient(new StubRequestHandler(req =>
+                {
+                    var path = req.RequestUri?.AbsolutePath ?? string.Empty;
+                    paths.Add(path);
+                    if (path == "/api/client/debug/start")
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new StringContent(
+                                "{\"ok\":true,\"reference_code\":\"deadbeef\",\"debug_collection\":{\"uuid\":\"deadbeef-e89b-42d3-a456-426614174000\",\"status\":\"active\",\"expires_at\":\"2999-01-01T00:00:00Z\",\"byte_limit\":104857600,\"bytes_received\":0}}",
+                                Encoding.UTF8,
+                                "application/json"),
+                        };
+                    }
+                    var body = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                    Assert.DoesNotContain("secret123", body);
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("{\"ok\":true}", Encoding.UTF8, "application/json"),
+                    };
+                })));
+            var uploader = new DebugLogUploader(logs, state);
+            var result = await uploader.UploadNowAsync(api, ["ui line token=secret123"]);
+            Assert.Equal("complete", result.Status);
+            Assert.Equal("deadbeef", result.ReferenceCode);
+            Assert.True(result.Chunks >= 2);
+            Assert.Contains("/api/client/debug/start", paths);
+            Assert.Contains("/api/client/debug/log", paths);
+        }
+        finally
+        {
+            try { root.Delete(recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
     public void BuildResultsNeverIncludesRemoteOrCredentialMaterial()
     {
         const string targetCanary = "198.51.100.250:443";
@@ -125,5 +174,11 @@ public sealed class ClientDiagnosticsServiceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(responseFactory());
+    }
+
+    private sealed class StubRequestHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(responseFactory(request));
     }
 }

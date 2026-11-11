@@ -10,6 +10,8 @@ import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.hosted.HostedNodeSync
+import com.leikwan.bridge.diagnostics.DebugLogUploader
+import com.leikwan.bridge.diagnostics.DebugUploadSummary
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -452,6 +454,7 @@ class PanelRepository(
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
         syncHostedNodesAfterPull(resp.client)
+        uploadDebugLogsIfRequested(resp.client)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -839,6 +842,61 @@ class PanelRepository(
         enabled = enabled,
         syncVersion = syncVersion,
     )
+
+    private suspend fun uploadDebugLogsIfRequested(client: JsonElement?) {
+        val (uuid, status) = runCatching {
+            val coll = client?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.get("debug_collection")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: return
+            val u = coll.get("uuid")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
+            val s = coll.get("status")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
+            u to s
+        }.getOrNull() ?: return
+        if (status != "active" || !DebugLogUploader.isValidCollectionUuid(uuid)) return
+        if (DebugLogUploader.hasUploadedPassiveCollection(context.filesDir, uuid)) return
+        try {
+            val bytes = DebugLogUploader.collectAppBundle(context)
+            DebugLogUploader.uploadBytes(uuid, bytes) { seq, sha, b64, src ->
+                val resp = api.uploadDebugLogChunk(
+                    authHeader(),
+                    DebugLogChunkRequest(uuid, seq, sha, b64, src),
+                )
+                if (!resp.isSuccessful || resp.body()?.ok != true) {
+                    throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+                }
+            }
+            DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Best-effort passive upload; retried on the next pull while active.
+        }
+    }
+
+    suspend fun uploadDebugLogsNow(): DebugUploadSummary = reportingDeviceLimit {
+        requireActiveSession()
+        val startResp = api.startDebugCollection(authHeader())
+        val startBody = startResp.body()
+        val uuid = startBody?.debugCollection?.uuid?.trim()?.lowercase().orEmpty()
+        if (!startResp.isSuccessful || startBody?.ok != true || !DebugLogUploader.isValidCollectionUuid(uuid)) {
+            val code = startBody?.error?.takeIf { it.isNotBlank() }
+                ?: PanelErrorParser.messageFromHttp(startResp.code(), startResp.message(), startResp.errorBody()?.string())
+            throw Exception(code)
+        }
+        val refCode = startBody.referenceCode?.takeIf { it.isNotBlank() } ?: uuid.take(8)
+        val bundle = DebugLogUploader.collectAppBundle(context)
+        val (chunks, totalBytes) = DebugLogUploader.uploadBytes(uuid, bundle) { seq, sha, b64, src ->
+            val resp = api.uploadDebugLogChunk(
+                authHeader(),
+                DebugLogChunkRequest(uuid, seq, sha, b64, src),
+            )
+            if (!resp.isSuccessful || resp.body()?.ok != true) {
+                throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+            }
+        }
+        DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
+        DebugUploadSummary(referenceCode = refCode, uuid = uuid, chunks = chunks, bytes = totalBytes)
+    }
 
     fun isLoggedIn(): Boolean = prefs.isLoggedIn()
 

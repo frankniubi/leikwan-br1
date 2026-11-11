@@ -153,6 +153,7 @@
     <system:String x:Key="SettingsSaved">设置已保存。</system:String>
 
     <!-- Log -->
+    <system:String x:Key="LogUpload">上传日志</system:String>
     <system:String x:Key="LogClear">清除</system:String>
     <system:String x:Key="LogExport">导出</system:String>
     <system:String x:Key="LogFilter">筛选...</system:String>

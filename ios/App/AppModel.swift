@@ -244,6 +244,7 @@ final class AppModel: ObservableObject {
             apply(result.catalog)
             catalogError = nil
             scheduleCloudSync(after: result.response)
+            scheduleDebugLogUpload(after: result.response)
         } catch {
             catalogError = Self.describe(error)
         }

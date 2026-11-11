@@ -285,3 +285,6 @@
 ", skipped %@ (%@)" = "，跳过 %@ 条（%@）";
 "; the list mixes policies, all of it uses the exit you chose" = "；原列表含多种策略，已统一按所选出口";
 "; FINAL was not imported, unmatched traffic follows the global mode" = "；FINAL 未导入，未匹配流量按全局模式";
+"Sign in before uploading logs" = "请先登录再上传日志";
+"Upload diagnostic logs" = "上传诊断日志";
+"Uploaded diagnostic logs (ref %@, copied)" = "已上传诊断日志（编号 %@，已复制）";

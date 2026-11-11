@@ -20,6 +20,7 @@ final class UltraMaterialService
     private const SOURCE_NONCE_PREFIX = 'ultra.source.nonces.v1.';
     private const TICKET_NONCE_PREFIX = 'ultra.source.tickets.v1.';
     private const CREDENTIAL_REJECTED_PREFIX = 'ultra.material.rejected.v1.';
+    private const CREDENTIAL_REJECTED_EVIDENCE_PREFIX = 'ultra.material.rejected.evidence.v1.';
 
     /** @var callable(): int */
     private $clock;
@@ -142,26 +143,57 @@ final class UltraMaterialService
      * window only fires at minute 20, so clients keep dialling a dead relay for
      * up to ten minutes. Mark the material so dueLineIds() refreshes it early.
      *
-     * Rate limited per line: the mark is only taken when the line's material is
-     * at least the configured interval old, and a mark already pending for the
-     * same material is kept, so a burst of reports causes one refresh at most.
+     * Rate limited and bound to the observed material:
+     *   - ignored while the material is younger than the configured interval;
+     *   - ignored when the report's observed_at or lease issue time predates the
+     *     current material's acquisition, so rolling historical feedback cannot
+     *     mark a replacement upload;
+     *   - deduplicated per observer + evidence_id so replayed heartbeats cannot
+     *     re-trigger across material generations;
+     *   - one pending mark per material generation/acquisition, cleared on upload.
      */
-    public function noteCredentialRejected(string $sourceId, int $lineId): bool
-    {
+    public function noteCredentialRejected(
+        string $sourceId,
+        int $lineId,
+        string $observerHash = '',
+        string $evidenceId = '',
+        ?int $observedAt = null,
+        ?int $leaseIssuedAt = null,
+    ): bool {
         $sourceId = trim($sourceId);
         $interval = $this->credentialRejectedRefreshIntervalSeconds();
         if ($sourceId === '' || $lineId <= 0 || $lineId > 45535 || $interval === 0) {
             return false;
         }
+        $now = $this->now();
+        if ($observedAt !== null
+            && ($observedAt < $now - UltraMode::FEEDBACK_MAX_AGE_SECONDS
+                || $observedAt > $now + UltraMode::FEEDBACK_FUTURE_SKEW_SECONDS)) {
+            return false;
+        }
         $material = $this->loadMaterial($sourceId, $lineId, true);
         $acquiredAt = $this->parseTimestamp((string) ($material['acquired_at'] ?? ''));
-        if ($acquiredAt === null || $acquiredAt > $this->now() - $interval) {
+        if ($acquiredAt === null || $acquiredAt > $now - $interval) {
+            return false;
+        }
+        if ($observedAt !== null && $observedAt < $acquiredAt) {
+            return false;
+        }
+        if ($leaseIssuedAt !== null && $leaseIssuedAt > 0 && $leaseIssuedAt < $acquiredAt) {
             return false;
         }
         if ($this->credentialRejectedForMaterial($sourceId, $lineId, $material)) {
             return false;
         }
-        $this->settingSet($this->credentialRejectedKey($sourceId, $lineId), (string) $material['acquired_at']);
+        $evidenceId = trim($evidenceId);
+        if ($evidenceId !== '') {
+            $scope = self::CREDENTIAL_REJECTED_EVIDENCE_PREFIX . hash('sha256', $sourceId) . '.line.' . $lineId;
+            $replayKey = strtolower(trim($observerHash)) . ':' . $evidenceId;
+            if (!$this->consumeReplayValue($scope, $replayKey, $this->materialMaxTtlSeconds())) {
+                return false;
+            }
+        }
+        $this->settingSet($this->credentialRejectedKey($sourceId, $lineId), $this->materialIdentityToken($material));
         return true;
     }
 
@@ -172,10 +204,27 @@ final class UltraMaterialService
         if ($acquiredAt === '') {
             return false;
         }
-        // The mark names the material it was raised against; any newer upload
-        // has replaced the refused credential and so clears it by itself.
+        // The mark names the material (generation + acquired_at) it was raised
+        // against; any newer upload replaces it and clears the mark by itself.
+        // Accept bare acquired_at as well so marks written before this change
+        // remain legible across deploy.
         $marked = $this->settingGet($this->credentialRejectedKey($sourceId, $lineId), '');
-        return $marked !== '' && hash_equals($marked, $acquiredAt);
+        if ($marked === '') {
+            return false;
+        }
+        return hash_equals($marked, $this->materialIdentityToken($material))
+            || hash_equals($marked, $acquiredAt);
+    }
+
+    /** @param array<string, mixed> $material */
+    private function materialIdentityToken(array $material): string
+    {
+        $acquiredAt = trim((string) ($material['acquired_at'] ?? ''));
+        if ($acquiredAt === '') {
+            return '';
+        }
+        $generation = trim((string) ($material['generation'] ?? ''));
+        return $generation !== '' ? ($generation . '@' . $acquiredAt) : $acquiredAt;
     }
 
     private function credentialRejectedRefreshIntervalSeconds(): int
@@ -543,6 +592,7 @@ final class UltraMaterialService
         }
         $candidateProtocol = $nativePurpose ? 'native_socks5' : $transport;
         $candidates = [];
+        $fallbackRejectedCandidates = [];
         $seenCandidates = [];
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
@@ -553,6 +603,7 @@ final class UltraMaterialService
                 continue;
             }
             $material = $this->loadMaterial($sourceId, $lineId, true);
+            $lineRejected = $this->credentialRejectedForMaterial($sourceId, $lineId, $material);
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -615,9 +666,19 @@ final class UltraMaterialService
                 if ($nativePurpose) {
                     $candidate['native_socks5_state'] = 'verified';
                 }
-                $candidates[] = $candidate;
+                if ($lineRejected) {
+                    // A line whose current material is already awaiting a
+                    // credential_rejected refresh is placed behind healthy
+                    // lines so leases Issued during the source replacement
+                    // window do not keep handing out the dead relay/credential
+                    // first; single-line combos still keep it as fallback.
+                    $fallbackRejectedCandidates[] = $candidate;
+                } else {
+                    $candidates[] = $candidate;
+                }
             }
         }
+        $candidates = array_merge($candidates, $fallbackRejectedCandidates);
         if ($this->candidateDynamicQuarantineEnabled()) {
             $candidates = $this->candidateReputation->filterCandidates($candidates, 1);
         }

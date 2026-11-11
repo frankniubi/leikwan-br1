@@ -654,9 +654,13 @@
 
         <!-- ============ Activity ============ -->
         <Grid Grid.Row="0" Grid.RowSpan="2" IsVisible="{Binding IsLogsVisible}" RowDefinitions="Auto,*" Margin="32,28,32,96">
-          <StackPanel Grid.Row="0" Margin="0,0,0,16" Spacing="2">
-            <TextBlock Classes="heading" Text="{DynamicResource LogsLabel}" />
-          </StackPanel>
+          <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,16">
+            <TextBlock Grid.Column="0" Classes="heading" Text="{DynamicResource LogsLabel}" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Classes="mono muted" FontSize="12" Text="{Binding LogUploadSummary}" VerticalAlignment="Center" Margin="0,0,12,0" />
+            <Button Grid.Column="2" Classes="secondary" Command="{Binding UploadLogsCommand}" IsEnabled="{Binding !IsUploadingLogs}">
+              <TextBlock Text="{DynamicResource UploadLogs}" />
+            </Button>
+          </Grid>
           <Border Grid.Row="1" Classes="card">
             <ScrollViewer>
               <ItemsControl ItemsSource="{Binding Logs}">

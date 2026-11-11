@@ -232,6 +232,73 @@ final class DebugCollectionStore
         }
     }
 
+    /**
+     * Reassemble the uploaded log chunks for a client collection in sequence order.
+     * When $uuid is empty, picks the client's current debug_collection_uuid or most recent chunked collection.
+     *
+     * @return array{uuid:string,bytes:int,chunks:int,content:string}
+     */
+    public function assembleText(int $clientId, ?string $uuid = null): array
+    {
+        if ($clientId <= 0) {
+            throw new ApiException('client_not_found', 404);
+        }
+        $resolvedUuid = strtolower(trim((string) ($uuid ?? '')));
+        if ($resolvedUuid === '') {
+            $latest = $this->db->fetchOne(
+                'SELECT collection_uuid FROM client_debug_chunks WHERE client_id = :client_id ORDER BY id DESC LIMIT 1',
+                ['client_id' => $clientId]
+            );
+            $resolvedUuid = strtolower(trim((string) ($latest['collection_uuid'] ?? '')));
+            if ($resolvedUuid === '') {
+                $clientRow = $this->db->fetchOne(
+                    'SELECT debug_collection_uuid FROM clients WHERE id = :id LIMIT 1',
+                    ['id' => $clientId]
+                );
+                $resolvedUuid = strtolower(trim((string) ($clientRow['debug_collection_uuid'] ?? '')));
+            }
+        }
+        if ($resolvedUuid === '' || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $resolvedUuid)) {
+            throw new ApiException('debug_collection_not_found', 404);
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT sequence, byte_length, storage_path FROM client_debug_chunks
+             WHERE client_id = :client_id AND collection_uuid = :uuid
+             ORDER BY sequence ASC, id ASC',
+            ['client_id' => $clientId, 'uuid' => $resolvedUuid]
+        );
+        if ($rows === []) {
+            throw new ApiException('debug_collection_not_found', 404);
+        }
+
+        $expectedPrefix = $this->storageRoot() . DIRECTORY_SEPARATOR . (string) $clientId . DIRECTORY_SEPARATOR . $resolvedUuid . DIRECTORY_SEPARATOR;
+        $parts = [];
+        $totalBytes = 0;
+        foreach ($rows as $row) {
+            $storagePath = (string) ($row['storage_path'] ?? '');
+            if ($storagePath === '' || !str_starts_with($storagePath, $expectedPrefix) || !is_file($storagePath)) {
+                continue;
+            }
+            $data = @file_get_contents($storagePath);
+            if (!is_string($data)) {
+                continue;
+            }
+            $parts[] = $data;
+            $totalBytes += strlen($data);
+            if ($totalBytes >= self::BYTE_LIMIT) {
+                break;
+            }
+        }
+
+        return [
+            'uuid' => $resolvedUuid,
+            'bytes' => $totalBytes,
+            'chunks' => count($parts),
+            'content' => implode('', $parts),
+        ];
+    }
+
     private function storageRoot(): string
     {
         $configured = trim((string) ($this->config->get('CLIENT_DEBUG_LOG_DIR', '') ?? ''));

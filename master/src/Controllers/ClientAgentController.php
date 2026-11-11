@@ -1944,6 +1944,29 @@ final class ClientAgentController extends BaseController
         return $this->json(['ok' => true]);
     }
 
+    private const CLIENT_DEBUG_START_LIMIT_PER_MINUTE = 6;
+
+    /**
+     * Opens a fresh debug-log collection window initiated by the client itself
+     * ("Upload diagnostic logs" in the app/CLI), returning a collection UUID
+     * whose first 8 hex chars double as a short support reference code.
+     */
+    public function startDebugCollection(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
+        ApiRateLimiter::fromConfig($this->config)->hit(
+            'debug-start:client:' . (int) $client['id'],
+            self::CLIENT_DEBUG_START_LIMIT_PER_MINUTE
+        );
+        $collection = (new DebugCollectionStore($this->db, $this->config))->create((int) $client['id']);
+        return $this->noStoreJson([
+            'ok' => true,
+            'debug_collection' => $collection,
+            'reference_code' => substr((string) ($collection['uuid'] ?? ''), 0, 8),
+        ]);
+    }
+
     /**
      * Receives one authenticated, pre-redacted debug-log chunk. Raw logs are
      * written below private application storage and are never artifact files.

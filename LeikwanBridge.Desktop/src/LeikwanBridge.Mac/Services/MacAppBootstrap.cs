@@ -103,7 +103,8 @@ public static class MacAppBootstrap
             config,
             identity,
             configStore.SaveAsync,
-            (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity, hostedNodes));
+            (currentConfig, currentIdentity) => CreateRuntimeSession(paths, currentConfig, currentIdentity, hostedNodes),
+            logDirectory: paths.LogDirectory);
         var connections = new MacConnectionService(
             paths,
             new MacConnectionProfileStore(secrets),

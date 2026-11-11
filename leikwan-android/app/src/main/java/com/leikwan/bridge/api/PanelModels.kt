@@ -145,3 +145,31 @@ data class ForwardInfo(
     val endpoints: List<JsonElement> = emptyList(),
     @SerializedName("speed_limit_mbps") val speedLimitMbps: Int? = null,
 )
+
+data class DebugCollectionDto(
+    val uuid: String = "",
+    val status: String = "",
+    @SerializedName("expires_at") val expiresAt: String = "",
+)
+
+data class DebugCollectionStartResponse(
+    val ok: Boolean,
+    val error: String? = null,
+    @SerializedName("reference_code") val referenceCode: String? = null,
+    @SerializedName("debug_collection") val debugCollection: DebugCollectionDto? = null,
+)
+
+data class DebugLogChunkRequest(
+    @SerializedName("collection_uuid") val collectionUuid: String,
+    val sequence: Int,
+    val sha256: String,
+    @SerializedName("chunk_base64") val chunkBase64: String,
+    val source: String = "android-client.log",
+)
+
+data class DebugLogChunkResponse(
+    val ok: Boolean,
+    val accepted: Boolean? = null,
+    val duplicate: Boolean? = null,
+    val error: String? = null,
+)

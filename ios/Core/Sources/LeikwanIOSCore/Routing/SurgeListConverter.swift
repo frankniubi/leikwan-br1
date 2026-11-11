@@ -34,6 +34,7 @@ public enum SurgeListConverter {
     }
 
     public struct TooLargeError: Error, LocalizedError {
+        public init() {}
         public var errorDescription: String? { "规则列表超过 4 MB" }
     }
 

@@ -270,6 +270,7 @@ final class ProvisioningService
                     'source' => 'whmcs',
                 ]);
             } else {
+                $previousUserId = (int) ($service['user_id'] ?? 0);
                 $existingServerIp = trim((string) ($service['server_public_ip'] ?? ''));
                 $effectiveServerIp = $serverPublicIp !== '' ? $serverPublicIp : $existingServerIp;
                 $effectiveIpState = $serverPublicIp !== '' ? 'fresh' : ($effectiveServerIp !== '' ? 'stale' : 'missing');
@@ -321,6 +322,39 @@ final class ProvisioningService
             }
 
             $serviceId = (int) $service['id'];
+            // An ownership change through the billing module must not leave the
+            // previous owner's forwards (scoped by line_client_id) attached: their
+            // client would keep receiving live config for a service it no longer
+            // owns. Delete them exactly like the tenant delete API, then rotate
+            // the service client_token so any exported connection config dies.
+            if ($previousUserId > 0 && $previousUserId !== (int) $user['id']) {
+                $staleForwards = $this->db->fetchAll(
+                    'SELECT f.id FROM forwards f
+                     LEFT JOIN clients c ON c.id = f.line_client_id
+                     WHERE f.service_id = :service_id
+                       AND (c.owner_user_id IS NULL OR c.owner_user_id <> :new_user_id)',
+                    ['service_id' => $serviceId, 'new_user_id' => $user['id']]
+                );
+                foreach ($staleForwards as $stale) {
+                    try {
+                        $this->deleteForward((int) $stale['id'], 'whmcs_owner_change');
+                    } catch (ApiException $staleException) {
+                        if ($staleException->getMessage() !== 'forward_not_found') {
+                            throw $staleException;
+                        }
+                    }
+                }
+                if ($staleForwards !== []) {
+                    $this->regenerateClientToken($serviceId);
+                    $this->audit('service.owner_changed', [
+                        'service_id' => $serviceId,
+                        'previous_user_id' => $previousUserId,
+                        'new_user_id' => $user['id'],
+                        'deleted_forwards' => count($staleForwards),
+                        'source' => 'whmcs_module',
+                    ]);
+                }
+            }
             // Desktop/Android login refuses an account without a client, so a
             // billing-created tenant could never obtain an Ultra lease.
             if ((string) ($user['status'] ?? '') === 'active') {

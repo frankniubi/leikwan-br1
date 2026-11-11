@@ -449,7 +449,7 @@ private struct ImportRulesSheet: View {
                         .frame(minHeight: 120)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                        .onChange(of: pasteText) { _, newValue in
+                        .onChange(of: pasteText) { newValue in
                             updateValidation(newValue)
                         }
                 } header: {

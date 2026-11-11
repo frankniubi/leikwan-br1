@@ -1,0 +1,41 @@
+<p>The iPhone and iPad app is distributed through Apple's TestFlight, not the App Store. You request the invite once on the Clients page, then install and update the app from TestFlight.</p>
+
+<h2>What you will accomplish</h2>
+<p>The app installed from TestFlight, signed in with your Client ID and Agent Token, and connected.</p>
+
+<h2>Before you begin</h2>
+<ul>
+<li>An active package. The invite is only offered while a package is active.</li>
+<li>An iPhone or iPad on iOS 16 or later.</li>
+<li>The Apple ID that is signed in to the App Store on that device.</li>
+<li>The <strong>TestFlight</strong> app, free from the App Store (published by Apple).</li>
+</ul>
+
+<h2>Steps</h2>
+<ol>
+<li><strong>Open the Clients page</strong> in the console and find the <strong>iOS · TestFlight</strong> card.</li>
+<li><strong>Enter your Apple ID</strong> and click <strong>申请 TestFlight 邀请</strong> (request TestFlight invite). Each account records one Apple ID, so use the one on your device. After a few seconds the card shows <strong>打开 TestFlight 邀请链接</strong> (open the TestFlight invite link) and the server addresses for the app.</li>
+<li><strong>Open the invite link on the iPhone or iPad.</strong> If you are on a computer, send the link to the device, for example in a message to yourself, and open it in Safari there. TestFlight opens the app's page: tap <strong>Accept</strong>, then <strong>Install</strong>.</li>
+<li><strong>Open the app.</strong> On the home screen it is called <strong>Bridge the Fox Sake</strong>.</li>
+<li><strong>Fill in the sign-in form.</strong> For <strong>Server address</strong>, tap <strong>Cloudflare CDN</strong>; on networks where it does not connect, use <strong>Directly CDN</strong> instead. The same two addresses are listed on the iOS card with copy buttons. Copy <strong>Client ID</strong> and <strong>Agent Token</strong> from the Clients page. The Client ID is the number shown there, not the Service ID of your package. Tap <strong>Save and sign in</strong>.</li>
+<li><strong>Allow the VPN configuration</strong> when iOS asks the first time you connect, then tap <strong>Connect</strong>.</li>
+</ol>
+
+<h2>How to know it worked</h2>
+<p>The app shows <strong>Connected</strong>, and the iPhone or iPad appears in the online devices list at the bottom of the Clients page.</p>
+
+<h2>Keeping the app up to date</h2>
+<p>New versions arrive through TestFlight, not the App Store. On the app's page in TestFlight, turn on <strong>Automatic Updates</strong>, or open TestFlight and tap <strong>Update</strong> when a new build is listed. Each TestFlight build stops working 90 days after it is released; TestFlight warns you before that, and the newest build always installs from the same page.</p>
+
+<h2>If it did not work</h2>
+<ul>
+<li><strong>The card says a valid package is needed.</strong> Buy or renew a package, then reload the Clients page.</li>
+<li><strong>The invite link opens a web page instead of TestFlight.</strong> Install TestFlight from the App Store first, then open the link again on the device.</li>
+<li><strong>TestFlight says the beta is full or no longer accepting testers.</strong> Contact support.</li>
+<li><strong>The Apple ID on the card is wrong.</strong> It cannot be changed in the console; contact support.</li>
+<li><strong>The app says the device is not trusted by the server.</strong> The Client ID is wrong, usually because the Service ID was entered. Sign out and sign in again with the Client ID from the Clients page.</li>
+<li><strong>Sign-in never finishes.</strong> Edit the profile and switch the server address to the other preset.</li>
+</ul>
+
+<h2>Related guides</h2>
+<p>Next, <a href="/knowledgebase?thread=connect-and-verify">connect and verify</a>. For other devices, see <a href="/knowledgebase?thread=install-client">install the client</a>. If something is off, <a href="/knowledgebase?thread=troubleshooting-common-mistakes">troubleshoot common problems</a>.</p>

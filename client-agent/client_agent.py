@@ -408,6 +408,31 @@ def upload_debug_collection(
     return {"status": "complete", "chunks": chunks_sent, "bytes": total_bytes}
 
 
+def start_debug_collection(
+    master: str,
+    token: str,
+    state_dir: pathlib.Path,
+    device_id: str = "",
+    post=None,
+) -> dict:
+    """Open a client-initiated debug collection window on the panel."""
+    caller = post or (lambda: http_json_with_headers(
+        "POST",
+        f"{master.rstrip('/')}/api/client/debug/start",
+        token,
+        {},
+        extra_headers=device_request_headers(device_id or load_or_create_device_id(state_dir)),
+    )[0])
+    response = caller()
+    if not isinstance(response, dict) or response.get("ok") is not True:
+        raise RuntimeError("panel refused to start debug collection")
+    collection = response.get("debug_collection")
+    if not isinstance(collection, dict) or not collection.get("uuid"):
+        raise RuntimeError("panel returned an invalid debug collection")
+    ref = str(response.get("reference_code") or str(collection.get("uuid", ""))[:8])
+    return {"debug_collection": collection, "reference_code": ref}
+
+
 def parse_rfc3339(value: object) -> float | None:
     text = str(value or "").strip()
     if text == "":
@@ -8741,6 +8766,39 @@ class ClientAgent:
 
         return summary
 
+    def upload_logs_now(self) -> dict:
+        configure_panel_egress(getattr(self, "config", None))
+        token = str(self.config.get("agent_token", "") or "").strip()
+        if not token:
+            return {"ok": False, "error": "agent_token is missing from config"}
+        state_dir = pathlib.Path(getattr(self, "state_dir", "/var/lib/leikwan-client-agent"))
+        dev_id = self.device_id()
+        selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
+        errors: list[str] = []
+        for endpoint in selector.ordered(control_plane_endpoints(self.config)):
+            try:
+                started = start_debug_collection(endpoint, token, state_dir, device_id=dev_id)
+                selector.success(endpoint)
+                result = upload_debug_collection(
+                    endpoint,
+                    token,
+                    {"debug_collection": started["debug_collection"]},
+                    state_dir,
+                    config=self.config,
+                    device_id=dev_id,
+                )
+                return {
+                    "ok": result.get("status") == "complete",
+                    "reference_code": started["reference_code"],
+                    "status": result.get("status"),
+                    "chunks": result.get("chunks", 0),
+                    "bytes": result.get("bytes", 0),
+                }
+            except Exception as exc:  # noqa: BLE001
+                selector.failure(endpoint, exc)
+                errors.append(f"{endpoint}: {exc}")
+        return {"ok": False, "error": "; ".join(errors) or "no control-plane endpoint configured"}
+
     def local_forward_strategies(self) -> dict[str, str]:
         strategy_dir = pathlib.Path(
             getattr(self, "state_dir", "/var/lib/leikwan-client-agent")
@@ -8762,10 +8820,14 @@ class ClientAgent:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/etc/leikwan-client-agent/config.json")
-    parser.add_argument("command", nargs="?", choices=["run", "check"], default="run")
+    parser.add_argument("command", nargs="?", choices=["run", "check", "upload-logs"], default="run")
     parser.add_argument("--live", action="store_true", help="When used with check, fetch the latest config pull from master.")
     args = parser.parse_args()
     agent = ClientAgent(pathlib.Path(args.config))
+    if args.command == "upload-logs":
+        result = agent.upload_logs_now()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok", False) else 1
     if args.command == "check":
         summary = agent.check(live=args.live)
         if summary.get("device_limit_error"):
