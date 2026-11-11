@@ -82,7 +82,7 @@ assertSame($psk32 . ':' . $psk32, $multiUser['settings']['password'], 'ss 2022 i
 
 assertInvalid(['protocol' => 'ss', 'server' => 'a.example.com', 'port' => 1, 'method' => 'rc4-md5', 'password' => 'x'], 'method', 'legacy stream cipher refused');
 assertInvalid(['protocol' => 'ss', 'server' => 'a.example.com', 'port' => 1, 'method' => 'aes-128-gcm', 'password' => ''], 'password', 'empty ss password');
-assertInvalid(['protocol' => 'ss', 'server' => 'a.example.com', 'port' => 1, 'method' => '2022-blake3-aes-128-gcm', 'password' => $psk32], 'password', '2022 psk length is checked');
+assertInvalid(['protocol' => 'ss', 'server' => 'a.example.com', 'port' => 1, 'method' => '2022-blake3-aes-128-gcm', 'password' => 'c2hvcnQ='], 'password', '2022 psk under length is checked');
 assertInvalid(['protocol' => 'ss', 'server' => 'a.example.com', 'port' => 1, 'method' => 'aes-128-gcm', 'password' => 'x', 'plugin' => 'kcptun'], 'plugin', 'unsupported plugin');
 
 // --- SOCKS5 ----------------------------------------------------------------
