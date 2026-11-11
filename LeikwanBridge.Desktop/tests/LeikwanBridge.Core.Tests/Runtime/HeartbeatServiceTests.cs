@@ -139,6 +139,12 @@ public sealed class HeartbeatServiceTests
         var feedback = Assert.Single(document.RootElement.GetProperty("ultra_candidate_feedback").EnumerateArray());
         Assert.Equal(new string('b', 64), feedback.GetProperty("candidate_key_hash").GetString());
         Assert.Equal(new string('c', 64), feedback.GetProperty("lease_hash").GetString());
+
+        // A second heartbeat against the same rolling status file must not
+        // resend acknowledged feedback.
+        await new HeartbeatService(api, new StateManager(tempDir.Path)).SendHeartbeatAsync();
+        using var second = JsonDocument.Parse(server.LastRequestBody);
+        Assert.Empty(second.RootElement.GetProperty("ultra_candidate_feedback").EnumerateArray());
     }
 
     [Fact]

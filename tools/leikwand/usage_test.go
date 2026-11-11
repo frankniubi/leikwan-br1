@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -64,5 +68,88 @@ func TestTrimFeedbackBoundsPayload(t *testing.T) {
 	}
 	if len(trimFeedback(items, 100)) != 10 {
 		t.Fatal("short feedback must pass through unchanged")
+	}
+}
+
+func TestFeedbackNotRequeuedAfterHeartbeatAcknowledgmentOrWhenStale(t *testing.T) {
+	var heartbeats []HeartbeatPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body HeartbeatPayload
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode heartbeat: %v", err)
+		}
+		heartbeats = append(heartbeats, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"ultra_usage_acknowledged":true}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultConfig()
+	cfg.PanelURL = server.URL
+	agent := newTestAgent(t, cfg)
+	agent.secrets = SecretState{AgentToken: "test-token", DeviceID: "device-47"}
+	agent.panel = newPanelClient(agent.cfg, agent.secrets, "device-47", "router")
+
+	freshAt := time.Now().UTC().Format(time.RFC3339)
+	staleAt := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	state := &runtimeState{
+		forward: ForwardConfig{ForwardID: 47, BackendMode: "ultra"},
+		proc:    &runtimeProcess{forwardID: 47, startedAt: time.Now()},
+		status: &RuntimeStatus{
+			ForwardID: 47,
+			BytesIn:   100,
+			CandidateFeedback: []CandidateFeedbk{
+				{
+					EvidenceID: "fresh-evidence-1",
+					Reason:     "credential_rejected",
+					Outcome:    "failure",
+					ObservedAt: freshAt,
+				},
+				{
+					EvidenceID: "stale-historical-evidence",
+					Reason:     "credential_rejected",
+					Outcome:    "failure",
+					ObservedAt: staleAt,
+				},
+			},
+		},
+	}
+	agent.runtimes[47] = state
+
+	agent.collectUsage()
+	if got := len(agent.store.Usage().PendingFeedback); got != 1 {
+		t.Fatalf("pending feedback count = %d, want 1 (stale filtered)", got)
+	}
+	if err := agent.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("first heartbeat: %v", err)
+	}
+	if len(heartbeats) != 1 || len(heartbeats[0].UltraFeedback) != 1 {
+		t.Fatalf("first heartbeat feedback = %+v", heartbeats)
+	}
+
+	// Subsequent traffic while runtime keeps the same rolling feedback list must
+	// NOT requeue the already-acknowledged evidence_id.
+	state.status.BytesIn += 250
+	agent.collectUsage()
+	if got := len(agent.store.Usage().PendingFeedback); got != 0 {
+		t.Fatalf("acknowledged feedback requeued on new traffic: %+v", agent.store.Usage().PendingFeedback)
+	}
+
+	// A new feedback entry on an idle (zero-byte-delta) forward still reaches the Panel.
+	state.status.CandidateFeedback = append(state.status.CandidateFeedback, CandidateFeedbk{
+		EvidenceID: "idle-handshake-failure-2",
+		Reason:     "credential_rejected",
+		Outcome:    "failure",
+		ObservedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	agent.collectUsage()
+	if got := len(agent.store.Usage().PendingFeedback); got != 1 || agent.store.Usage().PendingFeedback[0].EvidenceID != "idle-handshake-failure-2" {
+		t.Fatalf("expected only new idle feedback queued, got %+v", agent.store.Usage().PendingFeedback)
+	}
+	if err := agent.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("second heartbeat: %v", err)
+	}
+	if got := len(agent.store.Usage().PendingFeedback); got != 0 {
+		t.Fatalf("idle feedback not cleared after ok heartbeat: %+v", agent.store.Usage().PendingFeedback)
 	}
 }

@@ -72,8 +72,16 @@ func (a *Agent) collectUsage() {
 	}
 }
 
+const (
+	feedbackMaxAge       = 5 * time.Minute
+	maxAckedFeedbackKeys = 512
+)
+
 // recordUsage turns one status document into a usage delta and candidate
-// feedback, advancing last.
+// feedback, advancing last. Feedback is collected even when bytes are idle so
+// setup/handshake failures (e.g. credential_rejected before payload flows)
+// reach the Panel promptly, while acknowledged or stale entries in the
+// runtime's rolling list are never requeued.
 func (a *Agent) recordUsage(forwardID int, generation string, status *RuntimeStatus, last *counterPair) {
 	if status == nil {
 		return
@@ -86,24 +94,18 @@ func (a *Agent) recordUsage(forwardID int, generation string, status *RuntimeSta
 	if deltaOut < 0 {
 		deltaOut = status.BytesOut
 	}
-	if deltaIn == 0 && deltaOut == 0 {
-		return
+	hasDelta := deltaIn > 0 || deltaOut > 0
+	if hasDelta {
+		*last = counterPair{in: status.BytesIn, out: status.BytesOut}
 	}
-	*last = counterPair{in: status.BytesIn, out: status.BytesOut}
 
-	a.store.UpdateUsage(func(usage *UsageState) {
-		usage.Sequence++
-		usage.PendingUltra = append(usage.PendingUltra, UltraUsageSnapshot{
-			ForwardID:        forwardID,
-			PolicyGeneration: generation,
-			Sequence:         usage.Sequence,
-			BytesIn:          deltaIn,
-			BytesOut:         deltaOut,
-		})
-	})
-
+	now := time.Now()
+	candidates := make([]UltraCandidateFeedback, 0, len(status.CandidateFeedback))
 	for _, feedback := range status.CandidateFeedback {
-		item := UltraCandidateFeedback{
+		if !feedbackIsFresh(feedback.ObservedAt, now) {
+			continue
+		}
+		candidates = append(candidates, UltraCandidateFeedback{
 			ForwardID:        forwardID,
 			CandidateKeyHash: feedback.CandidateKeyHash,
 			LeaseHash:        feedback.LeaseHash,
@@ -112,37 +114,161 @@ func (a *Agent) recordUsage(forwardID int, generation string, status *RuntimeSta
 			Reason:           feedback.Reason,
 			EvidenceID:       feedback.EvidenceID,
 			ObservedAt:       feedback.ObservedAt,
-		}
-		a.store.UpdateUsage(func(usage *UsageState) {
-			usage.PendingFeedback = append(usage.PendingFeedback, item)
 		})
 	}
+	if !hasDelta && len(candidates) == 0 {
+		return
+	}
+
+	a.store.UpdateUsage(func(usage *UsageState) {
+		if hasDelta {
+			usage.Sequence++
+			usage.PendingUltra = append(usage.PendingUltra, UltraUsageSnapshot{
+				ForwardID:        forwardID,
+				PolicyGeneration: generation,
+				Sequence:         usage.Sequence,
+				BytesIn:          deltaIn,
+				BytesOut:         deltaOut,
+			})
+		}
+		seen := make(map[string]struct{}, len(usage.AcknowledgedFeedback)+len(usage.PendingFeedback))
+		for _, k := range usage.AcknowledgedFeedback {
+			seen[k] = struct{}{}
+		}
+		for _, pending := range usage.PendingFeedback {
+			if k := feedbackDedupeKey(pending); k != "" {
+				seen[k] = struct{}{}
+			}
+		}
+		for _, item := range candidates {
+			key := feedbackDedupeKey(item)
+			if key != "" {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			usage.PendingFeedback = append(usage.PendingFeedback, item)
+		}
+		usage.PendingFeedback = trimFeedback(usage.PendingFeedback, 512)
+	})
+}
+
+func feedbackDedupeKey(item UltraCandidateFeedback) string {
+	id := strings.TrimSpace(item.EvidenceID)
+	if id != "" {
+		return itoa(item.ForwardID) + ":" + id
+	}
+	cand := strings.TrimSpace(item.CandidateKeyHash)
+	obs := strings.TrimSpace(item.ObservedAt)
+	if cand == "" && obs == "" {
+		return ""
+	}
+	return itoa(item.ForwardID) + ":" + cand + ":" + strings.TrimSpace(item.Reason) + ":" + obs
+}
+
+func feedbackIsFresh(observedAt string, now time.Time) bool {
+	trimmed := strings.TrimSpace(observedAt)
+	if trimmed == "" {
+		return true
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+	if err != nil {
+		return false
+	}
+	if parsed.Before(now.Add(-feedbackMaxAge)) || parsed.After(now.Add(time.Minute)) {
+		return false
+	}
+	return true
+}
+
+func appendAckedFeedback(existing []string, sent []UltraCandidateFeedback) []string {
+	seen := make(map[string]struct{}, len(existing)+len(sent))
+	out := make([]string, 0, len(existing)+len(sent))
+	for _, k := range existing {
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; !ok {
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
+	}
+	for _, item := range sent {
+		k := feedbackDedupeKey(item)
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; !ok {
+			seen[k] = struct{}{}
+			out = append(out, k)
+		}
+	}
+	if len(out) > maxAckedFeedbackKeys {
+		out = out[len(out)-maxAckedFeedbackKeys:]
+	}
+	return out
+}
+
+func remainingPendingFeedback(current []UltraCandidateFeedback, sent []UltraCandidateFeedback) []UltraCandidateFeedback {
+	if len(current) == 0 {
+		return nil
+	}
+	sentKeys := make(map[string]struct{}, len(sent))
+	for _, item := range sent {
+		if k := feedbackDedupeKey(item); k != "" {
+			sentKeys[k] = struct{}{}
+		}
+	}
+	var kept []UltraCandidateFeedback
+	for _, item := range current {
+		k := feedbackDedupeKey(item)
+		if k != "" {
+			if _, ok := sentKeys[k]; ok {
+				continue
+			}
+		} else if len(sent) > 0 {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept
 }
 
 func (a *Agent) sendHeartbeat(ctx context.Context) error {
 	usage := a.store.Usage()
+	sentFeedback := trimFeedback(usage.PendingFeedback, 512)
 	payload := HeartbeatPayload{
 		AgentVersion:  agentVersion,
 		SupportsMPTCP: false,
 		UltraUsage:    usage.PendingUltra,
-		UltraFeedback: trimFeedback(usage.PendingFeedback, 512),
+		UltraFeedback: sentFeedback,
 	}
 	response, err := a.panel.Heartbeat(ctx, payload)
 	if err != nil {
 		return err
 	}
-	if response.UsageAcknowledged != nil && *response.UsageAcknowledged {
+	ackUsage := response.UsageAcknowledged != nil && *response.UsageAcknowledged
+	ackFeedback := ackUsage || (response.OK && len(usage.PendingUltra) == 0 && len(sentFeedback) > 0)
+	if ackUsage || ackFeedback {
 		reportedIn := int64(0)
 		reportedOut := int64(0)
-		for _, item := range usage.PendingUltra {
-			reportedIn += item.BytesIn
-			reportedOut += item.BytesOut
+		if ackUsage {
+			for _, item := range usage.PendingUltra {
+				reportedIn += item.BytesIn
+				reportedOut += item.BytesOut
+			}
 		}
 		a.store.UpdateUsage(func(state *UsageState) {
-			state.PendingUltra = nil
-			state.PendingFeedback = nil
-			state.ReportedIn += reportedIn
-			state.ReportedOut += reportedOut
+			if ackUsage {
+				state.PendingUltra = nil
+				state.ReportedIn += reportedIn
+				state.ReportedOut += reportedOut
+			}
+			if ackFeedback {
+				state.AcknowledgedFeedback = appendAckedFeedback(state.AcknowledgedFeedback, sentFeedback)
+				state.PendingFeedback = remainingPendingFeedback(state.PendingFeedback, sentFeedback)
+			}
 			state.LastHeartbeatAt = time.Now()
 		})
 	}

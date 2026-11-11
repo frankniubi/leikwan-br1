@@ -23,6 +23,9 @@ namespace Leikwan\Master\Database {
         /** @var array<int, array<string, mixed>> */
         public static array $lineRows = [];
 
+        /** @var array<string, array<string, mixed>> */
+        public static array $leaseOverrides = [];
+
         /** @param array<string, mixed> $params @return array<int, array<string, mixed>> */
         public function fetchAll(string $sql, array $params = []): array
         {
@@ -51,11 +54,31 @@ namespace Leikwan\Master\Database {
         /** @param array<string, mixed> $params @return array<string, mixed>|null */
         public function fetchOne(string $sql, array $params = []): ?array
         {
+            if (str_contains($sql, 'FROM ultra_lines')) {
+                return [
+                    'access_class' => 'native_udp',
+                    'native_udp_state' => 'verified',
+                    'native_socks5_state' => 'verified',
+                    'is_source_present' => 1,
+                    'is_enabled' => 1,
+                    'pricing_class' => 'paid',
+                ];
+            }
             if (str_contains($sql, 'FROM ultra_client_leases')
                 && (int) ($params['client_id'] ?? 0) === 7
-                && (int) ($params['forward_id'] ?? 0) === 42
-                && hash_equals(hash('sha256', 'lease-a'), (string) ($params['lease_hash'] ?? ''))) {
-                return ['id' => 1];
+                && (int) ($params['forward_id'] ?? 0) === 42) {
+                $leaseHash = (string) ($params['lease_hash'] ?? '');
+                if (isset(self::$leaseOverrides[$leaseHash])) {
+                    $row = self::$leaseOverrides[$leaseHash];
+                    $minExpires = (string) ($params['min_expires_at'] ?? '');
+                    if ($minExpires !== '' && isset($row['expires_at']) && (string) $row['expires_at'] < $minExpires) {
+                        return null;
+                    }
+                    return $row;
+                }
+                if (hash_equals(hash('sha256', 'lease-a'), $leaseHash)) {
+                    return ['id' => 1];
+                }
             }
             return null;
         }
@@ -269,6 +292,110 @@ namespace {
     // Lines the source is backing off from are still skipped.
     Database::$lineRows = [['line_id' => 11], ['line_id' => 431], ['line_id' => 525]];
     assertCredRefresh(!in_array(431, $materials->dueLineIds('source-a', 600, [431]), true), 'a skipped line must not be handed out even when marked');
+
+    // --- Cross-material replay, lease-expiry binding, and candidate deprioritization ---
+    Database::$lineRows = [['line_id' => 431], ['line_id' => 525]];
+    Database::$leaseOverrides = [];
+    [$bindMaterials, $bindStatus, $bindReputation] = $build($makeEnv());
+    $bindReputation->stateFor($scopeFor(431));
+    $bindReputation->stateFor($scopeFor(525));
+    $upload($bindMaterials, 431, 1800);
+    $upload($bindMaterials, 525, 1800);
+    $now += 600;
+    $oldObservedAt = gmdate('Y-m-d\TH:i:s\Z', $now);
+    $sameOldEvidence = [[
+        'forward_id' => 42,
+        'candidate_key_hash' => UltraCandidateReputationService::candidateKeyHash($scopeFor(431)),
+        'lease_hash' => hash('sha256', 'lease-a'),
+        'protocol' => 'tcp',
+        'outcome' => 'failure',
+        'reason' => 'credential_rejected',
+        'evidence_id' => 'same-old-evidence',
+        'observed_at' => $oldObservedAt,
+        'detected_ingress_zone' => 'shanghai',
+    ]];
+    $bindStatus->ingestFeedback(7, 'device-a', $sameOldEvidence);
+    assertCredRefresh($bindMaterials->dueLineIds('source-a', 600) === [431], 'initial rejection must mark line 431');
+
+    // During the replacement window (before source uploads new material), line 431
+    // is deprioritized behind healthy line 525 when resolving lease candidates,
+    // while still serving as fallback if it is the only line.
+    $grantGen = str_repeat('c', 64);
+    $multiLineToken = $bindMaterials->issueClientToken([
+        'client_id' => 7,
+        'device_hash' => hash('sha256', 'device-a'),
+        'forward_id' => 42,
+        'policy_generation' => $grantGen,
+        'transport' => 'tcp+udp',
+        'destination_zone' => 'south-korea',
+        'lines' => [
+            ['source_id' => 'source-a', 'line_id' => 431, 'ingress_zone' => 'shanghai', 'destination_zone' => 'south-korea'],
+            ['source_id' => 'source-a', 'line_id' => 525, 'ingress_zone' => 'shanghai', 'destination_zone' => 'south-korea'],
+        ],
+    ], $now + 1200);
+    $firstCand = $bindMaterials->serverCandidateForClientToken($multiLineToken, 7, 'device-a', 42, $grantGen, 0);
+    $secondCand = $bindMaterials->serverCandidateForClientToken($multiLineToken, 7, 'device-a', 42, $grantGen, 1);
+    assertCredRefresh(
+        ($firstCand['user'] ?? '') === 'line-user-525' && ($secondCand['user'] ?? '') === 'line-user-431',
+        'pending-refresh line 431 must be deprioritized behind healthy line 525; got first='
+        . ($firstCand['user'] ?? '') . ' second=' . ($secondCand['user'] ?? '')
+    );
+
+    // Source uploads replacement material for 431.
+    $now += 1;
+    $upload($bindMaterials, 431, 1800);
+    assertCredRefresh($bindMaterials->dueLineIds('source-a', 600) === [], 'replacement upload must clear pending mark');
+    $restoredFirst = $bindMaterials->serverCandidateForClientToken($multiLineToken, 7, 'device-a', 42, $grantGen, 0);
+    assertCredRefresh(($restoredFirst['user'] ?? '') === 'line-user-431', 'after replacement upload line 431 returns to normal priority');
+
+    // Replaying the exact historical evidence_id / observed_at after the 300 s
+    // interval must NOT mark the replacement material.
+    $now += 301;
+    $bindStatus->ingestFeedback(7, 'device-a', $sameOldEvidence);
+    assertCredRefresh($bindMaterials->dueLineIds('source-a', 600) === [], 'replayed historical evidence must not mark replacement material');
+
+    // Even with a fresh evidence_id and fresh observed_at, a lease issued BEFORE
+    // the replacement material was acquired cannot mark the new material.
+    $oldLeaseHash = hash('sha256', 'lease-before-refresh');
+    Database::$leaseOverrides[$oldLeaseHash] = [
+        'id' => 99,
+        'policy_generation' => str_repeat('1', 64),
+        'issued_at' => gmdate('Y-m-d H:i:s', $now - 400),
+        'expires_at' => gmdate('Y-m-d H:i:s', $now + 60),
+    ];
+    $bindStatus->ingestFeedback(7, 'device-a', [[
+        'forward_id' => 42,
+        'candidate_key_hash' => UltraCandidateReputationService::candidateKeyHash($scopeFor(431)),
+        'lease_hash' => $oldLeaseHash,
+        'protocol' => 'tcp',
+        'outcome' => 'failure',
+        'reason' => 'credential_rejected',
+        'evidence_id' => 'fresh-id-on-pre-refresh-lease',
+        'observed_at' => gmdate('Y-m-d\TH:i:s\Z', $now),
+        'detected_ingress_zone' => 'shanghai',
+    ]]);
+    assertCredRefresh($bindMaterials->dueLineIds('source-a', 600) === [], 'pre-refresh lease must not mark newer replacement material');
+
+    // And an expired lease past FEEDBACK_LEASE_EXPIRY_GRACE_SECONDS is rejected outright.
+    $expiredLeaseHash = hash('sha256', 'lease-long-expired');
+    Database::$leaseOverrides[$expiredLeaseHash] = [
+        'id' => 100,
+        'policy_generation' => str_repeat('2', 64),
+        'issued_at' => gmdate('Y-m-d H:i:s', $now - 1200),
+        'expires_at' => gmdate('Y-m-d H:i:s', $now - 600),
+    ];
+    $bindStatus->ingestFeedback(7, 'device-a', [[
+        'forward_id' => 42,
+        'candidate_key_hash' => UltraCandidateReputationService::candidateKeyHash($scopeFor(431)),
+        'lease_hash' => $expiredLeaseHash,
+        'protocol' => 'tcp',
+        'outcome' => 'failure',
+        'reason' => 'credential_rejected',
+        'evidence_id' => 'fresh-id-on-expired-lease',
+        'observed_at' => gmdate('Y-m-d\TH:i:s\Z', $now),
+        'detected_ingress_zone' => 'shanghai',
+    ]]);
+    assertCredRefresh($bindMaterials->dueLineIds('source-a', 600) === [], 'long-expired lease must not bind feedback');
 
     fwrite(STDOUT, "ultra credential_rejected refresh test passed\n");
 }

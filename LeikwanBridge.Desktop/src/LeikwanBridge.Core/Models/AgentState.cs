@@ -109,4 +109,7 @@ public sealed class UsageState
 
     [JsonPropertyName("pending_ultra_usage")]
     public List<UltraUsageSnapshot> PendingUltraUsage { get; set; } = [];
+
+    [JsonPropertyName("acknowledged_ultra_feedback")]
+    public List<string> AcknowledgedUltraFeedback { get; set; } = [];
 }
