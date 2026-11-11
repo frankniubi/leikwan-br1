@@ -197,7 +197,7 @@ final class AdminController extends BaseController
 
         $clients = $this->db->fetchAll(
             'SELECT id, name, display_host, agent_version, last_sync_at, last_diag_status, last_diag_run_at, last_diag_error, last_diag_result_json,
-                    debug_collection_status, debug_collection_expires_at, debug_collection_bytes
+                    debug_collection_uuid, debug_collection_status, debug_collection_expires_at, debug_collection_bytes
              FROM clients
              ORDER BY updated_at DESC, id DESC
              LIMIT 50'
@@ -243,8 +243,19 @@ final class AdminController extends BaseController
 
         $clientRows = '';
         foreach ($clients as $client) {
+            $cid = (int) ($client['id'] ?? 0);
+            $debugBytes = (int) ($client['debug_collection_bytes'] ?? 0);
+            $debugUuid = trim((string) ($client['debug_collection_uuid'] ?? ''));
+            $debugSummary = $this->escape((string) ($client['debug_collection_status'] ?? 'closed')) . ' / ' . $debugBytes . ' bytes';
+            if ($debugUuid !== '') {
+                $debugSummary .= ' <code>' . $this->escape(substr($debugUuid, 0, 8)) . '</code>';
+            }
+            if ($debugBytes > 0) {
+                $debugSummary .= ' <a href="/admin/clients/' . $cid . '/debug-log" target="_blank">View</a>'
+                    . ' · <a href="/admin/clients/' . $cid . '/debug-log?download=1">Download</a>';
+            }
             $clientRows .= '<tr>
-                <td>' . (int) ($client['id'] ?? 0) . '</td>
+                <td>' . $cid . '</td>
                 <td>' . $this->escape((string) ($client['name'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['display_host'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['agent_version'] ?? '')) . '</td>
@@ -252,7 +263,7 @@ final class AdminController extends BaseController
                 <td>' . $this->escape((string) ($client['last_diag_status'] ?? 'not run')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['debug_collection_status'] ?? 'closed')) . ' / ' . (int) ($client['debug_collection_bytes'] ?? 0) . ' bytes</td>
+                <td>' . $debugSummary . '</td>
                 <td>' . $this->renderClientDiagnosticsHtml($client) . '</td>
             </tr>';
         }
@@ -5165,6 +5176,35 @@ final class AdminController extends BaseController
         }
 
         return Response::redirect('/admin/clients');
+    }
+
+    public function downloadClientDebugLog(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            $clientId = $this->idParam($params);
+            $uuidParam = trim((string) $request->input('uuid', ''));
+            $assembled = (new DebugCollectionStore($this->db, $this->config))->assembleText(
+                $clientId,
+                $uuidParam !== '' ? $uuidParam : null
+            );
+            $shortUuid = substr((string) ($assembled['uuid'] ?? ''), 0, 8);
+            $headers = [
+                'Content-Type' => 'text/plain; charset=utf-8',
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'X-Content-Type-Options' => 'nosniff',
+            ];
+            if ((string) $request->input('download', '') === '1') {
+                $headers['Content-Disposition'] = 'attachment; filename="client-' . $clientId . '-' . $shortUuid . '.log"';
+            }
+            return new Response(200, $headers, (string) ($assembled['content'] ?? ''));
+        } catch (ApiException $exception) {
+            return new Response($exception->statusCode(), ['Content-Type' => 'text/plain; charset=utf-8'], $exception->getMessage() . "\n");
+        }
     }
 
     public function createOpenWrtPairingCode(Request $request, array $params): Response

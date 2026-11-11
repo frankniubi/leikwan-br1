@@ -2045,7 +2045,9 @@
     "deleted": "\u5df2\u522a\u9664",
     "maintenance": "\u7dad\u8b77\u4e2d",
     "retired": "\u5df2\u4e0b\u7dda",
-    "Route directions are unavailable: ": "\u8def\u7531\u65b9\u5411\u4e0d\u53ef\u7528\uff1a"
+    "Route directions are unavailable: ": "\u8def\u7531\u65b9\u5411\u4e0d\u53ef\u7528\uff1a",
+    "View": "\u6aa2\u8996",
+    "Download": "\u4e0b\u8f09"
   },
   "attributes": {
     "Label": "\u6a19\u7c64",
