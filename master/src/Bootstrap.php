@@ -223,6 +223,10 @@ final class Bootstrap
         $this->router->add('GET', '/admin/plans', [$admin, 'plansPage']);
         $this->router->add('POST', '/admin/plans', [$admin, 'savePlan']);
         $this->router->add('POST', '/admin/plans/{id}/delete', [$admin, 'deletePlan']);
+        $this->router->add('GET', '/admin/route-directions', [$admin, 'routeDirectionsPage']);
+        $this->router->add('POST', '/admin/route-directions', [$admin, 'saveRouteDirection']);
+        $this->router->add('POST', '/admin/route-directions/entitlements', [$admin, 'saveRouteDirectionEntitlements']);
+        $this->router->add('POST', '/admin/route-directions/rules/{id}/delete', [$admin, 'deleteClientRuleFromAdmin']);
         $this->router->add('GET', '/admin/client-groups', [$admin, 'clientGroupsPage']);
         $this->router->add('POST', '/admin/client-groups', [$admin, 'saveClientGroup']);
         $this->router->add('GET', '/admin/credentials', [$admin, 'credentialsPage']);

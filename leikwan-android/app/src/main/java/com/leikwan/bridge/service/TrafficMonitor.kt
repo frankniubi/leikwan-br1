@@ -48,11 +48,26 @@ object TrafficMonitor {
         mutable.value = TrafficSnapshot()
     }
 
+    @Volatile private var lastGroupLatencyAtMs = 0L
+
     /** In-tunnel URL-test latency from the synthetic probe group; 0/negative ignored. */
     fun reportLatency(latencyMs: Int) {
         if (latencyMs <= 0) return
+        lastGroupLatencyAtMs = System.currentTimeMillis()
         mutable.value = mutable.value.copy(latencyMs = latencyMs)
     }
+
+    /**
+     * Handshake time to the Ultra relay in use (configs without the probe group). The probe
+     * group's number wins while it is fresh, so the two never flap.
+     */
+    fun reportRelayLatency(latencyMs: Int) {
+        if (latencyMs <= 0) return
+        if (System.currentTimeMillis() - lastGroupLatencyAtMs < GROUP_LATENCY_FRESH_MS) return
+        mutable.value = mutable.value.copy(latencyMs = latencyMs)
+    }
+
+    private const val GROUP_LATENCY_FRESH_MS = 120_000L
 }
 
 /** "1.2 MB/s"-style formatting shared by the dashboard widgets. */

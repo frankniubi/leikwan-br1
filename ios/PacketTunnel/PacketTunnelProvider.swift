@@ -10,6 +10,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platform = TunnelPlatformInterface(self)
     private let runtimes = RuntimeHost()
     private let statusMonitor = StatusMonitor()
+    /// Sheds connections before jetsam kills the extension (~50 MB phys_footprint).
+    private lazy var memoryGuard = MemoryGuard { [weak self] in self?.statusMonitor.closeConnections() }
+    /// Ultra latency (the sing-box probe group is left out there): handshake time to the relay in use.
+    private lazy var relayProbe = RelayLatencyProbe { [weak self] in
+        guard let self else { return [:] }
+        var endpoints = self.ultraLeases?.activeEndpoints() ?? [:]
+        if let native = self.nativeLeases?.activeEndpoint() { endpoints[native.forwardID] = native.endpoint }
+        return endpoints
+    }
     private var launch: TunnelLaunchOptions?
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
@@ -103,6 +112,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
         statusMonitor.start()
+        memoryGuard.start()
+        relayProbe.start()
         startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
             let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
@@ -122,6 +133,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         controlLoop = nil
         stopUltraLeases()
         stopNativeLeases()
+        memoryGuard.stop()
+        relayProbe.stop()
         statusMonitor.stop()
         stopService()
         if let server = commandServer {
@@ -150,7 +163,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.connectionsIn = libbox.connectionsIn
             snapshot.connectionsOut = libbox.connectionsOut
             snapshot.memory = libbox.memory
-            snapshot.latencyMs = libbox.latencyMs
+            snapshot.latencyMs = libbox.latencyMs > 0 ? libbox.latencyMs : relayProbe.latencyMs
             snapshot.runtimes = runtimes.statuses()
             snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
             var byForward: [String: String] = [:]

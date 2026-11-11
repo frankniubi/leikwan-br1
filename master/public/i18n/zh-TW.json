@@ -2020,7 +2020,32 @@
     "A forward uses exactly one node: the bound port and the node are one-to-one. Reuse a node on another forward only if that forward targets the same server and port with the same protocol and password; otherwise add a new forward and a new node.": "\u4e00\u689d\u8f49\u767c\u7d81\u5b9a\u4e00\u500b\u7bc0\u9ede\uff0c\u9023\u63a5\u57e0\u8207\u7bc0\u9ede\u4e00\u4e00\u5c0d\u61c9\u3002\u53ea\u6709\u7576\u53e6\u4e00\u689d\u8f49\u767c\u7684\u76ee\u6a19\u6a5f\u5668\u9023\u63a5\u57e0\u3001\u5354\u8b70\u3001\u5bc6\u78bc\u4e09\u8005\u5b8c\u5168\u4e00\u81f4\u6642\uff0c\u624d\u53ef\u4ee5\u8907\u7528\u540c\u4e00\u500b\u7bc0\u9ede\uff1b\u5426\u5247\u5fc5\u9808\u65b0\u5efa\u8f49\u767c\u4e26\u65b0\u5efa\u7bc0\u9ede\u3002",
     "Each forward's listen port and paired node are one-to-one; do not reuse a node across forwards unless port, protocol, and password all match.": "\u6bcf\u689d\u8f49\u767c\u7684\u76e3\u807d\u9023\u63a5\u57e0\u548c\u914d\u5c0d\u7bc0\u9ede\u4e00\u4e00\u5c0d\u61c9\uff1b\u9664\u975e\u9023\u63a5\u57e0\u3001\u5354\u8b70\u3001\u5bc6\u78bc\u5b8c\u5168\u4e00\u81f4\uff0c\u5426\u5247\u4e0d\u8981\u5728\u591a\u689d\u8f49\u767c\u9593\u8907\u7528\u7bc0\u9ede\u3002",
     "The forward target is not this node's address. Also verify that the protocol and password match. Traffic only reaches the node when all three match: server, port, protocol, and password.": "\u8f49\u767c\u76ee\u6a19\u8207\u8a72\u7bc0\u9ede\u5730\u5740\u4e0d\u4e00\u81f4\u3002\u540c\u6642\u6838\u5c0d\u5354\u8b70\u8207\u5bc6\u78bc\u662f\u5426\u4e00\u81f4\u3002\u53ea\u6709\u4f3a\u670d\u5668\u3001\u9023\u63a5\u57e0\u3001\u5354\u8b70\u3001\u5bc6\u78bc\u5168\u90e8\u5339\u914d\uff0c\u6d41\u91cf\u624d\u80fd\u771f\u6b63\u5230\u9054\u7bc0\u9ede\u3002",
-    "Online Device Limit Override": "\u7dda\u4e0a\u88dd\u7f6e\u4e0a\u9650\u8986\u5beb"
+    "Online Device Limit Override": "\u7dda\u4e0a\u88dd\u7f6e\u4e0a\u9650\u8986\u5beb",
+    "Allowed Directions (replaces the current list)": "\u5141\u8a31\u7684\u65b9\u5411\uff08\u53d6\u4ee3\u76ee\u524d\u6e05\u55ae\uff09",
+    "Binding": "\u7d81\u5b9a",
+    "Client Rules (latest 200)": "\u7528\u6236\u898f\u5247\uff08\u6700\u8fd1 200 \u689d\uff09",
+    "Direction ID": "\u65b9\u5411 ID",
+    "Directions": "\u65b9\u5411",
+    "Helper Forward ID": "\u8f14\u52a9\u8f49\u767c ID",
+    "Local Port (TCP+UDP)": "\u672c\u5730\u57e0\uff08TCP+UDP\uff09",
+    "Max Client Rules per Service": "\u6bcf\u500b\u670d\u52d9\u7684\u898f\u5247\u4e0a\u9650",
+    "Max Rules": "\u898f\u5247\u4e0a\u9650",
+    "No client rules yet.": "\u5c1a\u7121\u7528\u6236\u898f\u5247\u3002",
+    "No plan grants route directions yet.": "\u5c1a\u7121\u5957\u9910\u958b\u653e\u8def\u7531\u65b9\u5411\u3002",
+    "No route directions yet.": "\u5c1a\u7121\u8def\u7531\u65b9\u5411\u3002",
+    "Plan Entitlements": "\u5957\u9910\u6b0a\u76ca",
+    "Route Directions": "\u8def\u7531\u65b9\u5411",
+    "Rule": "\u898f\u5247",
+    "Rules": "\u898f\u5247\u6578",
+    "Save Direction": "\u5132\u5b58\u65b9\u5411",
+    "Save Entitlements": "\u5132\u5b58\u6b0a\u76ca",
+    "Service Scope": "\u670d\u52d9\u7bc4\u570d",
+    "User Label": "\u7528\u6236\u770b\u5230\u7684\u540d\u7a31",
+    "available": "\u53ef\u7528",
+    "deleted": "\u5df2\u522a\u9664",
+    "maintenance": "\u7dad\u8b77\u4e2d",
+    "retired": "\u5df2\u4e0b\u7dda",
+    "Route directions are unavailable: ": "\u8def\u7531\u65b9\u5411\u4e0d\u53ef\u7528\uff1a"
   },
   "attributes": {
     "Label": "\u6a19\u7c64",
@@ -2097,6 +2122,8 @@
     "Language": "\u8a9e\u8a00",
     "Page views": "\u9801\u9762\u6aa2\u8996",
     "Reset the API token? Programs using the old token stop working immediately.": "\u78ba\u5b9a\u91cd\u8a2d API \u4ee4\u724c\u55ce\uff1f\u4f7f\u7528\u820a\u4ee4\u724c\u7684\u7a0b\u5f0f\u6703\u7acb\u5373\u5931\u6548\u3002",
-    "blank = plan default": "\u7559\u7a7a = \u6309\u65b9\u6848\u9810\u8a2d"
+    "blank = plan default": "\u7559\u7a7a = \u6309\u65b9\u6848\u9810\u8a2d",
+    "dir_sh_jp_1": "dir_sh_jp_1",
+    "leave empty: not ready": "\u7559\u7a7a\uff1a\u672a\u5c31\u7dd2"
   }
 }
