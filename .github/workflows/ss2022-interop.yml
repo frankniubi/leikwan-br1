@@ -204,7 +204,9 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x "$RUNNER_TEMP/sing-box/sing-box"
-          chmod +x "$RUNNER_TEMP/xray/xray" || true
+          if [ "${{ matrix.server }}" = "xray" ]; then
+            chmod +x "$RUNNER_TEMP/xray/xray"
+          fi
           config="$RUNNER_TEMP/configs/${{ matrix.platform }}-ss2022-overlong.json"
           test -s "$config"
           args=(--server "${{ matrix.server }}" --config "$config" \
