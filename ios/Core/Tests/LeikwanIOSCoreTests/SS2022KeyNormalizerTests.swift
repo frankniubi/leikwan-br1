@@ -89,10 +89,10 @@ final class SS2022KeyNormalizerTests: XCTestCase {
     }
 
     func testAES128RequiresOnly16Bytes() {
-        let key = "YWJjZGVmZ2hpamtsbW5vcA=" // 16 bytes (padded)
+        let key = "MTIzNDU2Nzg5MDEyMzQ1Ng==" // 16 bytes (padded, same fixture as Android)
         let result = SS2022KeyNormalizer.normalizePassword(key, method: "2022-blake3-aes-128-gcm")
         XCTAssertNil(result.error)
-        XCTAssertEqual(result.normalized, "YWJjZGVmZ2hpamtsbW5vcA=")
+        XCTAssertEqual(result.normalized, "MTIzNDU2Nzg5MDEyMzQ1Ng==")
     }
 
     func testMultiUserWithOneOverLongSegmentNormalizesThatSegmentOnly() {
