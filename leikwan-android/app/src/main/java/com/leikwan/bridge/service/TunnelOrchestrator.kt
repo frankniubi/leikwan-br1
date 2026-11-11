@@ -112,6 +112,8 @@ private data class ActiveUltraRuntime(
     val leaseSentAt: Instant = Instant.EPOCH,
     /** A runtime-only restart failed; the next renewal must start the runtime again. */
     val runtimeRestartPending: Boolean = false,
+    /** Lease hash -> "ip:port" of each relay entry in the current batch (latency probe). */
+    val relayEndpoints: Map<String, String> = emptyMap(),
 )
 
 /** An Ultra runtime started for an app group's line, next to the selected service's runtime. */
@@ -688,6 +690,7 @@ class TunnelOrchestrator internal constructor(
                         protectedConnectivity = protectedConnectivity,
                         statusPath = planned.statusFile.absolutePath,
                         leaseSentAt = Instant.now(),
+                        relayEndpoints = relayEndpointsOf(leases),
                     )
                     return@run runtime
                 } catch (error: Exception) {
@@ -1106,6 +1109,7 @@ class TunnelOrchestrator internal constructor(
                             policy = nextPolicy,
                             protectedConnectivity = nextProtectedConnectivity,
                             leaseSentAt = Instant.now(),
+                            relayEndpoints = relayEndpointsOf(leases),
                         ),
                     )
                     return false
@@ -1188,6 +1192,7 @@ class TunnelOrchestrator internal constructor(
             statusPath = planned.statusFile.absolutePath,
             leaseSentAt = Instant.now(),
             runtimeRestartPending = false,
+            relayEndpoints = relayEndpointsOf(leases),
         )
         val runtime = planned.runtimeContext.copy(protectedConnectivity = protectedConnectivity)
         if (isMain) {
@@ -1200,6 +1205,43 @@ class TunnelOrchestrator internal constructor(
     }
 
     /** Records [updated] as the selected runtime's or its app-group runtime's state. */
+    /**
+     * The relay entry the selected Ultra runtime uses ("ip" to port), for the in-tunnel latency
+     * probe: the lease its status file names as selected (UDP first, then TCP), else the only
+     * lease of the batch. Null without an Ultra runtime.
+     */
+    fun activeUltraRelayEndpoint(): Pair<String, Int>? {
+        val active = activeUltra ?: return null
+        val endpoints = active.relayEndpoints
+        if (endpoints.isEmpty()) return null
+        val selected = selectedLeaseHash(active.statusPath)?.let { endpoints[it] }
+            ?: endpoints.values.singleOrNull()
+            ?: return null
+        val host = selected.substringBeforeLast(':').removePrefix("[").removeSuffix("]")
+        val port = selected.substringAfterLast(':').toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+        return host.takeIf { it.isNotEmpty() }?.let { it to port }
+    }
+
+    private fun relayEndpointsOf(leases: List<UltraLease>): Map<String, String> =
+        leases.filter { it.leaseHash.isNotBlank() && it.endpointIp.isNotBlank() && it.endpointPort > 0 }
+            .associate { lease ->
+                val host = if (lease.endpointIp.contains(':')) "[${lease.endpointIp}]" else lease.endpointIp
+                lease.leaseHash.lowercase() to "$host:${lease.endpointPort}"
+            }
+
+    private fun selectedLeaseHash(statusPath: String): String? {
+        if (statusPath.isBlank()) return null
+        val status = runCatching {
+            com.google.gson.JsonParser.parseString(java.io.File(statusPath).readText()).asJsonObject
+        }.getOrNull() ?: return null
+        for (key in listOf("active_udp", "udp_runtime_session", "latest_tcp")) {
+            val hash = status.get(key)?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.get("lease_hash")?.takeIf { it.isJsonPrimitive }?.asString
+            if (!hash.isNullOrBlank()) return hash.lowercase()
+        }
+        return null
+    }
+
     private fun storeUltra(updated: ActiveUltraRuntime) {
         if (updated.forwardId == activeUltra?.forwardId) {
             activeUltra = updated
@@ -1316,6 +1358,7 @@ class TunnelOrchestrator internal constructor(
                         protectedConnectivity = protectedConnectivity,
                         statusPath = planned.statusFile.absolutePath,
                         leaseSentAt = Instant.now(),
+                        relayEndpoints = relayEndpointsOf(leases),
                     ),
                     runtime = planned.runtimeContext.copy(protectedConnectivity = protectedConnectivity),
                 )

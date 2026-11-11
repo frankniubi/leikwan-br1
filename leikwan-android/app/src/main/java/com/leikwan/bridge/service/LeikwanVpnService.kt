@@ -66,6 +66,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var tunFd: ParcelFileDescriptor? = null
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
+    private var relayLatencyJob: Job? = null
     private val networkMonitor by lazy {
         AndroidNetworkMonitor(this, onUnderlyingNetwork = { network ->
             applyUnderlyingNetworks(network)
@@ -222,6 +223,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             commandServer = server
             server.start()
             startCommandClientDiagnostics()
+            startRelayLatencyProbe()
             server.startOrReloadService(config, OverrideOptions())
 
             isRunning = true
@@ -243,6 +245,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     private fun closeRuntime() {
+        relayLatencyJob?.cancel()
+        relayLatencyJob = null
         try {
             commandClient?.disconnect()
         } catch (e: Exception) {
@@ -730,6 +734,47 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             routes += RoutePrefix(route.address(), route.prefix())
         }
         return routes
+    }
+
+    /**
+     * In-tunnel latency for Ultra (whose config leaves the sing-box probe group out): every 30 s,
+     * time a TCP handshake to the relay entry in use on a protected socket. A refused connect
+     * (UDP-only relay port) is still one round trip and counts; a timeout does not.
+     */
+    private fun startRelayLatencyProbe() {
+        relayLatencyJob?.cancel()
+        relayLatencyJob = recoveryScope.launch {
+            delay(3_000)
+            while (true) {
+                val endpoint = runCatching {
+                    TunnelOrchestrator.forApplication(applicationContext).activeUltraRelayEndpoint()
+                }.getOrNull()
+                if (endpoint != null) {
+                    measureHandshakeMs(endpoint.first, endpoint.second)?.let(TrafficMonitor::reportRelayLatency)
+                }
+                delay(30_000)
+            }
+        }
+    }
+
+    private fun measureHandshakeMs(host: String, port: Int): Int? {
+        val socket = java.net.Socket()
+        return try {
+            protect(socket)
+            val started = System.nanoTime()
+            try {
+                socket.connect(java.net.InetSocketAddress(InetAddress.getByName(host), port), 3_000)
+            } catch (refused: java.net.ConnectException) {
+                if (refused.message?.contains("ECONNREFUSED") != true && refused.message?.contains("refused", ignoreCase = true) != true) {
+                    return null
+                }
+            }
+            ((System.nanoTime() - started) / 1_000_000).toInt().coerceAtLeast(1)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { socket.close() }
+        }
     }
 
     private fun startCommandClientDiagnostics() {
