@@ -974,7 +974,10 @@ class SingboxConfigBuilder(
         if (snapshot != null) {
             effectiveRoutingEngine.requiredRuleSets(snapshot).forEach { ref ->
                 if (seenTags.add(ref.tag)) {
-                    ruleSetArray.add(remoteRuleSet(ref.tag, ref.url))
+                    val localPath = ref.localPath
+                    ruleSetArray.add(
+                        if (localPath != null) localSourceRuleSet(ref.tag, localPath) else remoteRuleSet(ref.tag, ref.url)
+                    )
                 }
             }
         }
@@ -1029,6 +1032,14 @@ class SingboxConfigBuilder(
         add("ip_cidr", JsonArray().apply { add(normalizeIpCidr(rule.destinationIp)) })
         add("port", JsonArray().apply { add(rule.destinationPort) })
         addProperty("network", network)
+    }
+
+    /** An imported Surge/Clash list, converted on the device to a sing-box source rule-set file. */
+    private fun localSourceRuleSet(tag: String, path: String): JsonObject = JsonObject().apply {
+        addProperty("tag", tag)
+        addProperty("type", "local")
+        addProperty("format", "source")
+        addProperty("path", path)
     }
 
     private fun remoteRuleSet(tag: String, url: String, downloadDetour: String? = null): JsonObject = JsonObject().apply {

@@ -183,7 +183,7 @@ object ClashRuleParser {
         RoutingRuleKind.COUNTRY -> {
             if (value.isEmpty()) "无效的国家代码（第 $lineNo 行）" else null
         }
-        RoutingRuleKind.WEBSITE_CATEGORY -> null // Shouldn't reach here for Clash rules
+        RoutingRuleKind.WEBSITE_CATEGORY, RoutingRuleKind.IMPORTED_LIST -> null // Not produced by the line parser
     }
 
     private fun validateCidr(value: String, version: Int, lineNo: Int): String? {
@@ -239,7 +239,7 @@ object ClashRuleParser {
      * (used by [Regex] above) happily compiles. Reject those patterns here so an import never
      * produces a config sing-box refuses to load.
      */
-    private fun hasUnsupportedRe2Syntax(pattern: String): Boolean {
+    internal fun hasUnsupportedRe2Syntax(pattern: String): Boolean {
         val forbiddenLiterals = listOf("(?=", "(?!", "(?<=", "(?<!", "(?>")
         if (forbiddenLiterals.any { pattern.contains(it) }) return true
         return Regex("""\\[1-9]""").containsMatchIn(pattern)

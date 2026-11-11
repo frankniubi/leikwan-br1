@@ -157,6 +157,14 @@
     <string name="routing_country_suggestion_format">%1$s / %2$s (%3$s)</string>
     <string name="routing_add_category_rule">Add category rule</string>
     <string name="routing_category">Category</string>
+    <string name="routing_list_import_title">Import a rule list (Surge / Clash)</string>
+    <string name="routing_list_import_hint">Paste the URL of a .list file, e.g. a blackmatrix7 ruleset. The whole list routes to the exit you choose.</string>
+    <string name="routing_list_import_url">Rule list URL</string>
+    <string name="routing_list_import_name">Name (optional)</string>
+    <string name="routing_list_import_button">Download and import</string>
+    <string name="routing_list_import_busy">Importing…</string>
+    <string name="routing_list_rule_summary_format">%1$s · %2$d rules</string>
+    <string name="routing_list_refresh">Update rule list</string>
     <string name="routing_clash_import_title">Import Clash rules</string>
     <string name="routing_clash_import_hint">Paste Clash-style rules (one per line)</string>
     <string name="routing_clash_import_button">Import</string>

@@ -6,7 +6,10 @@ import androidx.lifecycle.viewModelScope
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.ProxyNode
+import com.leikwan.bridge.data.routing.ImportedRuleListStore
+import com.leikwan.bridge.data.routing.RuleListFetcher
 import com.leikwan.bridge.data.routing.UserRoutingRuleStore
+import com.leikwan.bridge.routing.SurgeListConverter
 import com.leikwan.bridge.routing.Country
 import com.leikwan.bridge.routing.CountryCatalog
 import com.leikwan.bridge.routing.RoutingCategoryCatalog
@@ -35,6 +38,11 @@ data class RoutingUiState(
     val countryQuery: String = "",
     val countrySuggestions: List<Country> = emptyList(),
     val importErrors: List<String> = emptyList(),
+    /** Imported Surge/Clash lists by id (labels and counts for IMPORTED_LIST rules). */
+    val importedLists: Map<String, ImportedRuleListStore.ImportedRuleList> = emptyMap(),
+    val listImportBusy: Boolean = false,
+    /** Result line of the last list import (summary or error). */
+    val listImportMessage: String? = null,
 )
 
 data class RoutingNodeOption(
@@ -68,6 +76,9 @@ class RoutingViewModel(
     private val prefs: Prefs = Prefs.get(app),
     private val categoryCatalog: RoutingCategoryCatalog = RoutingCategoryCatalog.default(),
     private val catalogRefresher: (suspend () -> Unit)? = null,
+    private val listStore: ImportedRuleListStore = ImportedRuleListStore.from(app),
+    private val listFetcher: RuleListFetcher = RuleListFetcher(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(
@@ -97,6 +108,7 @@ class RoutingViewModel(
                 clashRules = store.clashRules(),
                 presetCategories = categoryCatalog.presetKeys(),
                 presetCategoryOptions = categoryOptions(),
+                importedLists = importedListsById(),
             )
         }
     }
@@ -182,13 +194,71 @@ class RoutingViewModel(
 
     fun deleteRule(id: String) {
         viewModelScope.launch {
+            val rule = store.all().firstOrNull { it.id == id }
             store.delete(id)
+            if (rule?.kind == RoutingRuleKind.IMPORTED_LIST) listStore.delete(rule.matchValue)
+            refreshNow()
+        }
+    }
+
+    /**
+     * Downloads a Surge/Clash rule list (e.g. a blackmatrix7 `.list`) and stores it as one
+     * routing rule whose traffic goes to [outcome].
+     */
+    fun importRuleList(url: String, name: String, outcome: UserTrafficOutcome) {
+        if (url.isBlank() || _state.value.listImportBusy) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(listImportBusy = true, listImportMessage = null)
+            val message = try {
+                val conversion = SurgeListConverter.parse(listFetcher.fetch(url))
+                saveList(name, url.trim(), conversion, outcome, existingId = null)
+            } catch (e: Exception) {
+                e.message ?: "导入失败"
+            }
+            _state.value = _state.value.copy(listImportBusy = false, listImportMessage = message)
+            refreshNow()
+        }
+    }
+
+    /** Re-downloads a URL-imported list in place (same rule, same outcome). */
+    fun refreshImportedList(ruleId: String) {
+        if (_state.value.listImportBusy) return
+        viewModelScope.launch {
+            val rule = store.all().firstOrNull { it.id == ruleId && it.kind == RoutingRuleKind.IMPORTED_LIST } ?: return@launch
+            val list = listStore.get(rule.matchValue) ?: return@launch
+            val url = list.sourceUrl ?: return@launch
+            _state.value = _state.value.copy(listImportBusy = true, listImportMessage = null)
+            val message = try {
+                val conversion = SurgeListConverter.parse(listFetcher.fetch(url))
+                if (conversion.isEmpty) {
+                    "列表中没有可用规则，保留原内容"
+                } else {
+                    listStore.save(list.name, url, conversion, clock(), existingId = list.id)
+                    summary(list.name, conversion)
+                }
+            } catch (e: Exception) {
+                e.message ?: "更新失败"
+            }
+            _state.value = _state.value.copy(listImportBusy = false, listImportMessage = message)
             refreshNow()
         }
     }
 
     fun importClash(text: String) {
         viewModelScope.launch {
+            if (shouldImportAsList(text)) {
+                // Large pastes (a whole .list) and logical AND/OR/NOT rules go through the list
+                // converter: one rule-set file instead of thousands of routing rows.
+                val message = try {
+                    val conversion = SurgeListConverter.parse(text)
+                    saveList("粘贴的规则", null, conversion, dominantOutcome(conversion), existingId = null)
+                } catch (e: Exception) {
+                    e.message ?: "导入失败"
+                }
+                _state.value = _state.value.copy(importErrors = emptyList(), listImportMessage = message)
+                refreshNow()
+                return@launch
+            }
             val catalogTags = ClashRuleCatalog.allowedGeositeTags()
             val parsed = ClashRuleParser.parse(text, catalogTags)
             val okLines = parsed.filter { it.isOk }.mapNotNull { it.rule }
@@ -221,7 +291,64 @@ class RoutingViewModel(
             clashRules = store.clashRules(),
             presetCategories = categoryCatalog.presetKeys(),
             presetCategoryOptions = categoryOptions(),
+            importedLists = importedListsById(),
         )
+    }
+
+    private fun importedListsById(): Map<String, ImportedRuleListStore.ImportedRuleList> =
+        listStore.all().associateBy { it.id }
+
+    private suspend fun saveList(
+        name: String,
+        sourceUrl: String?,
+        conversion: SurgeListConverter.Conversion,
+        outcome: UserTrafficOutcome,
+        existingId: String?,
+    ): String {
+        if (conversion.isEmpty) return "列表中没有可用规则（跳过 ${conversion.skippedCount} 条）"
+        val list = listStore.save(name, sourceUrl, conversion, clock(), existingId)
+        store.upsert(
+            RoutingRule(
+                id = "list-${list.id}",
+                kind = RoutingRuleKind.IMPORTED_LIST,
+                matchValue = list.id,
+                outcome = outcome,
+                enabled = true,
+            ),
+        )
+        return summary(list.name, conversion)
+    }
+
+    private fun summary(name: String, conversion: SurgeListConverter.Conversion): String = buildString {
+        append("已导入「").append(name).append("」：").append(conversion.convertedCount).append(" 条")
+        if (conversion.skippedCount > 0) {
+            append("，跳过 ").append(conversion.skippedCount).append(" 条（")
+            append(conversion.skipped.entries.joinToString("、") { "${it.key} ${it.value}" })
+            append("）")
+        }
+        if (conversion.policies.size > 1) append("；原列表含多种策略，已统一按所选出口")
+        conversion.finalPolicy?.let { append("；FINAL 未导入，未匹配流量按全局默认") }
+    }
+
+    private fun shouldImportAsList(text: String): Boolean {
+        val lines = text.lineSequence().mapNotNull { SurgeListConverter.cleanLine(it) }.toList()
+        if (lines.size > LIST_IMPORT_LINE_THRESHOLD) return true
+        return lines.any { line ->
+            val type = line.substringBefore(',').trim().uppercase()
+            type == "AND" || type == "OR" || type == "NOT" || type == "DOMAIN-WILDCARD"
+        }
+    }
+
+    /** A pasted list keeps its own policy when it has a single one. */
+    private fun dominantOutcome(conversion: SurgeListConverter.Conversion): UserTrafficOutcome =
+        when (conversion.policies.maxByOrNull { it.value }?.key) {
+            "DIRECT" -> UserTrafficOutcome.DIRECT
+            "REJECT" -> UserTrafficOutcome.REJECT
+            else -> UserTrafficOutcome.TUNNEL
+        }
+
+    private companion object {
+        const val LIST_IMPORT_LINE_THRESHOLD = 200
     }
 
     private fun categoryOptions(): List<RoutingCategoryOption> =

@@ -157,6 +157,14 @@
     <string name="routing_country_suggestion_format">%1$s / %2$s（%3$s）</string>
     <string name="routing_add_category_rule">添加分类规则</string>
     <string name="routing_category">分类</string>
+    <string name="routing_list_import_title">导入规则列表（Surge / Clash）</string>
+    <string name="routing_list_import_hint">粘贴 .list 文件的链接，例如 blackmatrix7 规则集。整个列表走你选择的出口。</string>
+    <string name="routing_list_import_url">规则列表链接</string>
+    <string name="routing_list_import_name">名称（可选）</string>
+    <string name="routing_list_import_button">下载并导入</string>
+    <string name="routing_list_import_busy">正在导入…</string>
+    <string name="routing_list_rule_summary_format">%1$s · %2$d 条规则</string>
+    <string name="routing_list_refresh">更新规则列表</string>
     <string name="routing_clash_import_title">导入 Clash 规则</string>
     <string name="routing_clash_import_hint">粘贴 Clash 风格的规则（每行一条）</string>
     <string name="routing_clash_import_button">导入</string>

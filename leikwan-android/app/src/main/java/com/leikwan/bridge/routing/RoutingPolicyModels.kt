@@ -20,6 +20,8 @@ enum class RoutingRuleKind {
     IP_CIDR, IP_CIDR6,
     DST_PORT,
     GEOSITE, RULE_SET,
+    /** A converted Surge/Clash rule list; matchValue = absolute path of its source rule-set file. */
+    IMPORTED_LIST,
 }
 
 /** How a system-protected path is handled. Protected paths are always bypassed direct. */
@@ -71,7 +73,8 @@ data class RoutingDecision(
 )
 
 /** A reference to a remote SagerNet `.srs` rule-set, emitted into `route.rule_set` (format "binary"). */
-data class RuleSetRef(val tag: String, val url: String)
+/** [localPath] set = a `local` source rule-set file (imported lists); otherwise remote binary [url]. */
+data class RuleSetRef(val tag: String, val url: String, val localPath: String? = null)
 
 /**
  * A user rule compiled into a single sing-box `route.rule`. [outbound] is either `"direct"`,
