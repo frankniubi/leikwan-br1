@@ -103,6 +103,18 @@ interface PanelApi {
         @Path("id") ruleId: String,
     ): Response<ClientRuleWriteResponse>
 
+    @POST("api/client/debug/start")
+    suspend fun startDebugCollection(
+        @Header("Authorization") auth: String,
+        @Body body: Map<String, String> = emptyMap(),
+    ): Response<DebugCollectionStartResponse>
+
+    @POST("api/client/debug/log")
+    suspend fun uploadDebugLogChunk(
+        @Header("Authorization") auth: String,
+        @Body request: DebugLogChunkRequest,
+    ): Response<DebugLogChunkResponse>
+
     @GET("api/client/config/{forwardId}")
     suspend fun getForwardConfig(
         @Header("Authorization") auth: String,

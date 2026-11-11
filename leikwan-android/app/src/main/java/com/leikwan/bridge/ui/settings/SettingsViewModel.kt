@@ -32,6 +32,8 @@ data class SettingsUiState(
     val rulePackStale: Boolean = false,
     val isUpdatingRules: Boolean = false,
     val rulePackMessage: String? = null,
+    val isUploadingLogs: Boolean = false,
+    val logUploadMessage: String? = null,
 )
 
 class SettingsViewModel @JvmOverloads constructor(
@@ -130,6 +132,26 @@ class SettingsViewModel @JvmOverloads constructor(
                     rulePackMessage = s(R.string.settings_rolled_back_format, activated.categoryPackVersion),
                 )
             }
+        }
+    }
+
+    fun uploadLogs() {
+        if (_state.value.isUploadingLogs) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isUploadingLogs = true, logUploadMessage = null)
+            runCatching { repo.uploadDebugLogsNow() }
+                .onSuccess { summary ->
+                    _state.value = _state.value.copy(
+                        isUploadingLogs = false,
+                        logUploadMessage = s(R.string.settings_upload_logs_done_format, summary.referenceCode),
+                    )
+                }
+                .onFailure { err ->
+                    _state.value = _state.value.copy(
+                        isUploadingLogs = false,
+                        logUploadMessage = err.message ?: s(R.string.settings_upload_logs_failed),
+                    )
+                }
         }
     }
 
