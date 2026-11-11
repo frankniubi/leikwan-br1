@@ -72,7 +72,17 @@ extension SingboxConfigBuilder {
             "udp_over_tcp": ["enabled": false],
         ]
         let direct: [String: Any] = ["type": "direct", "tag": "direct"]
-        let outbounds: [[String: Any]] = [socks, direct]
+        var outbounds: [[String: Any]] = [socks, direct]
+        if scope != .cnOnly {
+            // Latency probe over the native runtime's SOCKS exit (see SingboxConfigBuilder).
+            outbounds.append([
+                "type": "urltest",
+                "tag": "probe",
+                "outbounds": [tag, "direct"],
+                "url": "http://www.gstatic.com/generate_204",
+                "interval": "60s",
+            ])
+        }
         root["outbounds"] = outbounds
 
         var route: [String: Any] = [:]

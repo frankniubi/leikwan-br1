@@ -150,6 +150,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.connectionsIn = libbox.connectionsIn
             snapshot.connectionsOut = libbox.connectionsOut
             snapshot.memory = libbox.memory
+            snapshot.latencyMs = libbox.latencyMs
             snapshot.runtimes = runtimes.statuses()
             snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
             var byForward: [String: String] = [:]

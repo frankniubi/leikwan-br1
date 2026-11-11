@@ -273,11 +273,21 @@ private fun NetworkSpeedCard(traffic: TrafficSnapshot) {
         modifier = Modifier.fillMaxWidth(),
         contentPadding = false,
         trailing = {
-            Text(
-                "↑ ${TrafficFormat.rate(traffic.uplink)}  ↓ ${TrafficFormat.rate(traffic.downlink)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                // In-tunnel URL-test latency from the synthetic probe group; hidden until measured.
+                if (traffic.latencyMs > 0) {
+                    Text(
+                        "${traffic.latencyMs} ms",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    "↑ ${TrafficFormat.rate(traffic.uplink)}  ↓ ${TrafficFormat.rate(traffic.downlink)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         },
     ) {
         SpeedChart(

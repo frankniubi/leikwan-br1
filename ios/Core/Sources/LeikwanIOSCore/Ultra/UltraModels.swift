@@ -68,8 +68,18 @@ public struct UltraPolicy: Equatable {
 
     /// Validates `forward.ultraAccess` exactly like Android; nil when anything is off.
     public static func from(_ forward: ForwardContract, now: Date = Date()) -> UltraPolicy? {
+        return build(forward, now: now).policy
+    }
+
+    /// The first validation that rejected the grant, or nil when it validates clean.
+    /// Companion to `from`; use it to log *why* a pulled grant was refused.
+    public static func validationFailure(_ forward: ForwardContract, now: Date = Date()) -> String? {
+        return build(forward, now: now).failure
+    }
+
+    private static func build(_ forward: ForwardContract, now: Date) -> (policy: UltraPolicy?, failure: String?) {
         if forward.backendMode.lowercased() != "ultra" || forward.serviceStatus.lowercased() != "active" {
-            return nil
+            return (nil, "backend_mode_or_service_status")
         }
         guard let access = forward.ultraAccess,
               let proto = JSONLenient.requiredString(access["protocol"]),
@@ -84,31 +94,31 @@ public struct UltraPolicy: Equatable {
               let rateLimit = JSONLenient.strictInt64(access["rate_limit_mbps"]),
               let quota = JSONLenient.strictInt64(access["quota_remaining_bytes"]),
               let policyTargetDigest = JSONLenient.requiredString(access["target_digest"])
-        else { return nil }
+        else { return (nil, "missing_or_malformed_field") }
         let transport = transportRaw.lowercased()
-        if proto != UltraConstants.policyProtocol { return nil }
-        if forwardId != forward.forwardId { return nil }
-        if serviceState.lowercased() != "active" { return nil }
-        if ticket.isEmpty || ticket.count > UltraConstants.maxSessionTicketLength { return nil }
-        if !Hashing.isLowerHex64(generation) { return nil }
-        if !Hashing.isLowerHex64(policyTargetDigest) { return nil }
-        if policyTargetDigest != targetDigest(forward.target) { return nil }
-        if !(issuedAt < renewAfter) { return nil }
-        if !(renewAfter < expiresAt) { return nil }
-        if !(expiresAt > now) { return nil }
-        if expiresAt > now.addingTimeInterval(UltraConstants.maxTTLSeconds) { return nil }
-        if !UltraConstants.allowedTransports.contains(transport) { return nil }
-        if rateLimit < 0 || rateLimit > UltraConstants.maxRateMbps { return nil }
-        if quota < 1 || quota > UltraConstants.maxQuotaBytes { return nil }
+        if proto != UltraConstants.policyProtocol { return (nil, "protocol") }
+        if forwardId != forward.forwardId { return (nil, "forward_id") }
+        if serviceState.lowercased() != "active" { return (nil, "service_state") }
+        if ticket.isEmpty || ticket.count > UltraConstants.maxSessionTicketLength { return (nil, "session_ticket") }
+        if !Hashing.isLowerHex64(generation) { return (nil, "policy_generation_format") }
+        if !Hashing.isLowerHex64(policyTargetDigest) { return (nil, "target_digest_format") }
+        if policyTargetDigest != targetDigest(forward.target) { return (nil, "target_digest_mismatch") }
+        if !(issuedAt < renewAfter) { return (nil, "issued_renew_order") }
+        if !(renewAfter < expiresAt) { return (nil, "renew_expiry_order") }
+        if !(expiresAt > now) { return (nil, "expired") }
+        if expiresAt > now.addingTimeInterval(UltraConstants.maxTTLSeconds) { return (nil, "ttl_over_max") }
+        if !UltraConstants.allowedTransports.contains(transport) { return (nil, "transport") }
+        if rateLimit < 0 || rateLimit > UltraConstants.maxRateMbps { return (nil, "rate_limit") }
+        if quota < 1 || quota > UltraConstants.maxQuotaBytes { return (nil, "quota") }
         var externalUot: ExternalUotGrant?
         if let wire = access["external_uot"] {
-            guard let raw = wire as? [String: Any] else { return nil }
+            guard let raw = wire as? [String: Any] else { return (nil, "external_uot_shape") }
             if let digest = raw["target_digest"],
-               JSONLenient.requiredString(digest) != policyTargetDigest { return nil }
+               JSONLenient.requiredString(digest) != policyTargetDigest { return (nil, "external_uot_digest") }
             if JSONLenient.isBoolean(raw["enabled"]), raw["enabled"] as? Bool == false {
                 externalUot = nil
             } else {
-                guard let grant = try? ExternalUotGrant.from(raw) else { return nil }
+                guard let grant = try? ExternalUotGrant.from(raw) else { return (nil, "external_uot_grant") }
                 externalUot = grant
             }
         }
@@ -116,7 +126,7 @@ public struct UltraPolicy: Equatable {
         if let raw = access["tcp_first_flight"] as? [String: Any] {
             firstFlight = UltraTcpFirstFlight.from(raw, forwardTarget: forward.target, policyGeneration: generation, now: now)
         }
-        return UltraPolicy(
+        let policy = UltraPolicy(
             forwardId: forwardId,
             sessionTicket: ticket,
             policyGeneration: generation,
@@ -130,6 +140,7 @@ public struct UltraPolicy: Equatable {
             tcpFirstFlight: firstFlight,
             externalUot: externalUot
         )
+        return (policy, nil)
     }
 }
 

@@ -737,6 +737,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             addCommand(Libbox.CommandLog)
             addCommand(Libbox.CommandConnections)
             addCommand(Libbox.CommandStatus)
+            // Group stream: the config's synthetic `probe` urltest group (see SingboxConfigBuilder)
+            // self-tests on its interval; writeGroups turns the exit's URL-test delay into the
+            // dashboard's in-tunnel latency number.
+            addCommand(Libbox.CommandGroup)
             // Go time.Duration: one dashboard sample per second.
             statusInterval = 1_000_000_000L
         }
@@ -819,6 +823,17 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             var emitted = 0
             while (iterator?.hasNext() == true && emitted < 40) {
                 val group = iterator.next()
+                if (group.tag == "probe") {
+                    // The probe group holds the active exit and "direct"; the exit's URL-test
+                    // delay is the in-tunnel latency shown on the dashboard.
+                    val items = group.items
+                    while (items.hasNext()) {
+                        val item = items.next()
+                        if (item.tag != "direct" && item.urlTestDelay > 0) {
+                            TrafficMonitor.reportLatency(item.urlTestDelay.toInt())
+                        }
+                    }
+                }
                 Log.d(TAG, "box group tag=${group.tag} type=${group.type} selected=${group.selected}")
                 emitted += 1
             }

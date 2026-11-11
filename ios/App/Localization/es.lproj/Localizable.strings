@@ -45,6 +45,7 @@
 "This device was banned by the server" = "El servidor bloqueó este dispositivo";
 "The server does not trust this device" = "El servidor no confía en este dispositivo";
 "Network speed" = "Velocidad de red";
+"Latency through the tunnel to the active exit" = "Latencia a través del túnel hasta la salida activa";
 "Time" = "Tiempo";
 "Download" = "Descarga";
 "Upload" = "Subida";

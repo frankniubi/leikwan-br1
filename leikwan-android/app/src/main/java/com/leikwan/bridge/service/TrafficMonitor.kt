@@ -17,6 +17,8 @@ data class TrafficSnapshot(
     val history: List<Long> = emptyList(),
     /** Wall-clock start of the running tunnel, or 0 when stopped. */
     val runningSinceMs: Long = 0L,
+    /** URL-test delay of the active exit through the tunnel (ms); 0 = not measured. */
+    val latencyMs: Int = 0,
 )
 
 object TrafficMonitor {
@@ -44,6 +46,12 @@ object TrafficMonitor {
 
     fun onStopped() {
         mutable.value = TrafficSnapshot()
+    }
+
+    /** In-tunnel URL-test latency from the synthetic probe group; 0/negative ignored. */
+    fun reportLatency(latencyMs: Int) {
+        if (latencyMs <= 0) return
+        mutable.value = mutable.value.copy(latencyMs = latencyMs)
     }
 }
 

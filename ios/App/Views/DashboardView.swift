@@ -89,6 +89,7 @@ private struct NetworkSpeedCard: View {
         VStack(alignment: .leading, spacing: 12) {
             CardHeader(L("Network speed"), systemImage: "speedometer", trailing: AnyView(
                 HStack(spacing: 12) {
+                    LatencyLabel(latencyMs: tunnel.snapshot.latencyMs)
                     RateLabel(symbol: "arrow.up", value: tunnel.snapshot.uplink, color: Palette.upload)
                     RateLabel(symbol: "arrow.down", value: tunnel.snapshot.downlink, color: Palette.download)
                 }
@@ -163,6 +164,23 @@ private struct RateLabel: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(Palette.onSurface)
         }
+    }
+}
+
+/// In-tunnel URL-test latency (ms); "—" until the first probe lands.
+private struct LatencyLabel: View {
+    let latencyMs: Int64
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Palette.onSurfaceVariant)
+            Text(latencyMs > 0 ? "\(latencyMs) ms" : "—")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(Palette.onSurface)
+        }
+        .help(L("Latency through the tunnel to the active exit"))
     }
 }
 

@@ -163,6 +163,10 @@ final class UltraLeaseManager {
             } catch is CancellationError {
                 return
             } catch let error as PanelError {
+                // Whether the failed attempt started from a fresh pull decides the retry
+                // pacing: a failure on the plan-time grant can be retried instantly (the
+                // next attempt pulls), a failure after a pull waits the regular backoff.
+                let usedFreshPull = pullFirst || first
                 if let held = active?.policy {
                     if error.isFailoverEligible,
                        graceGeneration != held.policyGeneration,
@@ -193,19 +197,24 @@ final class UltraLeaseManager {
                     failedAttempts += 1
                     if graceGeneration == nil && stopIfUnusable(error.description, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
                     reportFailure(error.description, forward: forward, active: active)
-                    delayMs = backoff.nextDelayMs()
+                    delayMs = Self.retryDelay(usedFreshPull: usedFreshPull, backoff: &backoff, forwardID: forward.forwardID)
                 }
             } catch {
+                let usedFreshPull = pullFirst || first
                 first = false
                 pullFirst = true
                 let message = Self.describe(error)
                 failedAttempts += 1
                 if stopIfUnusable(message, forward: forward, active: active, startedAt: startedAt, failedAttempts: failedAttempts) { return }
                 reportFailure(message, forward: forward, active: active)
-                delayMs = backoff.nextDelayMs()
+                delayMs = Self.retryDelay(usedFreshPull: usedFreshPull, backoff: &backoff, forwardID: forward.forwardID)
             }
             if Task.isCancelled { return }
-            await pause(seconds: Double(max(delayMs, 1_000)) / 1_000)
+            if delayMs <= 0 {
+                // Immediate retry: loop straight back; the next attempt starts with a pull.
+                continue
+            }
+            await pause(seconds: Double(delayMs) / 1_000)
         }
     }
 
@@ -217,9 +226,14 @@ final class UltraLeaseManager {
         }
         let response = try await client.pullConfigs()
         let catalog = response.catalog(selectedForwardId: forward.forwardID)
-        guard let supported = catalog.supportedForward(id: forward.forwardID),
-              let policy = UltraPolicy.from(supported.contract)
-        else {
+        guard let supported = catalog.supportedForward(id: forward.forwardID) else {
+            throw UltraLeaseError("ultra_policy_unavailable")
+        }
+        guard let policy = UltraPolicy.from(supported.contract) else {
+            // Which validation rejected the grant matters for diagnosis (a stale
+            // expires_at reads very differently from a bad transport), so name it.
+            let reason = UltraPolicy.validationFailure(supported.contract) ?? "unknown"
+            TunnelLog.shared.write("ultra forward \(forward.forwardID): pulled grant rejected (\(reason), expires_at=\(Self.accessField(supported.contract, "expires_at")), renew_after=\(Self.accessField(supported.contract, "renew_after")))", level: 2)
             throw UltraLeaseError("ultra_policy_unavailable")
         }
         // Static bindings are baked into the runtime config; only the app can re-plan them.
@@ -227,6 +241,24 @@ final class UltraLeaseManager {
             throw UltraLeaseError("ultra_forward_changed_reconnect")
         }
         return policy
+    }
+
+    private static func accessField(_ contract: ForwardContract, _ key: String) -> String {
+        guard let access = contract.ultraAccess else { return "?" }
+        return (access[key] as? String) ?? "?"
+    }
+
+    /// Retry pacing after a failed attempt (see `UltraRetryPolicy`): the first failure
+    /// on a plan-time grant retries instantly because the next attempt pulls a fresh
+    /// grant; failures after a fresh pull follow the regular backoff.
+    private static func retryDelay(usedFreshPull: Bool, backoff: inout ControlPlaneBackoff, forwardID: Int64) -> Int64 {
+        switch UltraRetryPolicy.delayMs(pullFirstAtFailure: usedFreshPull, backoffDelayMs: backoff.nextDelayMs()) {
+        case .immediate:
+            TunnelLog.shared.write("ultra forward \(forwardID): repulling immediately (failed attempt used the plan-time grant)", level: 2)
+            return 0
+        case .backoff(let delayMs):
+            return delayMs
+        }
     }
 
     static func plannedPolicy(_ forward: UltraForwardLaunch) -> UltraPolicy? {
