@@ -37,10 +37,10 @@ SELECT
 <tr><th>Forward</th><th>Target</th><th>Protocol</th><th>Password</th><th>Can reuse Node A?</th></tr>
 </thead>
 <tbody>
-<tr><td>Forward A</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>Password X</td><td>—</td></tr>
-<tr><td>Forward B</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>Password Y (≠X)</td><td><strong>No</strong> — password differs → create new forward B and node B</td></tr>
-<tr><td>Forward C</td><td>east.nbwly.com:30522</td><td>VLESS</td><td>Password X</td><td><strong>No</strong> — protocol differs → create new forward C and node C</td></tr>
-<tr><td>Forward D</td><td>east.nbwly.com:30523</td><td>SS2022</td><td>Password X</td><td><strong>No</strong> — port differs → create new forward D and node D</td></tr>
+<tr><td>Forward A</td><td>node.example.com:30522</td><td>SS2022</td><td>Password X</td><td>—</td></tr>
+<tr><td>Forward B</td><td>node.example.com:30522</td><td>SS2022</td><td>Password Y (≠X)</td><td><strong>No</strong> — password differs → create new forward B and node B</td></tr>
+<tr><td>Forward C</td><td>node.example.com:30522</td><td>VLESS</td><td>Password X</td><td><strong>No</strong> — protocol differs → create new forward C and node C</td></tr>
+<tr><td>Forward D</td><td>node.example.com:30523</td><td>SS2022</td><td>Password X</td><td><strong>No</strong> — port differs → create new forward D and node D</td></tr>
 </tbody>
 </table>
 
@@ -102,10 +102,10 @@ SELECT
 <tr><th>转发</th><th>目标</th><th>协议</th><th>密码</th><th>能否复用节点 A？</th></tr>
 </thead>
 <tbody>
-<tr><td>转发 A</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密码 X</td><td>—</td></tr>
-<tr><td>转发 B</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密码 Y（≠X）</td><td><strong>不能</strong>，密码不同 → 必须新建转发 B 和节点 B</td></tr>
-<tr><td>转发 C</td><td>east.nbwly.com:30522</td><td>VLESS</td><td>密码 X</td><td><strong>不能</strong>，协议不同 → 必须新建转发 C 和节点 C</td></tr>
-<tr><td>转发 D</td><td>east.nbwly.com:30523</td><td>SS2022</td><td>密码 X</td><td><strong>不能</strong>，端口不同 → 必须新建转发 D 和节点 D</td></tr>
+<tr><td>转发 A</td><td>node.example.com:30522</td><td>SS2022</td><td>密码 X</td><td>—</td></tr>
+<tr><td>转发 B</td><td>node.example.com:30522</td><td>SS2022</td><td>密码 Y（≠X）</td><td><strong>不能</strong>，密码不同 → 必须新建转发 B 和节点 B</td></tr>
+<tr><td>转发 C</td><td>node.example.com:30522</td><td>VLESS</td><td>密码 X</td><td><strong>不能</strong>，协议不同 → 必须新建转发 C 和节点 C</td></tr>
+<tr><td>转发 D</td><td>node.example.com:30523</td><td>SS2022</td><td>密码 X</td><td><strong>不能</strong>，端口不同 → 必须新建转发 D 和节点 D</td></tr>
 </tbody>
 </table>
 
@@ -167,10 +167,10 @@ SELECT
 <tr><th>轉發</th><th>目標</th><th>協議</th><th>密碼</th><th>能否複用節點 A？</th></tr>
 </thead>
 <tbody>
-<tr><td>轉發 A</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密碼 X</td><td>—</td></tr>
-<tr><td>轉發 B</td><td>east.nbwly.com:30522</td><td>SS2022</td><td>密碼 Y（≠X）</td><td><strong>不能</strong>，密碼不同 → 必須新建轉發 B 和節點 B</td></tr>
-<tr><td>轉發 C</td><td>east.nbwly.com:30522</td><td>VLESS</td><td>密碼 X</td><td><strong>不能</strong>，協議不同 → 必須新建轉發 C 和節點 C</td></tr>
-<tr><td>轉發 D</td><td>east.nbwly.com:30523</td><td>SS2022</td><td>密碼 X</td><td><strong>不能</strong>，連接埠不同 → 必須新建轉發 D 和節點 D</td></tr>
+<tr><td>轉發 A</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 X</td><td>—</td></tr>
+<tr><td>轉發 B</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 Y（≠X）</td><td><strong>不能</strong>，密碼不同 → 必須新建轉發 B 和節點 B</td></tr>
+<tr><td>轉發 C</td><td>node.example.com:30522</td><td>VLESS</td><td>密碼 X</td><td><strong>不能</strong>，協議不同 → 必須新建轉發 C 和節點 C</td></tr>
+<tr><td>轉發 D</td><td>node.example.com:30523</td><td>SS2022</td><td>密碼 X</td><td><strong>不能</strong>，連接埠不同 → 必須新建轉發 D 和節點 D</td></tr>
 </tbody>
 </table>
 
