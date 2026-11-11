@@ -146,12 +146,22 @@ jobs:
           "$RUNNER_TEMP/xray-bin/xray" version
 
       - name: Upload core
+        if: ${{ matrix.core == 'sing-box' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ss2022-core-${{ matrix.core }}
-          path: |
-            ${{ runner.temp }}/sing-box-bin/*
-            ${{ runner.temp }}/xray-bin/*
+          name: ss2022-core-sing-box
+          # upload-artifact keeps the file at the zip root; download-artifact
+          # restores it directly under the download path.
+          path: ${{ runner.temp }}/sing-box-bin/sing-box
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload core (xray)
+        if: ${{ matrix.core == 'xray' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ss2022-core-xray
+          path: ${{ runner.temp }}/xray-bin/xray
           if-no-files-found: error
           retention-days: 14
 
