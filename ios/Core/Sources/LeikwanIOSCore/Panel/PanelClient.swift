@@ -44,6 +44,8 @@ public final class PanelClient {
     public static let configsPullPath = "api/client/configs/pull"
     public static let heartbeatPath = "api/client/heartbeat"
     public static let ultraLeasePath = "api/client/ultra/lease"
+    public static let debugStartPath = "api/client/debug/start"
+    public static let debugLogPath = "api/client/debug/log"
 
     public let credentials: PanelCredentials
     public let allowFailover: Bool
@@ -230,5 +232,50 @@ public final class PanelClient {
             throw UltraLeaseError(message)
         }
         return try body.validatedLeases(policy: policy, maxCandidates: maxCandidates, sealer: sealer, now: now)
+    }
+
+    /// Opens a client-initiated debug collection window (`POST api/client/debug/start`).
+    public func startDebugCollection() async throws -> (collection: DebugCollectionMeta, referenceCode: String) {
+        let (data, _) = try await perform(path: PanelClient.debugStartPath, method: "POST", jsonBody: [:], extraHeaders: [:])
+        guard let obj = JSONLenient.parseObject(data),
+              JSONLenient.bool(obj["ok"]) == true,
+              let coll = obj["debug_collection"] as? [String: Any]
+        else {
+            throw PanelError.invalidResponse("debug_collection_invalid")
+        }
+        let uuid = (coll["uuid"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard DebugLogUploader.isValidCollectionUUID(uuid) else {
+            throw PanelError.invalidResponse("debug_collection_invalid")
+        }
+        let status = (coll["status"] as? String ?? "active").lowercased()
+        let expiresAt = coll["expires_at"] as? String ?? ""
+        let ref = (obj["reference_code"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedRef = (ref?.isEmpty == false) ? ref! : String(uuid.prefix(8))
+        return (DebugCollectionMeta(uuid: uuid, status: status, expiresAt: expiresAt), resolvedRef)
+    }
+
+    /// Redacts and uploads `rawText` in 256 KiB chunks (`POST api/client/debug/log`).
+    public func uploadDebugLogBundle(uuid: String, rawText: String, source: String = "ios-client.log") async throws -> (chunks: Int, bytes: Int) {
+        let normalizedUUID = uuid.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard DebugLogUploader.isValidCollectionUUID(normalizedUUID) else {
+            throw PanelError.invalidResponse("debug_collection_invalid")
+        }
+        let chunks = DebugLogUploader.buildChunks(fromRawText: rawText)
+        var totalBytes = 0
+        for chunk in chunks {
+            let payload: [String: Any] = [
+                "collection_uuid": normalizedUUID,
+                "sequence": chunk.sequence,
+                "sha256": chunk.sha256,
+                "chunk_base64": chunk.chunkBase64,
+                "source": source,
+            ]
+            let (data, _) = try await perform(path: PanelClient.debugLogPath, method: "POST", jsonBody: payload, extraHeaders: [:])
+            guard let obj = JSONLenient.parseObject(data), JSONLenient.bool(obj["ok"]) == true else {
+                throw PanelError.invalidResponse("debug_upload_rejected")
+            }
+            totalBytes += chunk.byteCount
+        }
+        return (chunks.count, totalBytes)
     }
 }

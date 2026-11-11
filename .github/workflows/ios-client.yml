@@ -207,8 +207,11 @@ jobs:
     # 27.1 runs letterboxed on iPhone Duo.
     runs-on: xcode-27
     needs: [frameworks, core-tests]
-    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests.
-    if: github.event_name != 'pull_request'
+    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests;
+    # temporary ci/* verification branches validate simulator + unsigned ipa only and never ship to TestFlight.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'))
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer

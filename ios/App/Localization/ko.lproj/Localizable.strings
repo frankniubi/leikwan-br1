@@ -285,3 +285,6 @@
 ", skipped %@ (%@)" = ", 건너뜀 %@ (%@)";
 "; the list mixes policies, all of it uses the exit you chose" = "; 목록에 여러 정책이 섞여 있어 전체가 선택한 출구를 사용합니다";
 "; FINAL was not imported, unmatched traffic follows the global mode" = "; FINAL은 가져오지 않았으며 일치하지 않는 트래픽은 전역 모드를 따릅니다";
+"Sign in before uploading logs" = "로그를 업로드하려면 먼저 로그인하세요";
+"Upload diagnostic logs" = "진단 로그 업로드";
+"Uploaded diagnostic logs (ref %@, copied)" = "진단 로그 업로드됨 (참조 %@, 복사됨)";
