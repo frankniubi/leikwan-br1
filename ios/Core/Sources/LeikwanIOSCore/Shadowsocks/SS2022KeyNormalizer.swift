@@ -55,8 +55,8 @@ public enum SS2022KeyNormalizer {
 
         switch decoded.count {
         case keyLength:
-            // Exact match: re-encode to canonical unpadded base64
-            let reencoded = decoded.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
+            // Exact match: re-encode to canonical padded base64
+            let reencoded = decoded.base64EncodedString()
             return NormalizeResult(normalized: reencoded)
         default:
             break
@@ -65,7 +65,7 @@ public enum SS2022KeyNormalizer {
             // Over-long: hash via SHA256 and truncate (sing-box server compat)
             let sha = SHA256.hash(data: decoded)
             let truncated = Data(sha.prefix(keyLength))
-            let hashed = truncated.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
+            let hashed = truncated.base64EncodedString()
             return NormalizeResult(normalized: hashed)
         }
         let methodName: String

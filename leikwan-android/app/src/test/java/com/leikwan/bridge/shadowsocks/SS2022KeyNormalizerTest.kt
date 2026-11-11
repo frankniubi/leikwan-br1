@@ -8,7 +8,7 @@ import org.junit.Test
 class SS2022KeyNormalizerTest {
     @Test
     fun `exact length aes-256 key passes through`() {
-        val key32 = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI" // 32 bytes (no padding)
+        val key32 = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=" // 32 bytes (padded)
         val result = SS2022KeyNormalizer.normalizePassword(key32, "2022-blake3-aes-256-gcm")
         assertNull(result.error)
         assertEquals(key32, result.normalized)
@@ -16,7 +16,7 @@ class SS2022KeyNormalizerTest {
 
     @Test
     fun `exact length aes-128 key passes through`() {
-        val key16 = "MTIzNDU2Nzg5MDEyMzQ1Ng" // 16 bytes (no padding)
+        val key16 = "MTIzNDU2Nzg5MDEyMzQ1Ng==" // 16 bytes (padded)
         val result = SS2022KeyNormalizer.normalizePassword(key16, "2022-blake3-aes-128-gcm")
         assertNull(result.error)
         assertEquals(key16, result.normalized)
@@ -27,9 +27,9 @@ class SS2022KeyNormalizerTest {
         val longKey = "VGhpcyBpcyBhIG11Y2ggbG9uZ2VyIGtleSB0aGF0IGV4Y2VlZHMgMzIgYnl0ZXM=" // 47 bytes
         val result = SS2022KeyNormalizer.normalizePassword(longKey, "2022-blake3-aes-256-gcm")
         assertNull(result.error)
-        // SHA256 of the decoded bytes, truncated to 32, re-encoded (no padding)
+        // SHA256 of the decoded bytes, truncated to 32, re-encoded (padded)
         assertNotNull(result.normalized)
-        assertEquals(43, result.normalized.length) // base64 of 32 bytes without padding
+        assertEquals(44, result.normalized.length) // base64 of 32 bytes, padded
     }
 
     @Test
@@ -37,13 +37,13 @@ class SS2022KeyNormalizerTest {
         val rawKey = "a!b@c#d\$e%f^g&h*i(j)k-l=m[n]o{p}" // 32 ASCII chars, not valid base64
         val result = SS2022KeyNormalizer.normalizePassword(rawKey, "2022-blake3-aes-256-gcm")
         assertNull(result.error)
-        // Should be base64 of the raw bytes (no padding for 32 bytes)
-        assertEquals("YSFiQGMjZCRlJWZeZyZoKmkoailrLWw9bVtuXW97cH0", result.normalized)
+        // base64 of the raw bytes (padded)
+        assertEquals("YSFiQGMjZCRlJWZeZyZoKmkoailrLWw9bVtuXW97cH0=", result.normalized)
     }
 
     @Test
     fun `multi-user iPSK colon uPSK both exact length`() {
-        val key = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU"
+        val key = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU="
         val result = SS2022KeyNormalizer.normalizePassword(key, "2022-blake3-aes-256-gcm")
         assertNull(result.error)
         assertEquals(key, result.normalized)
@@ -51,7 +51,7 @@ class SS2022KeyNormalizerTest {
 
     @Test
     fun `multi-user with one over-long segment normalizes that segment only`() {
-        val exactKey = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI"
+        val exactKey = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
         val longKey = "VGhpcyBpcyBhIG11Y2ggbG9uZ2VyIGtleSB0aGF0IGV4Y2VlZHMgMzIgYnl0ZXM="
         val result = SS2022KeyNormalizer.normalizePassword("$exactKey:$longKey", "2022-blake3-aes-256-gcm")
         assertNull(result.error)
@@ -59,7 +59,7 @@ class SS2022KeyNormalizerTest {
         assertEquals(2, parts.size)
         assertEquals(exactKey, parts[0])
         assertNotNull(parts[1])
-        assertEquals(43, parts[1].length) // hashed segment, no padding
+        assertEquals(44, parts[1].length) // hashed segment, padded
     }
 
     @Test
@@ -104,7 +104,7 @@ class SS2022KeyNormalizerTest {
 
     @Test
     fun `chacha20-poly1305 requires 32 bytes`() {
-        val key32 = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI"
+        val key32 = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
         val result = SS2022KeyNormalizer.normalizePassword(key32, "2022-blake3-chacha20-poly1305")
         assertNull(result.error)
         assertEquals(key32, result.normalized)

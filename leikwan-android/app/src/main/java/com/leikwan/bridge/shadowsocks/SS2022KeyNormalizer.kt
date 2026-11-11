@@ -44,14 +44,14 @@ object SS2022KeyNormalizer {
         when {
             decoded.size == keyLength -> {
                 // Exact match: re-encode to ensure standard base64 (no URL-safe / padding artifacts)
-                val reencoded = Base64.getEncoder().withoutPadding().encodeToString(decoded)
+                val reencoded = Base64.getEncoder().encodeToString(decoded)
                 return NormalizeResult(reencoded)
             }
             decoded.size > keyLength -> {
                 // Over-long: hash via SHA256 and truncate (sing-box server compat)
                 val sha = MessageDigest.getInstance("SHA-256").digest(decoded)
                 val truncated = sha.copyOfRange(0, keyLength)
-                val hashed = Base64.getEncoder().withoutPadding().encodeToString(truncated)
+                val hashed = Base64.getEncoder().encodeToString(truncated)
                 return NormalizeResult(hashed)
             }
             else -> {
