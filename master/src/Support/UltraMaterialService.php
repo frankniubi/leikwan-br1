@@ -419,7 +419,7 @@ final class UltraMaterialService
      * including tickets minted before the revocation epoch was recorded in them:
      * those can never be given the benefit of the doubt.
      *
-     * @return array{policy_generation:string,material_fingerprint:string,revocation_epoch:int,expires_at:int,line_keys:array<int,string>}|array{}
+     * @return array{policy_generation:string,material_fingerprint:string,revocation_epoch:int,issued_at:int,expires_at:int,line_keys:array<int,string>}|array{}
      */
     public function presentedTicketScope(string $token, int $clientId, string $deviceId, int $forwardId): array
     {
@@ -447,6 +447,7 @@ final class UltraMaterialService
             'policy_generation' => $generation,
             'material_fingerprint' => $fingerprint,
             'revocation_epoch' => (int) $payload['revocation_epoch'],
+            'issued_at' => (int) ($payload['issued_at'] ?? 0),
             'expires_at' => (int) $payload['expires_at'],
             'line_keys' => $this->lineKeys(is_array($payload['lines'] ?? null) ? $payload['lines'] : []),
         ];

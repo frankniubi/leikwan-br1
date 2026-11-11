@@ -278,7 +278,7 @@ final class TenantController extends BaseController
                 ';
             } else {
                 $clientCount = (int) ($this->db->fetchOne(
-                    'SELECT COUNT(*) AS total FROM clients WHERE user_id = :user_id',
+                    'SELECT COUNT(*) AS total FROM clients WHERE owner_user_id = :user_id',
                     ['user_id' => $user['id']]
                 )['total'] ?? 0);
                 if ($clientCount === 0) {

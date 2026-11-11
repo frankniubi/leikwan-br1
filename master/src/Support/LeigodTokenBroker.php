@@ -797,8 +797,11 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         if ($scope === []
             || !hash_equals($scope['policy_generation'], $presentedGeneration)
             || hash_equals($scope['material_fingerprint'], (string) $snapshot['fingerprint'])
-            || $scope['expires_at'] <= $now
-            || $now - (int) ($snapshot['changed_at'] ?? 0) > UltraMode::PREVIOUS_GENERATION_GRACE_SECONDS) {
+            || $scope['expires_at'] <= $now) {
+            return null;
+        }
+        $referenceAt = max((int) ($snapshot['changed_at'] ?? 0), (int) ($scope['issued_at'] ?? 0));
+        if ($now - $referenceAt > UltraMode::PREVIOUS_GENERATION_GRACE_SECONDS) {
             return null;
         }
         $epoch = (int) ($revocations['epochs'][$forwardId] ?? 0);

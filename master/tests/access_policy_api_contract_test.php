@@ -136,6 +136,47 @@ namespace {
     ), []));
     assertSame(true, $legacyHeaderResponse['ok'] ?? null, 'empty UUID header falls back to legacy device header');
 
+    foreach ([
+        'windows-desktop' => 'windows',
+        'macos-desktop' => 'macos',
+        'android-host' => 'android',
+        'ios-app' => 'ios',
+        'linux' => 'linux',
+    ] as $rawPlatform => $expectedNormalized) {
+        $statusResponse = payload($controller->accessPolicyStatus(new Request(
+            'GET',
+            '/api/client/access/policy',
+            [],
+            ['token' => 'fixture-agent-token'],
+            ['x-device-platform' => $rawPlatform, 'x-device-id' => 'device-' . $rawPlatform],
+            '',
+            '203.0.113.10'
+        ), []));
+        assertSame('SN', $statusResponse['main_province_code'] ?? null, $rawPlatform . ' suffixed platform accepted');
+        $challengeResp = payload($controller->locationChallenge(new Request(
+            'POST',
+            '/api/client/access/location/challenge',
+            [],
+            ['token' => 'fixture-agent-token', 'protocol_version' => 1, 'attempt_id' => 'attempt-' . $rawPlatform],
+            ['x-device-platform' => $rawPlatform, 'x-device-id' => 'device-' . $rawPlatform],
+            '{}',
+            '203.0.113.10'
+        ), []));
+        assertSame($expectedNormalized, $challengeResp['platform'] ?? null, $rawPlatform . ' normalized platform');
+    }
+
+    // Legacy desktop builds omitting X-Device-Platform fall back to User-Agent.
+    $uaFallbackStatus = payload($controller->accessPolicyStatus(new Request(
+        'GET',
+        '/api/client/access/policy',
+        [],
+        ['token' => 'fixture-agent-token'],
+        ['user-agent' => 'Leikwan-Windows-GUI/2026.04.09.1', 'x-device-id' => 'windows-client-77-ea95d2'],
+        '',
+        '203.0.113.10'
+    ), []));
+    assertSame('SN', $uaFallbackStatus['main_province_code'] ?? null, 'Windows User-Agent fallback accepted');
+
     $bootstrap = (string) file_get_contents(__DIR__ . '/../src/Bootstrap.php');
     foreach (['/api/client/access/location/challenge', '/api/client/access/location/report', '/api/client/access/policy'] as $route) {
         assertTrue(str_contains($bootstrap, $route), 'missing route ' . $route);
