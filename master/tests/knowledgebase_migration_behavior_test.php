@@ -82,6 +82,7 @@ require_once $root . '/src/Config.php';
 require_once $root . '/src/Database/Database.php';
 require_once $root . '/src/Support/ApiException.php';
 require_once $root . '/src/Support/LocaleResolver.php';
+require_once $root . '/src/Support/KnowledgebaseAddressGuard.php';
 require_once $root . '/src/Support/KnowledgebaseService.php';
 require_once $root . '/src/Support/MigrationRunner.php';
 
