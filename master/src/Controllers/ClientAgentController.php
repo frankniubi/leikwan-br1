@@ -30,6 +30,7 @@ use Leikwan\Master\Support\UltraLeaseSealer;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
+use Leikwan\Master\Support\UserDeviceLimit;
 use Leikwan\Master\Support\TrustedClientIpResolver;
 
 final class ClientAgentController extends BaseController
@@ -1002,7 +1003,8 @@ final class ClientAgentController extends BaseController
                     'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
                     'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
                 ]),
-                'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
+                'online_device_limit' => UserDeviceLimit::effectiveForClient($client, $this->db),
+                'online_device_limit_source' => UserDeviceLimit::sourceForClient($client, $this->db),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
                 // Hosted user nodes change marker; devices fetch the nodes

@@ -221,16 +221,13 @@ namespace {
     assertUltraHealth($status->forwardsWithLiveLease([]) === [], 'no forwards means no lease lookup');
 
     // ------------------------------------------------------------- source guards
+    // The tenant forward list deliberately hides Ultra runtime state: it
+    // tracks whether the user's app is running, not a panel-side fault.
     $tenantSource = (string) file_get_contents(__DIR__ . '/../src/Controllers/TenantController.php');
-    foreach ([
-        'runtimeHealthForForwards($ultraForwardIds)',
-        '已启用但未运行',
-    ] as $snippet) {
-        assertUltraHealth(
-            str_contains($tenantSource, $snippet),
-            'the tenant forward list must surface Ultra health: ' . $snippet
-        );
-    }
+    assertUltraHealth(
+        !str_contains($tenantSource, '尚未建立监听') && !str_contains($tenantSource, '已启用但未运行'),
+        'the tenant forward list must not surface app-dependent Ultra state'
+    );
 
     $adminSource = (string) file_get_contents(__DIR__ . '/../src/Controllers/AdminController.php');
     assertUltraHealth(

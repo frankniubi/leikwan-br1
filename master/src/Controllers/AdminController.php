@@ -1431,6 +1431,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label>
                       <select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="pending_verification"' . (((string) ($editing['status'] ?? '')) === 'pending_verification' ? ' selected' : '') . '>pending_verification</option><option value="suspended"' . (((string) ($editing['status'] ?? '')) === 'suspended' ? ' selected' : '') . '>suspended</option></select>
                     </div>
+                    <div class="field"><label>Online Device Limit Override</label><input type="number" min="0" name="online_device_limit" value="' . $this->escape((string) ($editing['online_device_limit'] ?? '')) . '" placeholder="blank = plan default"></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
                     <label>Tenant Feature Overrides</label>
@@ -4535,6 +4536,8 @@ final class AdminController extends BaseController
             $name = trim((string) $request->input('name', ''));
             $password = (string) $request->input('password', '');
             $status = (string) $request->input('status', 'active');
+            $limitInput = trim((string) $request->input('online_device_limit', ''));
+            $deviceLimit = $limitInput === '' ? null : max(1, (int) $limitInput);
             if ($email === '' || $name === '' || ($password === '' && $id <= 0)) {
                 throw new ApiException('tenant_form_invalid', 422, ['message' => 'Name and email are required, and password is required for new tenants.']);
             }
@@ -4562,6 +4565,7 @@ final class AdminController extends BaseController
                     'email_verified_at' => $emailVerifiedAt,
                     'email_verification_token' => $emailVerificationToken,
                     'verification_sent_at' => $verificationSentAt,
+                    'online_device_limit' => $deviceLimit,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
@@ -4579,6 +4583,7 @@ final class AdminController extends BaseController
                          email_verified_at = :email_verified_at,
                          email_verification_token = :email_verification_token,
                          verification_sent_at = :verification_sent_at,
+                         online_device_limit = :online_device_limit,
                          updated_at = :updated_at
                      WHERE id = :id',
                     [
@@ -4592,6 +4597,7 @@ final class AdminController extends BaseController
                         'email_verified_at' => $emailVerifiedAt,
                         'email_verification_token' => $emailVerificationToken,
                         'verification_sent_at' => $verificationSentAt,
+                        'online_device_limit' => $deviceLimit,
                         'updated_at' => $now,
                     ]
                 );

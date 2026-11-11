@@ -7,6 +7,7 @@ struct RulesView: View {
     @EnvironmentObject private var model: AppModel
     @State private var addingRule = false
     @State private var addingCountry = false
+    @State private var importingRules = false
 
     var body: some View {
         Form {
@@ -98,6 +99,11 @@ struct RulesView: View {
                     } label: {
                         Label(L("Add rule"), systemImage: "plus")
                     }
+                    Button {
+                        importingRules = true
+                    } label: {
+                        Label(L("Paste rules"), systemImage: "doc.on.clipboard")
+                    }
                 } header: {
                     Text(L("Custom rules"))
                 } footer: {
@@ -136,6 +142,11 @@ struct RulesView: View {
             .sheet(isPresented: $addingCountry) {
                 CountryPicker { code in
                     model.routing.countries[code.lowercased()] = .direct
+                }
+            }
+            .sheet(isPresented: $importingRules) {
+                ImportRulesSheet { newRules in
+                    model.routing.customRules.append(contentsOf: newRules)
                 }
             }
     }
@@ -236,6 +247,9 @@ private struct CustomRuleEditor: View {
         case .domainKeyword: return "example"
         case .ipCidr: return "1.2.3.0/24"
         case .geoip: return L("Country code, e.g. jp")
+        case .geosite, .ruleSet: return "openai"
+        case .dstPort: return "443 or 8000:8999"
+        case .domainRegex: return "^ad\\d+\\.example\\.com$"
         }
     }
 }
@@ -356,5 +370,105 @@ private struct TargetPicker: View {
                 .foregroundStyle(Palette.onSurfaceVariant)
         }
         .pickerStyle(.menu)
+    }
+}
+
+private struct ImportRulesSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var pasteText = ""
+    @State private var validationErrors: [String] = []
+    @State private var parsedRules: [CustomRoutingRule] = []
+    let onImport: ([CustomRoutingRule]) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $pasteText)
+                        .font(.footnote.monospaced())
+                        .frame(minHeight: 120)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onChange(of: pasteText) { _, newValue in
+                            updateValidation(newValue)
+                        }
+                } header: {
+                    Text(L("Paste rules"))
+                }
+
+                if !validationErrors.isEmpty {
+                    Section {
+                        ForEach(validationErrors, id: \.self) { error in
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    } header: {
+                        Text(L("Errors"))
+                    }
+                }
+
+                if !parsedRules.isEmpty {
+                    Section {
+                        ForEach(parsedRules) { rule in
+                            Text(rule.value)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.green)
+                        }
+                    } header: {
+                        HStack {
+                            Text(L("Paste rules"))
+                            Spacer()
+                            Text("\(parsedRules.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Text(L("Quick presets:"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(ClashPresets.all, id: \.name) { preset in
+                            Button {
+                                if !pasteText.isEmpty {
+                                    pasteText += "\n"
+                                }
+                                pasteText += preset.lines
+                            } label: {
+                                Text(preset.name)
+                                    .font(.caption)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 10)
+                                    .background(Palette.primaryContainer, in: Capsule())
+                                    .foregroundStyle(Palette.onPrimaryContainer)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(L("Import rules"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("Import")) {
+                        onImport(parsedRules)
+                        dismiss()
+                    }
+                    .disabled(parsedRules.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func updateValidation(_ text: String) {
+        let result = CustomRoutingRule.parseLines(text)
+        parsedRules = result.rules
+        validationErrors = result.errors
     }
 }

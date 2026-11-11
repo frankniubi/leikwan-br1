@@ -200,8 +200,8 @@ try {
         'first migration run must apply the generated seed'
     );
 
-    assertMigrationBehaviorSame(10, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'first run must produce ten topics');
-    assertMigrationBehaviorSame(22, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'first run must produce twenty-two articles');
+    assertMigrationBehaviorSame(11, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'first run must produce eleven topics');
+    assertMigrationBehaviorSame(25, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'first run must produce twenty-five articles');
 
     $firstForward = $pdo->query(
         "SELECT topic.is_pinned, topic.sort_order, article.body_html
@@ -242,8 +242,8 @@ try {
         $runner->applyPending(),
         'rerun after history removal must execute the generated seed'
     );
-    assertMigrationBehaviorSame(10, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'rerun must not add topics');
-    assertMigrationBehaviorSame(22, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'rerun must not add articles');
+    assertMigrationBehaviorSame(11, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_topics')->fetchColumn(), 'rerun must not add topics');
+    assertMigrationBehaviorSame(25, (int) $pdo->query('SELECT COUNT(*) FROM knowledgebase_articles')->fetchColumn(), 'rerun must not add articles');
     assertMigrationBehaviorSame(
         '<p>Administrator edited after migration.</p>',
         $pdo->query(
@@ -257,7 +257,7 @@ try {
 
     $service = new Leikwan\Master\Support\KnowledgebaseService($db);
     $topics = $service->listPublishedTopics('zh-Hans');
-    assertMigrationBehaviorSame(8, count($topics), 'reader service must expose the migrated custom plus default topics');
+    assertMigrationBehaviorSame(9, count($topics), 'reader service must expose the migrated custom plus default topics');
     $customResolved = $service->findPublishedTopicByKey('administrator-custom-guide', 'zh-Hans');
     assertMigrationBehavior(is_array($customResolved), 'reader service must expose the custom English article');
     assertMigrationBehaviorSame('en', $customResolved['locale_resolved'] ?? '', 'custom English article must resolve as English');

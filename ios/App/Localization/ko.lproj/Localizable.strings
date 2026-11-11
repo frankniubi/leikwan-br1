@@ -258,3 +258,10 @@
 "Update required" = "업데이트 필요";
 "A newer version of Bridge is required. Install the latest version and open the app again." = "최신 버전의 Bridge가 필요합니다. 최신 버전을 설치한 후 앱을 다시 여세요.";
 "Check again" = "다시 확인";
+
+/* Clash-compatible custom rules import */
+"Paste rules" = "규칙 붙여넣기";
+"Import rules" = "규칙 가져오기";
+"Quick presets:" = "빠른 프리셋:";
+"Valid rules: %d" = "유효한 규칙: %d";
+"Errors" = "오류";

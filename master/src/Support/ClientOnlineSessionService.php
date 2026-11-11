@@ -148,7 +148,7 @@ final class ClientOnlineSessionService
             return;
         }
 
-        $limit = max(1, (int) ($client['online_device_limit'] ?? 1));
+        $limit = UserDeviceLimit::effectiveForClient($client, $this->db);
         $row = $this->db->fetchOne(
             'SELECT COUNT(*) AS total
              FROM client_device_sessions

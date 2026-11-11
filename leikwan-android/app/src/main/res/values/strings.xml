@@ -157,6 +157,11 @@
     <string name="routing_country_suggestion_format">%1$s / %2$s (%3$s)</string>
     <string name="routing_add_category_rule">Add category rule</string>
     <string name="routing_category">Category</string>
+    <string name="routing_clash_import_title">Import Clash rules</string>
+    <string name="routing_clash_import_hint">Paste Clash-style rules (one per line)</string>
+    <string name="routing_clash_import_button">Import</string>
+    <string name="routing_clash_import_errors">Import errors:</string>
+    <string name="routing_outcome_reject">REJECT</string>
     <string name="routing_rules">Rules</string>
     <string name="routing_no_custom_rules">No custom rules yet.</string>
     <string name="routing_target_node">Target node</string>
@@ -424,4 +429,5 @@
     <string name="edit_node_title">Edit node</string>
     <string name="proxies_more_actions">More</string>
     <string name="hosted_node_delete_everywhere_confirm">Delete this node from all your devices?</string>
+    <string name="routing_refresh_rules">Refresh rules</string>
 </resources>

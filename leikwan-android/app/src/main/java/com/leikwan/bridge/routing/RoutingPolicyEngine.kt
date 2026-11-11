@@ -39,7 +39,7 @@ class RoutingPolicyEngine(
 
     /**
      * Compile the authoritative snapshot for one rebuild cycle. Unsupported or disabled rules are
-     * dropped with a warning; outcomes are never expanded beyond TUNNEL/DIRECT.
+     * dropped with a warning; outcomes are never expanded beyond TUNNEL/DIRECT/REJECT.
      */
     fun compile(
         globalDefault: UserTrafficOutcome,
@@ -49,6 +49,7 @@ class RoutingPolicyEngine(
         rulePackVersions: List<String>,
         compiledAtMs: Long,
         appRules: List<AppRoutingRule> = emptyList(),
+        clashRules: List<RoutingRule> = emptyList(),
     ): RoutingPolicySnapshot {
         val warnings = mutableListOf<String>()
 
@@ -82,6 +83,21 @@ class RoutingPolicyEngine(
             }
         }
 
+        val keptClash = clashRules.filter { rule ->
+            when {
+                !rule.enabled -> false
+                rule.kind in listOf(
+                    RoutingRuleKind.DOMAIN, RoutingRuleKind.DOMAIN_SUFFIX, RoutingRuleKind.DOMAIN_KEYWORD,
+                    RoutingRuleKind.DOMAIN_REGEX, RoutingRuleKind.IP_CIDR, RoutingRuleKind.IP_CIDR6,
+                    RoutingRuleKind.DST_PORT, RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET,
+                ) -> true
+                else -> {
+                    warnings += "Dropped rule '${rule.id}': kind ${rule.kind} is not a supported Clash rule."
+                    false
+                }
+            }
+        }
+
         return RoutingPolicySnapshot(
             protectedPaths = safePathRegistry.protectedEntries(),
             userCountryRules = keptCountry,
@@ -93,6 +109,7 @@ class RoutingPolicyEngine(
             warnings = warnings,
             precedenceVersion = 1,
             userAppRules = appRules.distinctBy { it.packageName },
+            userClashRules = keptClash,
         )
     }
 
@@ -143,7 +160,7 @@ class RoutingPolicyEngine(
 
     /**
      * Project user rules into route.rule-shaped [CompiledRouteRule]s, in precedence order
-     * (country then category). DIRECT -> outbound "direct"; TUNNEL -> proxy/node sentinel.
+     * (app rules, clash rules, country rules, category rules). DIRECT -> outbound "direct"; TUNNEL -> proxy/node sentinel; REJECT -> "reject".
      */
     fun compileRouteRules(snapshot: RoutingPolicySnapshot): List<CompiledRouteRule> {
         val compiled = mutableListOf<CompiledRouteRule>()
@@ -153,6 +170,7 @@ class RoutingPolicyEngine(
                 when (rule.outcome) {
                     UserTrafficOutcome.DIRECT -> "direct"
                     UserTrafficOutcome.TUNNEL -> rule.targetNodeId?.let { nodeSentinel(it) } ?: PROXY_OUTBOUND_SENTINEL
+                    UserTrafficOutcome.REJECT -> "reject"
                 }
             }
             .forEach { (outbound, rules) ->
@@ -163,6 +181,10 @@ class RoutingPolicyEngine(
                     packageNames = rules.map { it.packageName },
                 )
             }
+        // Clash rules next, before country/category rules
+        snapshot.userClashRules.forEach { rule ->
+            compiled += compileClashRule(rule)
+        }
         snapshot.userCountryRules.forEach { rule ->
             compiled += CompiledRouteRule(
                 ruleSetTags = listOf(geoipTag(rule.matchValue)),
@@ -184,7 +206,7 @@ class RoutingPolicyEngine(
     }
 
     /**
-     * All remote rule-set refs the snapshot needs (geoip per country + category geosite refs),
+     * All remote rule-set refs the snapshot needs (geoip per country + category geosite refs + clash geosite refs),
      * de-duplicated by tag, preserving first-seen order.
      */
     fun requiredRuleSets(snapshot: RoutingPolicySnapshot): List<RuleSetRef> {
@@ -198,12 +220,74 @@ class RoutingPolicyEngine(
                 refs.putIfAbsent(ref.tag, ref)
             }
         }
+        // Add clash rules' geosite/rule-set tags
+        snapshot.userClashRules.forEach { rule ->
+            if (rule.kind == RoutingRuleKind.GEOSITE || rule.kind == RoutingRuleKind.RULE_SET) {
+                val tag = rule.matchValue
+                if (!refs.containsKey(tag)) {
+                    refs[tag] = RuleSetRef(tag, RoutingCategoryCatalog.geositeUrl(tag))
+                }
+            }
+        }
         return refs.values.toList()
     }
 
     private fun outboundFor(rule: RoutingRule): String = when (rule.outcome) {
         UserTrafficOutcome.DIRECT -> "direct"
         UserTrafficOutcome.TUNNEL -> rule.targetNodeId?.let { nodeSentinel(it) } ?: PROXY_OUTBOUND_SENTINEL
+        UserTrafficOutcome.REJECT -> "reject"
+    }
+
+    private fun compileClashRule(rule: RoutingRule): CompiledRouteRule {
+        val outbound = outboundFor(rule)
+
+        // Build raw JSON for Clash rule types
+        val rawMatch = com.google.gson.JsonObject().apply {
+            when (rule.kind) {
+                RoutingRuleKind.DOMAIN -> {
+                    add("domain", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.DOMAIN_SUFFIX -> {
+                    add("domain_suffix", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.DOMAIN_KEYWORD -> {
+                    add("domain_keyword", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.DOMAIN_REGEX -> {
+                    add("domain_regex", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.IP_CIDR -> {
+                    add("ip_cidr", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.IP_CIDR6 -> {
+                    add("ip_cidr", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                RoutingRuleKind.DST_PORT -> {
+                    if (rule.matchValue.contains(':')) {
+                        addProperty("port_range", rule.matchValue)
+                    } else {
+                        add("port", com.google.gson.JsonArray().apply { add(rule.matchValue.toIntOrNull() ?: 0) })
+                    }
+                }
+                RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET -> {
+                    add("rule_set", com.google.gson.JsonArray().apply { add(rule.matchValue) })
+                }
+                else -> {
+                    // Shouldn't happen for valid Clash rules
+                }
+            }
+        }
+
+        return CompiledRouteRule(
+            ruleSetTags = when (rule.kind) {
+                RoutingRuleKind.GEOSITE, RoutingRuleKind.RULE_SET -> listOf(rule.matchValue)
+                else -> emptyList()
+            },
+            outbound = outbound,
+            sourceRuleId = rule.id,
+            packageNames = emptyList(),
+            rawMatch = rawMatch,
+        )
     }
 
     private fun isSupportedCountry(matchValue: String): Boolean {

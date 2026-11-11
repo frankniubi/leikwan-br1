@@ -157,6 +157,11 @@
     <string name="routing_country_suggestion_format">%1$s / %2$s（%3$s）</string>
     <string name="routing_add_category_rule">添加分类规则</string>
     <string name="routing_category">分类</string>
+    <string name="routing_clash_import_title">导入 Clash 规则</string>
+    <string name="routing_clash_import_hint">粘贴 Clash 风格的规则（每行一条）</string>
+    <string name="routing_clash_import_button">导入</string>
+    <string name="routing_clash_import_errors">导入错误：</string>
+    <string name="routing_outcome_reject">拒绝</string>
     <string name="routing_rules">规则</string>
     <string name="routing_no_custom_rules">暂无自定义规则。</string>
     <string name="routing_target_node">目标节点</string>
@@ -423,4 +428,5 @@
     <string name="edit_node_title">编辑节点</string>
     <string name="proxies_more_actions">更多</string>
     <string name="hosted_node_delete_everywhere_confirm">从你的所有设备上删除这个节点？</string>
+    <string name="routing_refresh_rules">刷新规则</string>
 </resources>

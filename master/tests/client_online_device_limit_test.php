@@ -10,6 +10,9 @@ namespace Leikwan\Master\Database {
         /** @var array<int, array<string, mixed>> */
         public array $sessions = [];
 
+        /** @var array<int, array<string, mixed>> */
+        public array $users = [];
+
         public int $nextSessionId = 1;
 
         /**
@@ -51,6 +54,14 @@ namespace Leikwan\Master\Database {
                 return ['total' => $total];
             }
 
+            if (str_contains($normalized, 'SELECT online_device_limit FROM users WHERE id = :id')) {
+                $userId = (int) ($params['id'] ?? 0);
+                if (isset($this->users[$userId])) {
+                    return ['online_device_limit' => $this->users[$userId]['online_device_limit'] ?? null];
+                }
+                return null;
+            }
+
             return null;
         }
 
@@ -85,6 +96,12 @@ namespace Leikwan\Master\Database {
             if ($table === 'clients') {
                 $id = (int) ($data['id'] ?? (count($this->clients) + 1));
                 $this->clients[$id] = ['id' => $id] + $data;
+                return $id;
+            }
+
+            if ($table === 'users') {
+                $id = (int) ($data['id'] ?? (count($this->users) + 1));
+                $this->users[$id] = ['id' => $id] + $data;
                 return $id;
             }
 
@@ -258,6 +275,94 @@ namespace {
     $client['online_device_limit'] = 1;
     $service->recordAndEnforce($client, 'device-a', $windows, 'heartbeat');
     $service->recordAndEnforce($client, 'device-b', $android, 'heartbeat');
+
+    // Test user-level overrides: create a new client with an owner and a user override.
+    $db->insert('users', [
+        'id' => 10,
+        'online_device_limit' => 5,
+    ]);
+    $db->insert('clients', [
+        'id' => 2,
+        'agent_token' => 'tok-2',
+        'owner_user_id' => 10,
+        'online_device_limit' => 1,
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+    $client2 = $db->clients[2] ?? null;
+    if (!is_array($client2)) {
+        fail('failed to seed client 2 with user override');
+    }
+
+    // The user override of 5 should supersede the client limit of 1.
+    // We can add up to 5 devices.
+    for ($i = 1; $i <= 5; $i++) {
+        $service->recordAndEnforce($client2, "override-device-$i", ['device_name' => "Device $i"], 'pull');
+        if ($service->activeCountForClient(2) !== $i) {
+            fail("expected $i active devices after recording device $i with user override");
+        }
+    }
+
+    // The 6th device should be refused.
+    $refused = refusal(static fn() => $service->recordAndEnforce($client2, 'override-device-6', ['device_name' => 'Device 6'], 'pull'));
+    if ($refused === null) {
+        fail('expected sixth device to be refused with user override limit of 5');
+    }
+    if (($refused->safeDetails()['online_device_limit'] ?? null) !== 5) {
+        fail('expected limit 5 in the refused error details, got ' . (($refused->safeDetails()['online_device_limit'] ?? 'null')));
+    }
+
+    // Test override with NULL (should fall back to client limit).
+    $db->insert('users', [
+        'id' => 11,
+        'online_device_limit' => null,
+    ]);
+    $db->insert('clients', [
+        'id' => 3,
+        'agent_token' => 'tok-3',
+        'owner_user_id' => 11,
+        'online_device_limit' => 3,
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+    $client3 = $db->clients[3] ?? null;
+    if (!is_array($client3)) {
+        fail('failed to seed client 3 with null user override');
+    }
+
+    // With NULL override, should use client limit of 3.
+    for ($i = 1; $i <= 3; $i++) {
+        $service->recordAndEnforce($client3, "null-override-device-$i", ['device_name' => "Device $i"], 'pull');
+    }
+    $refused = refusal(static fn() => $service->recordAndEnforce($client3, 'null-override-device-4', ['device_name' => 'Device 4'], 'pull'));
+    if ($refused === null) {
+        fail('expected fourth device to be refused with null user override (fallback to client limit 3)');
+    }
+
+    // Test override with 0 (should clamp to 1).
+    $db->insert('users', [
+        'id' => 12,
+        'online_device_limit' => 0,
+    ]);
+    $db->insert('clients', [
+        'id' => 4,
+        'agent_token' => 'tok-4',
+        'owner_user_id' => 12,
+        'online_device_limit' => 10,
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'updated_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+    $client4 = $db->clients[4] ?? null;
+    if (!is_array($client4)) {
+        fail('failed to seed client 4 with zero user override');
+    }
+
+    // With override 0, should clamp to 1.
+    $service->recordAndEnforce($client4, 'zero-override-device-1', ['device_name' => 'Device 1'], 'pull');
+    $refused = refusal(static fn() => $service->recordAndEnforce($client4, 'zero-override-device-2', ['device_name' => 'Device 2'], 'pull'));
+    if ($refused === null) {
+        fail('expected second device to be refused with zero user override (clamped to 1)');
+    }
 
     echo "ok\n";
 }

@@ -321,6 +321,7 @@ class TunnelOrchestrator internal constructor(
         val appRules = prefs.appRouting.routingRules().map { rule ->
             rule.copy(targetNodeId = rule.targetNodeId?.takeIf { it in pinnable })
         }
+        val clashRules = userRuleStore.clashRules()
         if (ignoreProxyNodeTargets) {
             return effectiveRoutingEngine.compile(
                 globalDefault = UserTrafficOutcome.TUNNEL,
@@ -330,6 +331,7 @@ class TunnelOrchestrator internal constructor(
                 rulePackVersions = rulePackManager.activeVersions(),
                 compiledAtMs = nowMs,
                 appRules = appRules,
+                clashRules = clashRules,
             )
         }
         if (!prefs.routingSelectorEnabled) {
@@ -341,6 +343,7 @@ class TunnelOrchestrator internal constructor(
                 rulePackVersions = rulePackManager.activeVersions(),
                 compiledAtMs = nowMs,
                 appRules = appRules,
+                clashRules = clashRules,
             )
         }
         val warnings = mutableListOf<String>()
@@ -352,6 +355,7 @@ class TunnelOrchestrator internal constructor(
             rulePackVersions = rulePackManager.activeVersions(),
             compiledAtMs = nowMs,
             appRules = appRules,
+            clashRules = clashRules,
         )
         return if (warnings.isEmpty()) snapshot else snapshot.copy(warnings = snapshot.warnings + warnings)
     }

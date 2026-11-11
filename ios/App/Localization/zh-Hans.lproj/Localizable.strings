@@ -258,3 +258,10 @@
 "Update required" = "需要更新";
 "A newer version of Bridge is required. Install the latest version and open the app again." = "需要较新版本的 Bridge。请安装最新版本后重新打开 App。";
 "Check again" = "重新检查";
+
+/* Clash-compatible custom rules import */
+"Paste rules" = "粘贴规则";
+"Import rules" = "导入规则";
+"Quick presets:" = "快速预设:";
+"Valid rules: %d" = "有效规则: %d";
+"Errors" = "错误";

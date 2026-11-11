@@ -258,3 +258,10 @@
 "Update required" = "Actualización necesaria";
 "A newer version of Bridge is required. Install the latest version and open the app again." = "Se necesita una versión más reciente de Bridge. Instala la versión más reciente y vuelve a abrir la app.";
 "Check again" = "Comprobar de nuevo";
+
+/* Clash-compatible custom rules import */
+"Paste rules" = "Pegar reglas";
+"Import rules" = "Importar reglas";
+"Quick presets:" = "Presets rápidos:";
+"Valid rules: %d" = "Reglas válidas: %d";
+"Errors" = "Errores";

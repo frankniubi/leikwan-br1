@@ -13,6 +13,8 @@ import com.leikwan.bridge.routing.RoutingCategoryCatalog
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
+import com.leikwan.bridge.routing.ClashRuleParser
+import com.leikwan.bridge.routing.ClashRuleCatalog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -27,10 +29,12 @@ data class RoutingUiState(
     val availableNodes: List<RoutingNodeOption> = emptyList(),
     val countryRules: List<RoutingRule> = emptyList(),
     val categoryRules: List<RoutingRule> = emptyList(),
+    val clashRules: List<RoutingRule> = emptyList(),
     val presetCategories: List<String> = emptyList(),
     val presetCategoryOptions: List<RoutingCategoryOption> = emptyList(),
     val countryQuery: String = "",
     val countrySuggestions: List<Country> = emptyList(),
+    val importErrors: List<String> = emptyList(),
 )
 
 data class RoutingNodeOption(
@@ -63,6 +67,7 @@ class RoutingViewModel(
     private val store: UserRoutingRuleStore = UserRoutingRuleStore.from(app),
     private val prefs: Prefs = Prefs.get(app),
     private val categoryCatalog: RoutingCategoryCatalog = RoutingCategoryCatalog.default(),
+    private val catalogRefresher: (suspend () -> Unit)? = null,
 ) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(
@@ -89,6 +94,7 @@ class RoutingViewModel(
                 availableNodes = availableNodeOptions(),
                 countryRules = store.countryRules(),
                 categoryRules = store.categoryRules(),
+                clashRules = store.clashRules(),
                 presetCategories = categoryCatalog.presetKeys(),
                 presetCategoryOptions = categoryOptions(),
             )
@@ -181,6 +187,29 @@ class RoutingViewModel(
         }
     }
 
+    fun importClash(text: String) {
+        viewModelScope.launch {
+            val catalogTags = ClashRuleCatalog.allowedGeositeTags()
+            val parsed = ClashRuleParser.parse(text, catalogTags)
+            val okLines = parsed.filter { it.isOk }.mapNotNull { it.rule }
+            val errorLines = parsed.filter { !it.isOk }.mapNotNull { it.error }
+
+            if (okLines.isNotEmpty()) {
+                store.upsertAll(okLines)
+            }
+
+            _state.value = _state.value.copy(importErrors = errorLines)
+            refreshNow()
+        }
+    }
+
+    fun refreshRules() {
+        viewModelScope.launch {
+            runCatching { catalogRefresher?.invoke() }
+            refreshNow()
+        }
+    }
+
     private suspend fun refreshNow() {
         _state.value = _state.value.copy(
             selectorEnabled = prefs.routingSelectorEnabled,
@@ -189,6 +218,7 @@ class RoutingViewModel(
             availableNodes = availableNodeOptions(),
             countryRules = store.countryRules(),
             categoryRules = store.categoryRules(),
+            clashRules = store.clashRules(),
             presetCategories = categoryCatalog.presetKeys(),
             presetCategoryOptions = categoryOptions(),
         )
