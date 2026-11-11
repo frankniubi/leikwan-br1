@@ -10,6 +10,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platform = TunnelPlatformInterface(self)
     private let runtimes = RuntimeHost()
     private let statusMonitor = StatusMonitor()
+    /// Sheds connections before jetsam kills the extension (~50 MB phys_footprint).
+    private lazy var memoryGuard = MemoryGuard { [weak self] in self?.statusMonitor.closeConnections() }
     private var launch: TunnelLaunchOptions?
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
@@ -103,6 +105,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
         statusMonitor.start()
+        memoryGuard.start()
         startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
             let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
@@ -122,6 +125,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         controlLoop = nil
         stopUltraLeases()
         stopNativeLeases()
+        memoryGuard.stop()
         statusMonitor.stop()
         stopService()
         if let server = commandServer {

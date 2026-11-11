@@ -27,15 +27,32 @@ final class StatusMonitor {
         }
         do {
             try client.connect()
+            lock.lock()
             self.client = client
+            lock.unlock()
         } catch {
             TunnelLog.shared.write("status monitor connect failed: \(error.localizedDescription)", level: 2)
         }
     }
 
     func stop() {
-        try? client?.disconnect()
+        lock.lock()
+        let current = client
         client = nil
+        lock.unlock()
+        try? current?.disconnect()
+    }
+
+    /// Closes every open connection in sing-box (frees their buffers); used by MemoryGuard.
+    func closeConnections() {
+        do {
+            lock.lock()
+            let current = client
+            lock.unlock()
+            try current?.closeConnections()
+        } catch {
+            TunnelLog.shared.write("close connections failed: \(error.localizedDescription)", level: 2)
+        }
     }
 
     func snapshot() -> LibboxStatusSnapshot {
