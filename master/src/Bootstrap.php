@@ -387,6 +387,9 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
         $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
+        $this->router->add('POST', '/api/client/client-rules', [$clientAgent, 'createClientRule']);
+        $this->router->add('PUT', '/api/client/client-rules/{id}', [$clientAgent, 'updateClientRule']);
+        $this->router->add('DELETE', '/api/client/client-rules/{id}', [$clientAgent, 'deleteClientRule']);
         $this->router->add('GET', '/api/client/hosted-nodes', [$hostedNodes, 'clientList']);
         $this->router->add('POST', '/api/client/hosted-nodes', [$hostedNodes, 'clientCreate']);
         $this->router->add('POST', '/api/client/hosted-nodes/batch', [$hostedNodes, 'clientBatchCreate']);
