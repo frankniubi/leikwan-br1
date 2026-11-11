@@ -239,3 +239,22 @@
 "Quick presets:" = "Quick presets:";
 "Valid rules: %d" = "Valid rules: %d";
 "Errors" = "Errors";
+
+/* Imported rule lists */
+"Missing rule list" = "Missing rule list";
+"Update rule list" = "Update rule list";
+"%@ rules" = "%@ rules";
+"Import rule list from URL" = "Import rule list from URL";
+"Pasted rules" = "Pasted rules";
+"Rule list URL" = "Rule list URL";
+"Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped." = "Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped.";
+"Import rule list" = "Import rule list";
+"This rule list cannot be updated" = "This rule list cannot be updated";
+"The list has no usable rules; kept the previous version" = "The list has no usable rules; kept the previous version";
+"The list has no usable rules (skipped %@)" = "The list has no usable rules (skipped %@)";
+"The rule list URL must start with http:// or https://" = "The rule list URL must start with http:// or https://";
+"Rule list download returned HTTP %@" = "Rule list download returned HTTP %@";
+"Imported “%@”: %@ rules" = "Imported “%@”: %@ rules";
+", skipped %@ (%@)" = ", skipped %@ (%@)";
+"; the list mixes policies, all of it uses the exit you chose" = "; the list mixes policies, all of it uses the exit you chose";
+"; FINAL was not imported, unmatched traffic follows the global mode" = "; FINAL was not imported, unmatched traffic follows the global mode";

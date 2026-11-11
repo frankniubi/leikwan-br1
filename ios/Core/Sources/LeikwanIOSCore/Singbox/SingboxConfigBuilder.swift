@@ -398,7 +398,16 @@ public struct SingboxConfigBuilder {
         var result: [[String: Any]] = []
         var seen = Set<String>()
         for tag in tags where seen.insert(tag).inserted {
-            result.append(BundledRuleSets.singboxEntry(tag: tag, directory: settings.ruleSetDirectory))
+            let userListPrefix = ImportedRuleListStore.tag(for: "")
+            if tag.hasPrefix(userListPrefix) {
+                let id = String(tag.dropFirst(userListPrefix.count))
+                let base = settings.userRuleSetDirectory.hasSuffix("/")
+                    ? String(settings.userRuleSetDirectory.dropLast())
+                    : settings.userRuleSetDirectory
+                result.append(ImportedRuleListStore.singboxEntry(id: id, path: base.isEmpty ? "\(id).json" : "\(base)/\(id).json"))
+            } else {
+                result.append(BundledRuleSets.singboxEntry(tag: tag, directory: settings.ruleSetDirectory))
+            }
         }
         return result
     }

@@ -266,3 +266,22 @@
 "Quick presets:" = "Presets rápidos:";
 "Valid rules: %d" = "Reglas válidas: %d";
 "Errors" = "Errores";
+
+/* Imported rule lists */
+"Missing rule list" = "Lista de reglas no encontrada";
+"Update rule list" = "Actualizar lista de reglas";
+"%@ rules" = "%@ reglas";
+"Import rule list from URL" = "Importar lista de reglas desde URL";
+"Pasted rules" = "Reglas pegadas";
+"Rule list URL" = "URL de la lista de reglas";
+"Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped." = "Archivos .list de Surge o Clash, p. ej. un conjunto de blackmatrix7. Toda la lista usa la acción que elijas; se omiten los tipos que iOS no puede evaluar (proceso, regex de URL, ASN).";
+"Import rule list" = "Importar lista de reglas";
+"This rule list cannot be updated" = "Esta lista de reglas no se puede actualizar";
+"The list has no usable rules; kept the previous version" = "La lista no tiene reglas utilizables; se conservó la versión anterior";
+"The list has no usable rules (skipped %@)" = "La lista no tiene reglas utilizables (omitidas %@)";
+"The rule list URL must start with http:// or https://" = "La URL de la lista debe empezar por http:// o https://";
+"Rule list download returned HTTP %@" = "La descarga de la lista devolvió HTTP %@";
+"Imported “%@”: %@ rules" = "Importada «%@»: %@ reglas";
+", skipped %@ (%@)" = ", omitidas %@ (%@)";
+"; the list mixes policies, all of it uses the exit you chose" = "; la lista mezcla políticas, toda usa la salida elegida";
+"; FINAL was not imported, unmatched traffic follows the global mode" = "; FINAL no se importó, el tráfico sin coincidencia sigue el modo global";

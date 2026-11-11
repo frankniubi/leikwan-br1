@@ -11,6 +11,12 @@ public enum CustomRuleType: String, Codable, Equatable, CaseIterable {
     case ruleSet = "RULE-SET"
     case dstPort = "DST-PORT"
     case domainRegex = "DOMAIN-REGEX"
+    /// An imported Surge/Clash list (value = its `ImportedRuleListStore` id). Created by the
+    /// list importer only, never typed or pasted as a line.
+    case userList = "USER-LIST"
+
+    /// Types a user can add by hand (the add-rule picker).
+    public static var manualTypes: [CustomRuleType] { allCases.filter { $0 != .userList } }
 }
 
 public enum CustomRuleOutcome: String, Codable, Equatable, CaseIterable {
@@ -49,7 +55,7 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
         guard parts.count >= 2 else { return nil }
         var typeText = parts[0].uppercased()
         if typeText == "IP-CIDR6" { typeText = "IP-CIDR" }
-        guard let type = CustomRuleType(rawValue: typeText) else { return nil }
+        guard let type = CustomRuleType(rawValue: typeText), type != .userList else { return nil }
 
         let outcome: CustomRuleOutcome = parts.count >= 3 ? CustomRoutingRule.clashPolicyOutcome(parts[2]) : .proxy
 
@@ -107,6 +113,8 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
                   let a = UInt16(range[0]), let b = UInt16(range[1]), a < b
             else { return nil }
             return raw
+        case .userList:
+            return ImportedRuleListStore.isValidID(raw) ? raw : nil
         case .domainRegex:
             // Validate regex compiles, then reject syntax sing-box's RE2 engine can't run even
             // though Foundation's ICU-backed NSRegularExpression accepts it (lookaround,
@@ -151,6 +159,7 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
         switch type {
         case .geoip: return RuleSetRef(tag: "geoip-\(normalized)")
         case .geosite, .ruleSet: return RuleSetRef(tag: "geosite-\(normalized)")
+        case .userList: return RuleSetRef(tag: ImportedRuleListStore.tag(for: normalized))
         default: return nil
         }
     }
@@ -172,6 +181,7 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
                 return ["port": [Int(normalized) ?? 0]]
             }
         case .domainRegex: return ["domain_regex": [normalized]]
+        case .userList: return ["rule_set": [ImportedRuleListStore.tag(for: normalized)]]
         }
     }
 

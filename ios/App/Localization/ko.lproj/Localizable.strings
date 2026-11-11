@@ -266,3 +266,22 @@
 "Quick presets:" = "빠른 프리셋:";
 "Valid rules: %d" = "유효한 규칙: %d";
 "Errors" = "오류";
+
+/* Imported rule lists */
+"Missing rule list" = "규칙 목록 없음";
+"Update rule list" = "규칙 목록 업데이트";
+"%@ rules" = "규칙 %@개";
+"Import rule list from URL" = "URL에서 규칙 목록 가져오기";
+"Pasted rules" = "붙여넣은 규칙";
+"Rule list URL" = "규칙 목록 URL";
+"Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped." = "Surge 또는 Clash .list 파일(예: blackmatrix7 규칙 세트). 목록 전체가 선택한 동작을 따르며, iOS에서 판별할 수 없는 유형(프로세스, URL 정규식, ASN)은 건너뜁니다.";
+"Import rule list" = "규칙 목록 가져오기";
+"This rule list cannot be updated" = "이 규칙 목록은 업데이트할 수 없습니다";
+"The list has no usable rules; kept the previous version" = "목록에 사용할 수 있는 규칙이 없어 이전 버전을 유지했습니다";
+"The list has no usable rules (skipped %@)" = "목록에 사용할 수 있는 규칙이 없습니다 (건너뜀 %@)";
+"The rule list URL must start with http:// or https://" = "규칙 목록 URL은 http:// 또는 https://로 시작해야 합니다";
+"Rule list download returned HTTP %@" = "규칙 목록 다운로드가 HTTP %@를 반환했습니다";
+"Imported “%@”: %@ rules" = "“%@” 가져옴: 규칙 %@개";
+", skipped %@ (%@)" = ", 건너뜀 %@ (%@)";
+"; the list mixes policies, all of it uses the exit you chose" = "; 목록에 여러 정책이 섞여 있어 전체가 선택한 출구를 사용합니다";
+"; FINAL was not imported, unmatched traffic follows the global mode" = "; FINAL은 가져오지 않았으며 일치하지 않는 트래픽은 전역 모드를 따릅니다";

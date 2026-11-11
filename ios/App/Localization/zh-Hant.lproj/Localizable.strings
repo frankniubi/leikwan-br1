@@ -266,3 +266,22 @@
 "Quick presets:" = "快速預設:";
 "Valid rules: %d" = "有效規則: %d";
 "Errors" = "錯誤";
+
+/* Imported rule lists */
+"Missing rule list" = "規則清單已遺失";
+"Update rule list" = "更新規則清單";
+"%@ rules" = "%@ 條規則";
+"Import rule list from URL" = "從連結匯入規則清單";
+"Pasted rules" = "貼上的規則";
+"Rule list URL" = "規則清單連結";
+"Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped." = "Surge 或 Clash 的 .list 檔案，例如 blackmatrix7 規則集。整份清單依你選擇的動作處理；iOS 無法比對的類型（行程、URL 正規表示式、ASN）會被略過。";
+"Import rule list" = "匯入規則清單";
+"This rule list cannot be updated" = "此規則清單無法更新";
+"The list has no usable rules; kept the previous version" = "清單中沒有可用規則，保留原內容";
+"The list has no usable rules (skipped %@)" = "清單中沒有可用規則（略過 %@ 條）";
+"The rule list URL must start with http:// or https://" = "規則連結必須以 http:// 或 https:// 開頭";
+"Rule list download returned HTTP %@" = "下載規則失敗：HTTP %@";
+"Imported “%@”: %@ rules" = "已匯入「%@」：%@ 條";
+", skipped %@ (%@)" = "，略過 %@ 條（%@）";
+"; the list mixes policies, all of it uses the exit you chose" = "；原清單含多種策略，已統一依所選出口";
+"; FINAL was not imported, unmatched traffic follows the global mode" = "；FINAL 未匯入，未比對流量依全域模式";
