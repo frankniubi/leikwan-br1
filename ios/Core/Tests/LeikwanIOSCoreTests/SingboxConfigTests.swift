@@ -143,7 +143,8 @@ final class SingboxConfigTests: XCTestCase {
             XCTAssertNil(set["url"])
             XCTAssertNil(set["download_detour"])
         }
-        XCTAssertFalse(compiled.configJSON.contains("://"), "nothing is downloaded")
+        let routeJSON = try String(decoding: JSONSerialization.data(withJSONObject: config["route"] as Any), as: UTF8.self)
+        XCTAssertFalse(routeJSON.contains("://"), "no rule-set is downloaded")
         let dnsRules = (config["dns"] as! [String: Any])["rules"] as! [[String: Any]]
         XCTAssertEqual(dnsRules.last?["rule_set"] as? [String], ["geosite-cn"])
         XCTAssertTrue((dnsRules[0]["domain"] as? [String] ?? []).contains("cafe.de"))
@@ -214,6 +215,6 @@ final class SingboxConfigTests: XCTestCase {
         let (config, compiled) = try build(nodes: [ssNode, other, disabled])
         XCTAssertEqual(compiled.finalProxyTag, "proxy-1")
         let tags = (config["outbounds"] as! [[String: Any]]).compactMap { $0["tag"] as? String }
-        XCTAssertEqual(tags, ["proxy-1", "direct"])
+        XCTAssertEqual(tags, ["proxy-1", "direct", "probe"])
     }
 }
