@@ -66,7 +66,11 @@ public struct SingboxConfigBuilder {
             bypassChina: bypassChinaActive
         )
         root["inbounds"] = [buildTunInbound()]
-        root["outbounds"] = try buildOutbounds(activeNodes, runtime: runtime, connectionMode: connectionMode)
+        var outbounds = try buildOutbounds(activeNodes, runtime: runtime, connectionMode: connectionMode)
+        if hasProxy, mode != .direct {
+            outbounds.append(latencyProbeOutbound(finalProxyTag: finalProxyTag))
+        }
+        root["outbounds"] = outbounds
 
         var bridgeOverride: Int?
         if runtimeOnlyProxy && connectionMode == .services && activeNodes.isEmpty && mode != .direct, let runtime = runtime {
@@ -146,6 +150,20 @@ public struct SingboxConfigBuilder {
         }
         outbounds.append(["type": "direct", "tag": "direct"])
         return outbounds
+    }
+
+    /// Synthetic latency probe: a urltest group over the active exit + direct. It is never
+    /// referenced by any route rule or route.final, so routing is unchanged; the group
+    /// self-tests on its interval and the group stream carries URLTestDelay to the UI.
+    /// libbox drops groups with fewer than 2 members, hence the two entries.
+    func latencyProbeOutbound(finalProxyTag: String) -> [String: Any] {
+        return [
+            "type": "urltest",
+            "tag": "probe",
+            "outbounds": [finalProxyTag, "direct"],
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": "60s",
+        ]
     }
 
     func proxyOutbound(_ node: ProxyNode, server: String, port: Int) throws -> [String: Any] {

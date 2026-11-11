@@ -45,6 +45,7 @@
 "This device was banned by the server" = "此设备已被服务器封禁";
 "The server does not trust this device" = "服务器不信任此设备";
 "Network speed" = "网络速度";
+"Latency through the tunnel to the active exit" = "隧道到活跃出口的延迟";
 "Time" = "时间";
 "Download" = "下载";
 "Upload" = "上传";

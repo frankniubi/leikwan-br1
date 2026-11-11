@@ -45,6 +45,7 @@
 "This device was banned by the server" = "This device was banned by the server";
 "The server does not trust this device" = "The server does not trust this device";
 "Network speed" = "Network speed";
+"Latency through the tunnel to the active exit" = "Latency through the tunnel to the active exit";
 "Time" = "Time";
 "Download" = "Download";
 "Upload" = "Upload";

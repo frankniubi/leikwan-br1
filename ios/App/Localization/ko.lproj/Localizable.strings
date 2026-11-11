@@ -45,6 +45,7 @@
 "This device was banned by the server" = "서버가 이 기기를 차단했습니다";
 "The server does not trust this device" = "서버가 이 기기를 신뢰하지 않습니다";
 "Network speed" = "네트워크 속도";
+"Latency through the tunnel to the active exit" = "활성 출구까지의 터널 지연 시간";
 "Time" = "시간";
 "Download" = "다운로드";
 "Upload" = "업로드";

@@ -183,7 +183,17 @@ class SingboxConfigBuilder(
                 nativeOutboundLease,
                 nativeLocalProxy,
                 defaultProxyNodeId,
-            ),
+            ).also { outbounds ->
+                // Synthetic latency probe (see latencyProbeOutbound): never referenced by
+                // route rules or final, so routing is unchanged. Skipped on the Ultra
+                // runtime-only bridge (finalProxyTag is a plain local bridge there, so the
+                // urltest would measure loopback, not the relay path).
+                val bridging = runtimeOnlyProxy && connectionMode == ProxyConnectionMode.SERVICES &&
+                    runtimeContext != null && activeProxyNodes.isEmpty() && !nativeMode
+                if (!nativeMode && !bridging) {
+                    outbounds.add(latencyProbeOutbound(finalProxyTag))
+                }
+            },
         )
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
         val bridgeOverride = if (
@@ -456,6 +466,23 @@ class SingboxConfigBuilder(
     private fun routeRuleDirectOutbound(tag: String): JsonObject = JsonObject().apply {
         addProperty("type", "direct")
         addProperty("tag", tag)
+    }
+
+    /**
+     * Synthetic latency probe: a urltest group over the active exit + direct. It is never
+     * referenced by any route rule or route.final, so routing is unchanged; the group
+     * self-tests on its interval and the group stream carries URLTestDelay to the UI.
+     * libbox drops groups with fewer than 2 members, hence the two entries.
+     */
+    private fun latencyProbeOutbound(finalProxyTag: String): JsonObject = JsonObject().apply {
+        addProperty("type", "urltest")
+        addProperty("tag", "probe")
+        add("outbounds", JsonArray().apply {
+            add(finalProxyTag)
+            add("direct")
+        })
+        addProperty("url", "http://www.gstatic.com/generate_204")
+        addProperty("interval", "60s")
     }
 
     private fun buildEndpoints(proxyNodes: List<ProxyNode>): JsonArray {
