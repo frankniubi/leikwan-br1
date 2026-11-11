@@ -52,27 +52,29 @@ public enum SS2022KeyNormalizer {
             // Exact match: re-encode to canonical unpadded base64
             let reencoded = decoded.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
             return NormalizeResult(normalized: reencoded)
-        case keyLength + 1...:
+        default:
+            break
+        }
+        if decoded.count > keyLength {
             // Over-long: hash via SHA256 and truncate (sing-box server compat)
             let sha = SHA256.hash(data: decoded)
             let truncated = Data(sha.prefix(keyLength))
             let hashed = truncated.base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
             return NormalizeResult(normalized: hashed)
-        default:
-            let methodName: String
-            switch keyLength {
-            case 16:
-                methodName = "2022-blake3-aes-128-gcm"
-            case 32:
-                methodName = "2022-blake3-aes-256-gcm / chacha20-poly1305"
-            default:
-                methodName = "SS2022"
-            }
-            return NormalizeResult(
-                normalized: "",
-                error: "密钥长度 \(decoded.count) 字节，\(methodName) 需要 \(keyLength) 字节"
-            )
         }
+        let methodName: String
+        switch keyLength {
+        case 16:
+            methodName = "2022-blake3-aes-128-gcm"
+        case 32:
+            methodName = "2022-blake3-aes-256-gcm / chacha20-poly1305"
+        default:
+            methodName = "SS2022"
+        }
+        return NormalizeResult(
+            normalized: "",
+            error: "密钥长度 \(decoded.count) 字节，\(methodName) 需要 \(keyLength) 字节"
+        )
     }
 
     /// Normalize a full password string (may contain ':' for multi-user mode).
