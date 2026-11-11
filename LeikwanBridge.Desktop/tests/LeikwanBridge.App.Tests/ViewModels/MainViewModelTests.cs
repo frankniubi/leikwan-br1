@@ -399,7 +399,7 @@ public sealed class MainViewModelTests
             vm.ProxyEditor.Server = "east.example.test";
             vm.ProxyEditor.PortText = "30526";
             vm.ProxyEditor.Method = "2022-blake3-aes-256-gcm";
-            vm.ProxyEditor.Password = "test-secret";
+            vm.ProxyEditor.Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
 
             await vm.SaveProxyProfileAsync();
 

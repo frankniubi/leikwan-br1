@@ -1,0 +1,214 @@
+name: SS2022 Interop
+
+# Proves the client-side SS2022 key normalizer makes the app's generated sing-box outbound
+# connect to the server flavours users actually run:
+#   - a sing-box server with an over-long key (server hashes SHA256-truncated; strict sing-box
+#     clients reject such keys with "bad key length" unless the key is normalized),
+#   - a Xray server with a raw 32-char ASCII password (Xray accepts raw bytes; sing-box clients
+#     only accept base64).
+# The client config comes straight from the app's own SingboxConfigBuilder (unit-test dump);
+# tools/ss2022-interop/harness.py rewrites only the inbound and the server address -- never the
+# normalized password -- and asserts a real TCP round-trip through the tunnel.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/macos-client
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ss2022-interop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-config:
+    name: Android client config dump
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Build client config with the app's builder
+        shell: bash
+        working-directory: leikwan-android
+        env:
+          SS2022_INTEROP_OUT: ${{ runner.temp }}/ss2022-configs
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest \
+            --tests '*SS2022InteropConfigDumpTest' \
+            --tests 'com.leikwan.bridge.shadowsocks.SS2022KeyNormalizerTest'
+          ls -la "$SS2022_INTEROP_OUT"
+          test -s "$SS2022_INTEROP_OUT/android-ss2022-overlong.json"
+
+      - name: Upload Android client config
+        uses: actions/upload-artifact@v4
+        with:
+          name: ss2022-config-android
+          path: ${{ runner.temp }}/ss2022-configs/android-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-config:
+    name: iOS client config dump
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build client config with the app's builder
+        shell: bash
+        working-directory: ios/Core
+        env:
+          SS2022_INTEROP_OUT: ${{ runner.temp }}/ss2022-configs
+        run: |
+          set -euo pipefail
+          swift test --filter 'SS2022InteropConfigDumpTests|SS2022KeyNormalizerTests'
+          ls -la "$SS2022_INTEROP_OUT"
+          test -s "$SS2022_INTEROP_OUT/ios-ss2022-overlong.json"
+
+      - name: Upload iOS client config
+        uses: actions/upload-artifact@v4
+        with:
+          name: ss2022-config-ios
+          path: ${{ runner.temp }}/ss2022-configs/ios-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  cores:
+    name: Cores (${{ matrix.core }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The sing-box the iOS app ships (same pin routing-e2e verifies against ios-client.yml).
+          - core: sing-box
+            version: v1.13.12
+            tags: with_gvisor,with_low_memory,with_clash_api,badlinkname,tfogo_checklinkname0,grpcnotrace
+          - core: xray
+            version: v25.9.11
+            tags: ""
+    steps:
+      - name: Set up Go
+        if: ${{ matrix.core == 'sing-box' }}
+        id: go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Build sing-box
+        if: ${{ matrix.core == 'sing-box' }}
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          TAGS: ${{ matrix.tags }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          export GOBIN="$RUNNER_TEMP/sing-box-bin"
+          mkdir -p "$GOBIN"
+          ldflags="-checklinkname=0 -s -w -X github.com/sagernet/sing-box/constant.Version=$VERSION"
+          go install -trimpath -ldflags="$ldflags" -tags "$TAGS" \
+            "github.com/sagernet/sing-box/cmd/sing-box@$VERSION"
+          "$GOBIN/sing-box" version
+
+      - name: Download Xray release
+        if: ${{ matrix.core == 'xray' }}
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/xray.zip" \
+            "https://github.com/XTLS/Xray-core/releases/download/$VERSION/Xray-linux-64.zip"
+          mkdir -p "$RUNNER_TEMP/xray-bin"
+          unzip -o "$RUNNER_TEMP/xray.zip" -d "$RUNNER_TEMP/xray-bin" xray
+          chmod +x "$RUNNER_TEMP/xray-bin/xray"
+          "$RUNNER_TEMP/xray-bin/xray" version
+
+      - name: Upload core
+        uses: actions/upload-artifact@v4
+        with:
+          name: ss2022-core-${{ matrix.core }}
+          path: |
+            ${{ runner.temp }}/sing-box-bin/sing-box
+            ${{ runner.temp }}/xray-bin/xray
+          if-no-files-found: error
+          retention-days: 14
+
+  interop:
+    name: Interop (${{ matrix.platform }} -> ${{ matrix.server }})
+    needs: [android-config, ios-config, cores]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [android, ios]
+        server: [singbox, xray]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download client config
+        uses: actions/download-artifact@v4
+        with:
+          name: ss2022-config-${{ matrix.platform }}
+          path: ${{ runner.temp }}/configs
+
+      - name: Download sing-box
+        uses: actions/download-artifact@v4
+        with:
+          name: ss2022-core-sing-box
+          path: ${{ runner.temp }}/sing-box
+
+      - name: Download xray
+        if: ${{ matrix.server == 'xray' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ss2022-core-xray
+          path: ${{ runner.temp }}/xray
+
+      - name: Run interop harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/sing-box/sing-box"
+          chmod +x "$RUNNER_TEMP/xray/xray" || true
+          config="$RUNNER_TEMP/configs/${{ matrix.platform }}-ss2022-overlong.json"
+          test -s "$config"
+          args=(--server "${{ matrix.server }}" --config "$config" \
+                --singbox "$RUNNER_TEMP/sing-box/sing-box" \
+                --out "$RUNNER_TEMP/interop-out")
+          if [ "${{ matrix.server }}" = "xray" ]; then
+            args+=(--xray "$RUNNER_TEMP/xray/xray")
+          fi
+          python3 tools/ss2022-interop/harness.py "${args[@]}"
+
+      - name: Upload logs and results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ss2022-interop-${{ matrix.platform }}-${{ matrix.server }}
+          path: ${{ runner.temp }}/interop-out/
+          if-no-files-found: ignore
+          retention-days: 14

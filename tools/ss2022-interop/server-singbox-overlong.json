@@ -1,0 +1,21 @@
+{
+  "_comment": "sing-box server, multi-user SS2022. The iPSK decodes to 47 bytes (> 32): sing-box's server hashes over-long keys (SHA256 truncated) while strict sing-box clients reject them with 'bad key length'. The app's normalizer must convert the stored iPSK to base64(SHA256(decoded)[:32]) for the handshake to succeed. The uPSK is exact-length base64 and must pass through unchanged.",
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "ss-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18388,
+      "method": "2022-blake3-aes-256-gcm",
+      "password": "VGhpcyBpcyBhIG11Y2ggbG9uZ2VyIGtleSB0aGF0IGV4Y2VlZHMgMzIgYnl0ZXM:dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU",
+      "users": [
+        { "name": "u", "password": "dXNlci11UFNLLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU" }
+      ]
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": { "final": "direct" }
+}

@@ -401,14 +401,21 @@ final class HostedNodeSpec
             self::invalid('password');
         }
         if (str_starts_with($method, '2022-')) {
-            // 2022 methods take base64 PSKs of the cipher's key length; a
-            // multi-user server takes "iPSK:uPSK".
+            // 2022 methods take base64 PSKs of the cipher's key length; a multi-user server
+            // takes "iPSK:uPSK". Accept keys that normalize to valid length: over-long keys
+            // (hashed to length by sing-box servers), raw ASCII keys (Xray compat), and exact.
             $keyLength = $method === '2022-blake3-aes-128-gcm' ? 16 : 32;
             foreach (explode(':', $password) as $psk) {
-                $raw = base64_decode($psk, true);
-                if (!is_string($raw) || strlen($raw) !== $keyLength) {
+                $decoded = base64_decode($psk, true);
+                if ($decoded === false || !is_string($decoded)) {
+                    // Not valid base64 → treat as raw ASCII bytes (Xray compat)
+                    $decoded = $psk;
+                }
+                $len = strlen($decoded);
+                if ($len < $keyLength) {
                     self::invalid('password');
                 }
+                // Accept exact match or over-long (clients normalize both to sing-box compat form)
             }
         }
 
