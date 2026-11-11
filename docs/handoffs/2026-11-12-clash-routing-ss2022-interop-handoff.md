@@ -1,7 +1,7 @@
 # Handoff: Clash 分流 + SS2022 互通 + 用户功能包（2026-11-11 → 2026-11-12）
 
 **分支**: `feat/clash-routing-user-device-limit`（worktree `C:\Users\frankniubi\Downloads\leikwan-feature`）
-**HEAD**: `92a61be5`（相对起点 `426c35f5`：104 文件，+9990/-4054）
+**HEAD**: `d3dd335c`（第二轮：F4 面板 + F3 双端 + iOS 内存守护 + Ultra 延迟，见「第二轮（2026-11-12）」）
 **CI 状态**: 全绿 —— Android/Windows/Linux/macOS client、Routing E2E、**SS2022 Interop 4/4**（iOS/Android × sing-box/Xray 真实握手成功）
 **生产状态**: 面板侧已部署（2026-11-11 04:00Z，备份 clash-devlimit-20261111-035857）；**客户端未发版、分支未合 master**。用户明确要求：现阶段不动生产。
 
@@ -49,28 +49,29 @@
 
 **铁律沉淀**：SS2022 密钥一律**标准 padded base64**（`base64.StdEncoding`）。详见 memory `ss2022-key-normalization-interop-green`。
 
-## 未完成 / 下一步
+## 第二轮（2026-11-12）：剩余项全部实现
 
-### F3 — Surge .list 规则导入（Android + iOS，已设计未实施）
-- 用户场景：`https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/ChinaMax/ChinaMax_All.list` 这类规则表
-- 方案（plan agent 已文件级细化）：客户端 fetch → `SurgeListConverter` 转 sing-box source JSON → `type:local, format:source` 本地引用（ChinaMax 级别可行，无路由规则爆炸）
-- 支持：DOMAIN*/IP-CIDR*/DST-PORT + AND/OR/NOT 逻辑规则；整表单一 outcome；PROCESS-NAME/URL-REGEX/IP-ASN/FINAL 跳过计数；限制 4MB/20000 条/RE2 检查
-- 关键约束：iOS `RuleSetInstaller.ensureInstalled()` 会清 app group ruleSetDirectory → 用户列表必须放**独立目录**（新 `AppGroup.userRuleSetDirectory`）
-- 新文件：Android `SurgeListConverter.kt` + `ImportedRuleListStore.kt`（文件存储，避免 Room 迁移）+ `RuleListFetcher.kt`；iOS `SurgeListConverter.swift` + `ImportedRuleLists.swift`；两端 `RuleSetRef` 加 `localPath`
-- 测试：两端转换器全类别 fixture；builder 测试
+| Commit | 内容 |
+|---|---|
+| `27aca9a0` | F4 schema：`20260722_add_route_directions_client_rules.sql`（**无 FK**，按 20261012 先例；测试会拒绝 FK）+ schema.sql 镜像 |
+| `e9cad232` | F4 PR1：`RouteDirectionService` / `ClientRuleValidator` / ProvisioningService CRUD（sync_version 乐观并发、tombstone、scope 归属）；heartbeat 记录两个 capability；pull 合并五键 + 规则摘要进 `config_revision`；`POST/PUT/DELETE /api/client/client-rules[/{id}]`（pull 同款设备门 + 30/min） |
+| `0f27706f` | 运维 CLI `master/scripts/route_directions.php list/save/entitle` |
+| `4d01caee` | F4 PR2：`/admin/route-directions`（方向 + ready 绑定、套餐授权、规则列表/删除；CSRF；zh 文案） |
+| `09c8f727` | F3 Android：`SurgeListConverter` + `ImportedRuleListStore`（filesDir 文件）+ `RuleListFetcher`；`IMPORTED_LIST` → `type local, format source`；路由页 URL 导入 / 更新；>200 行或含 AND/OR/NOT 的粘贴走列表 |
+| `cf95a94c` | F3 iOS：同规格 Core 转换器；app group `user-rule-sets/`（**不在** `rule-sets/`，RuleSetInstaller 会清空它）；`USER-LIST` 规则仅导入器可建；5 语言文案 |
+| `8e1ee2bc` | iOS 内存守护：phys_footprint 5 s 采样 + memory-pressure；44 MB 或压力事件 → CloseConnections（20 s 冷却），36 MB 记日志 |
+| `ddb24c9b` / `d3dd335c` | F2 phase 2：Ultra 模式（无 probe 组）对正在用的 relay 计时 TCP 握手（RST 也算一个 RTT），两端 |
 
-### F4 — 用户规则云端同步（面板侧；**重大发现：repo 里已有批准方案**）
-- **`docs/superpowers/plans/2026-07-22-backend-admin-route-direction-client-rules.md`** 是 2,679 行的已批准实施方案（精确 DDL、API 契约、TDD 任务清单），Android 客户端半**已完全实现并兼容**（PanelApi 端点、DTO、ClientRouteRuleStore pending-op 状态机、UI 全部就绪）——**F4 只发面板即可点亮整个 Android 功能面，零客户端发版**
-- 实施 = 按批准方案 + 一个小修正：把规则摘要接入 `config_revision`（`stableConfigSnapshot` 的 `$revisionExtra`，让规则写入唤醒长轮询）——批准方案漏了这步
-- 分两个 PR：PR1 = schema + services + client API + pull merge（激活端到端）；PR2 = admin 控制台（可延后）
-- ⚠️ 批准方案的迁移用了 FK 约束，而项目纪律（hosted-nodes 迁移先例）是无 FK + 应用层清理——合并前先跑 schema 测试对 prod-shaped dump 验证，有漂移就发无 FK 变体
-- ⚠️ 批准方案的 capability 字段需加进 `ClientAgentController::heartbeat` 的 `mergeRuntimeState`（Android 已发送，面板缺失，~line 1681）
+与批准方案的有意偏差（都写在 commit message 里）：规则摘要进 config_revision；ready 绑定必须同一个 TCP/UDP 端口；URL 之类带冒号的垃圾报 `invalid_destination_ip`；pull 中 route-rule 查询失败不影响 pull。
 
-### 其它遗留
-- **分支未合 master、客户端未发版**——F1/F2/SS2022 修复要以可选更新发版（绝不强推）
-- **iOS 内存 50MB quick wins 未做**（Surge 逆向结论，memory `ios-ne-50mb-memory-surge-lessons`）：phys_footprint 三阈值监控、memory-pressure source、MTU 9000→1500
-- **F2 phase 2**：Ultra 桥接模式下 probe 测的是回环；诚实修法是对 relay endpoint 的 RTT 探测（iOS activeEndpoints / Android protectedConnectivity 已有数据）
-- 接打电话中断 = 蜂窝↔WiFi 切换触发 NE 重建 + 同样的 pull 空窗（F1 已缓解）；不是选线频率问题
+**验证**：面板全量 447 + 新增 4 个测试通过，16 个失败与基线完全一致（本地缺 artifact / RSA）；Android 102/102 套件；CI 快照 `3d3811aa`（F4+F3）Android / Linux+panel / SS2022 Interop / Routing E2E 全绿，iOS app 构建走 `ci/ios-rule-lists`。
+
+## 仍未做（需要你决定或需要生产）
+
+- **部署 F4 面板**（生产冻结中）：先在 prod-shaped dump 上跑 `route_direction_schema_test.php` + `route_direction_client_rules_test.php`；只新增迁移文件；部署后用 admin 页或 CLI 建方向（ready = helper forward + 同一本地端口）并授权给套餐。
+- **客户端发版**（可选更新，绝不强推）：F1/F2/F3/SS2022/内存守护都在分支上，未合 master。
+- iOS 大列表（ChinaMax 级）仍由 NE 内的 sing-box 解析进 Go heap；内存守护兜底，Surge 式「主 App 预编译」是后续结构项。
+- MTU 9000 未改（无测速数据前不动吞吐）。
 
 ## 验证清单（接手后跑一遍）
 
