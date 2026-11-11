@@ -30,9 +30,15 @@ public enum SS2022KeyNormalizer {
             return NormalizeResult(normalized: "", error: "PSK 为空")
         }
 
-        // Attempt base64 decode
+        // Attempt base64 decode. Apple's Data(base64Encoded:) requires correct
+        // padding (a 43-char unpadded key returns nil), so re-pad like the C#
+        // normalizer before giving up and treating the input as raw ASCII.
+        var b64 = psk.trimmingCharacters(in: .whitespaces)
+        if b64.count % 4 != 0 {
+            b64 += String(repeating: "=", count: 4 - b64.count % 4)
+        }
         let decoded: Data
-        if let b64Data = Data(base64Encoded: psk) {
+        if let b64Data = Data(base64Encoded: b64) {
             decoded = b64Data
         } else {
             // Not valid base64 → raw ASCII of exactly the required length (Xray compat)
@@ -94,7 +100,9 @@ public enum SS2022KeyNormalizer {
             return NormalizeResult(normalized: password)
         }
 
-        let segments = password.split(separator: ":").map(String.init)
+        // Keep empty segments so an empty password reaches normalizePSK's
+        // "PSK 为空" error (Swift's split(separator:) drops empty parts).
+        let segments = password.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         var normalized: [String] = []
 
         for (idx, seg) in segments.enumerated() {
