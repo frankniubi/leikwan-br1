@@ -150,8 +150,8 @@ jobs:
         with:
           name: ss2022-core-${{ matrix.core }}
           path: |
-            ${{ runner.temp }}/sing-box-bin/sing-box
-            ${{ runner.temp }}/xray-bin/xray
+            ${{ runner.temp }}/sing-box-bin/*
+            ${{ runner.temp }}/xray-bin/*
           if-no-files-found: error
           retention-days: 14
 
@@ -187,6 +187,7 @@ jobs:
         with:
           name: ss2022-core-xray
           path: ${{ runner.temp }}/xray
+
 
       - name: Run interop harness
         shell: bash
