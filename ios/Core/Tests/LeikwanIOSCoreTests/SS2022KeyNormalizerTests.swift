@@ -47,11 +47,11 @@ final class SS2022KeyNormalizerTests: XCTestCase {
     }
 
     func testUnderLengthKeyRejected() {
-        let key = "YWJjZGVmZ2hpamtsbQ" // 16 decoded bytes
+        let key = "YWJjZGVmZ2hpamtsbQ" // 13 decoded bytes
         let result = SS2022KeyNormalizer.normalizePassword(key, method: "2022-blake3-aes-256-gcm")
         XCTAssertNotNil(result.error)
-        XCTAssertTrue(result.error!.contains("16 字节"))
-        XCTAssertTrue(result.error!.contains("32 字节"))
+        XCTAssertTrue(result.error!.contains("13 字节"), "actual: \(result.error ?? "")")
+        XCTAssertTrue(result.error!.contains("32 字节"), "actual: \(result.error ?? "")")
     }
 
     func testEmptyPSKRejected() {
