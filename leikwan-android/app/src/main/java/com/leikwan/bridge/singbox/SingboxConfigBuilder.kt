@@ -890,9 +890,10 @@ class SingboxConfigBuilder(
         }
 
         route.add("rules", rules)
-        if (nativeRestrictedScope) {
-            route.addProperty("default_domain_resolver", "remote")
-        }
+        // sing-box 1.14 drops the implicit outbound domain resolver, and its CLI already treats a
+        // missing one as fatal on 1.14 pre-releases. Name it explicitly: restricted native scopes
+        // resolve through the remote server; everything else uses the direct DNS server, matching iOS.
+        route.addProperty("default_domain_resolver", if (nativeRestrictedScope) "remote" else "direct-dns")
         // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
         val defaultTunnelTag = snapshot?.globalDefaultNodeId?.let { "proxy-$it" } ?: finalProxyTag
         route.addProperty(
