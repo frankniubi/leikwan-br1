@@ -132,7 +132,24 @@ internal static class Program
             eventArgs.Cancel = true;
             shutdown.Cancel();
         };
-        return await HeadlessCli.RunAsync(arguments, controller, updater, Console.Out, Console.Error, shutdown.Token)
+        Func<CancellationToken, Task<DebugManualUploadResult>>? logUploader = null;
+        var clientId = config.ActiveClientId > 0 ? config.ActiveClientId : config.ClientId;
+        if (!string.IsNullOrWhiteSpace(config.MasterUrl) && !string.IsNullOrWhiteSpace(config.AgentToken) && clientId > 0)
+        {
+            logUploader = async token =>
+            {
+                using var api = new MasterApiClient(
+                    config.MasterUrl,
+                    config.AgentToken,
+                    MasterApiClient.BuildWindowsDeviceId(clientId, Environment.MachineName),
+                    $"Leikwan Bridge on {Environment.MachineName}",
+                    "windows-desktop",
+                    leaseKeyStore: UltraLeaseKeyStore.ForDirectory(config.GetEffectiveStateDir()));
+                var uploader = new DebugLogUploader(controller.LogDirectory, config.GetEffectiveStateDir());
+                return await uploader.UploadNowAsync(api, ct: token).ConfigureAwait(false);
+            };
+        }
+        return await HeadlessCli.RunAsync(arguments, controller, updater, Console.Out, Console.Error, shutdown.Token, logUploader)
             .ConfigureAwait(false);
     }
 

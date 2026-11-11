@@ -1347,9 +1347,15 @@
                         <!-- Log View -->
                         <DockPanel x:Name="LogPanel" Visibility="Collapsed">
                             <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
-                                <Button Style="{StaticResource GhostButton}" Content="{DynamicResource LogClear}"
-                                        Command="{Binding ClearLogCommand}" DockPanel.Dock="Right"
-                                        HorizontalAlignment="Right"/>
+                                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                    <TextBlock Text="{Binding LogUploadSummary}" VerticalAlignment="Center"
+                                               Margin="0,0,12,0" FontFamily="Consolas" FontSize="11.5"
+                                               Foreground="{DynamicResource MutedTextBrush}"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource LogUpload}"
+                                            Command="{Binding UploadLogsCommand}" Margin="0,0,8,0"/>
+                                    <Button Style="{StaticResource GhostButton}" Content="{DynamicResource LogClear}"
+                                            Command="{Binding ClearLogCommand}"/>
+                                </StackPanel>
                             </DockPanel>
                             <Border Style="{StaticResource CardBorder}" Padding="10" Margin="0,0,0,24">
                                 <ListBox ItemsSource="{Binding LogEntries}" FontFamily="Consolas" FontSize="11"

@@ -42,12 +42,13 @@ public sealed record ClientServiceState(
 public static class HeadlessCli
 {
     public const string Usage =
-        "usage: leikwan <status|start|stop|restart|logs|version|doctor|update> [options]\n"
+        "usage: leikwan <status|start|stop|restart|logs|upload-logs|version|doctor|update> [options]\n"
         + "  status            service state, client state and forwards\n"
         + "  start             start the service or daemon\n"
         + "  stop              stop it (forwards are stopped cleanly)\n"
         + "  restart           stop then start\n"
         + "  logs [-n 40] [-f] show the client log (optionally follow)\n"
+        + "  upload-logs       upload redacted client logs to the panel\n"
         + "  doctor            service, status file, log and panel reachability\n"
         + "  version           installed client version\n"
         + "  update [--check]  update to the published version (--check only reports)\n";
@@ -58,7 +59,8 @@ public static class HeadlessCli
         IClientUpdateService? updater,
         TextWriter output,
         TextWriter error,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<CancellationToken, Task<DebugManualUploadResult>>? logUploader = null)
     {
         if (args.Count == 0 || IsHelp(args[0]))
         {
@@ -80,6 +82,8 @@ public static class HeadlessCli
                 return await MutateAsync(service, "restart", service.RestartAsync, output, error, ct).ConfigureAwait(false);
             case "logs":
                 return Logs(service, rest, output, error, ct);
+            case "upload-logs":
+                return await UploadLogsAsync(logUploader, output, error, ct).ConfigureAwait(false);
             case "version":
                 output.WriteLine(service.Version);
                 return 0;
@@ -91,6 +95,32 @@ public static class HeadlessCli
                 error.WriteLine($"unknown command: {command}");
                 error.WriteLine(Usage.TrimEnd());
                 return 2;
+        }
+    }
+
+    private static async Task<int> UploadLogsAsync(
+        Func<CancellationToken, Task<DebugManualUploadResult>>? logUploader,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken ct)
+    {
+        if (logUploader is null)
+        {
+            error.WriteLine("upload-logs is unavailable: client credentials are not configured");
+            return 1;
+        }
+        try
+        {
+            var result = await logUploader(ct).ConfigureAwait(false);
+            output.WriteLine($"status    : {result.Status}");
+            output.WriteLine($"reference : {result.ReferenceCode}");
+            output.WriteLine($"uploaded  : {result.Bytes} bytes ({result.Chunks} chunk(s))");
+            return string.Equals(result.Status, "complete", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error.WriteLine($"upload-logs failed: {ex.Message}");
+            return 1;
         }
     }
 

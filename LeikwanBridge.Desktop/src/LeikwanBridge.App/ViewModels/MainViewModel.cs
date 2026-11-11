@@ -1801,8 +1801,60 @@ public partial class MainViewModel : ObservableObject
         AddLog("Stopped all forwards.");
     }
 
+    [ObservableProperty]
+    private bool _isUploadingLogs;
+
+    [ObservableProperty]
+    private string _logUploadSummary = string.Empty;
+
     [RelayCommand]
     private void ClearLog() => LogEntries.Clear();
+
+    [RelayCommand]
+    private async Task UploadLogsAsync()
+    {
+        if (IsUploadingLogs)
+            return;
+        if (string.IsNullOrWhiteSpace(_config.MasterUrl) || string.IsNullOrWhiteSpace(_config.AgentToken))
+        {
+            LogUploadSummary = "Not signed in";
+            AddLog("Cannot upload logs: client is not signed in.");
+            return;
+        }
+        IsUploadingLogs = true;
+        LogUploadSummary = string.Empty;
+        try
+        {
+            var clientId = _config.ActiveClientId > 0 ? _config.ActiveClientId : _config.ClientId;
+            using var tempApi = _api is not null
+                ? null
+                : new MasterApiClient(
+                    _config.MasterUrl,
+                    _config.AgentToken,
+                    MasterApiClient.BuildWindowsDeviceId(clientId, Environment.MachineName),
+                    $"Leikwan Bridge on {Environment.MachineName}",
+                    "windows-desktop",
+                    leaseKeyStore: UltraLeaseKeyStore.ForDirectory(_config.GetEffectiveStateDir()));
+            var api = _api ?? tempApi!;
+            var logDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "Leikwan", "ClientAgent", "logs");
+            var uploader = new DebugLogUploader(logDir, _config.GetEffectiveStateDir());
+            var snapshotLines = LogEntries.ToArray();
+            var result = await Task.Run(() => uploader.UploadNowAsync(api, snapshotLines, _lifecycleCts.Token));
+            LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
+            AddLog($"Uploaded diagnostic logs (ref: {result.ReferenceCode}, {result.Bytes} bytes).");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LogUploadSummary = ex.Message;
+            AddLog($"Failed to upload diagnostic logs: {ex.Message}");
+        }
+        finally
+        {
+            IsUploadingLogs = false;
+        }
+    }
 
     public AgentConfig Config => _config;
     public WindowsClientAppArtifact? AvailableUpdateArtifact => _availableUpdateArtifact;

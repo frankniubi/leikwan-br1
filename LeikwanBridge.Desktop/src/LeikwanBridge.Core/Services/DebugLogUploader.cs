@@ -77,7 +77,8 @@ public sealed class DebugLogUploader
             }
             catch (IOException) { continue; }
             if (raw.Length == 0) continue;
-            var sanitized = Encoding.UTF8.GetBytes(Redact(Encoding.UTF8.GetString(raw)));
+            var header = $"=== file: {Path.GetFileName(file)} ===\n";
+            var sanitized = Encoding.UTF8.GetBytes(header + Redact(Encoding.UTF8.GetString(raw)) + "\n");
             if (sanitized.Length > ByteLimit - bytes)
                 Array.Resize(ref sanitized, (int)(ByteLimit - bytes));
             var fileHash = Convert.ToHexString(SHA256.HashData(sanitized)).ToLowerInvariant();
@@ -129,6 +130,53 @@ public sealed class DebugLogUploader
         state.Completed = true;
         SaveState(state);
         return new("complete", chunks, bytes);
+    }
+
+    /// <summary>
+    /// Client-initiated one-click log upload: opens a fresh server collection window,
+    /// uploads optional in-memory lines plus all local log files, and returns the short
+    /// reference code the user can share with support.
+    /// </summary>
+    public async Task<DebugManualUploadResult> UploadNowAsync(
+        MasterApiClient api,
+        IReadOnlyList<string>? extraLines = null,
+        CancellationToken ct = default)
+    {
+        var started = await api.StartDebugCollectionAsync(ct).ConfigureAwait(false);
+        var uuid = Guid.Parse(started.Collection.Uuid).ToString();
+        var state = new UploadState { CollectionUuid = uuid };
+        var extraChunks = 0;
+        var extraBytes = 0L;
+
+        var headerBuilder = new StringBuilder();
+        headerBuilder.AppendLine($"=== client-initiated upload utc={DateTimeOffset.UtcNow:O} os={Environment.OSVersion} ===");
+        if (extraLines is { Count: > 0 })
+        {
+            headerBuilder.AppendLine("=== in-memory activity ===");
+            foreach (var line in extraLines)
+                headerBuilder.AppendLine(line);
+        }
+        var headerBytes = Encoding.UTF8.GetBytes(Redact(headerBuilder.ToString()));
+        for (var offset = 0; offset < headerBytes.Length; offset += ChunkBytes)
+        {
+            var length = Math.Min(ChunkBytes, headerBytes.Length - offset);
+            var chunk = headerBytes.AsSpan(offset, length).ToArray();
+            var sha = Convert.ToHexString(SHA256.HashData(chunk)).ToLowerInvariant();
+            await api.SubmitDebugLogChunkAsync(uuid, state.NextSequence, sha, Convert.ToBase64String(chunk), "in-memory.log", ct)
+                .ConfigureAwait(false);
+            state.NextSequence++;
+            extraChunks++;
+            extraBytes += chunk.Length;
+        }
+        SaveState(state);
+
+        var fileResult = await UploadAsync(new ClientMeta { DebugCollection = started.Collection }, api, ct)
+            .ConfigureAwait(false);
+        return new DebugManualUploadResult(
+            fileResult.Status,
+            started.ReferenceCode,
+            extraChunks + fileResult.Chunks,
+            extraBytes + fileResult.Bytes);
     }
 
     public static string Redact(string value) => LogPrivacy.Redact(value);
@@ -189,3 +237,5 @@ public sealed class DebugLogUploader
 }
 
 public readonly record struct DebugUploadResult(string Status, int Chunks, long Bytes);
+
+public readonly record struct DebugManualUploadResult(string Status, string ReferenceCode, int Chunks, long Bytes);
