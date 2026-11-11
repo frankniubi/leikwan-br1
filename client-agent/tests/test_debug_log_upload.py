@@ -68,6 +68,22 @@ class DebugLogUploadTests(unittest.TestCase):
             )
             self.assertEqual("inactive", result["status"])
 
+    def test_start_debug_collection_returns_reference_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            started = MODULE.start_debug_collection(
+                "https://panel.example.test",
+                "agent-token",
+                pathlib.Path(directory),
+                post=lambda: {
+                    "ok": True,
+                    "debug_collection": {
+                        "uuid": "cafebabe-e89b-42d3-a456-426614174000",
+                        "status": "active",
+                    },
+                },
+            )
+            self.assertEqual("cafebabe", started["reference_code"])
+
 
 if __name__ == "__main__":
     unittest.main()

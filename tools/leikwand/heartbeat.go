@@ -278,6 +278,12 @@ func (a *Agent) sendHeartbeat(ctx context.Context) error {
 	if token := strings.TrimSpace(a.diagToken); token != "" {
 		a.submitDiagnostics(ctx, token)
 	}
+	a.mu.Lock()
+	pendingDebugUUID := strings.TrimSpace(a.debugUUID)
+	a.mu.Unlock()
+	if pendingDebugUUID != "" {
+		a.submitDebugLogs(ctx, pendingDebugUUID)
+	}
 	return nil
 }
 

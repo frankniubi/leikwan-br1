@@ -156,6 +156,14 @@ func (s *ctlServer) dispatch(request CtlRequest) CtlResponse {
 		return CtlResponse{OK: true, Data: agent.log.Events(limit)}
 	case "diagnose":
 		return CtlResponse{OK: true, Data: agent.diagnose()}
+	case "upload_logs":
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		data, err := agent.uploadLogsNow(ctx)
+		if err != nil {
+			return panelFailureResponse(err)
+		}
+		return CtlResponse{OK: true, Data: data}
 	case "test_connection":
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()

@@ -24,6 +24,7 @@ Control commands:
   forwards               per-forward view
   logs [limit=N]         recent events
   diagnose               run an end-to-end diagnostic
+  upload_logs            upload redacted logs to the panel
   test_connection        verify the panel is reachable
   register client_id=N agent_token=...
                          adopt the panel-issued credentials directly
@@ -42,6 +43,8 @@ func main() {
 		os.Exit(runAgent())
 	case "ctl":
 		os.Exit(runCtl(args[1:]))
+	case "upload-logs":
+		os.Exit(runCtl([]string{"upload_logs"}))
 	case "version", "--version", "-v":
 		fmt.Println(agentVersion)
 	case "selftest":
