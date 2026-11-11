@@ -162,20 +162,34 @@ jobs:
           VERSION: ${{ matrix.version }}
           LABEL: ${{ matrix.label }}
           TAGS: ${{ matrix.tags }}
+          PLATFORM: ${{ matrix.platform }}
           CGO_ENABLED: "0"
+          # Android's libbox is built from a SagerNet testing-branch commit that was later
+          # rebased away, so the Go module proxy cannot resolve its pseudo-version. GitHub
+          # still serves the commit by SHA; build from that tarball, pinned by SHA-256.
+          ANDROID_SRC_SHA: 2e64545db4838c06dd16d9cb75621bc7136600cd
+          ANDROID_SRC_SHA256: 47143dd4ad2f81fa3f4ef38205c1c3bec47531a6f88627a90bd1b7c489e9f70d
         run: |
           set -euo pipefail
           export GOBIN="$RUNNER_TEMP/sing-box-bin"
           mkdir -p "$GOBIN"
-          go install -trimpath \
-            -ldflags="-checklinkname=0 -s -w -X github.com/sagernet/sing-box/constant.Version=$LABEL" \
-            -tags "$TAGS" \
-            "github.com/sagernet/sing-box/cmd/sing-box@$VERSION"
+          ldflags="-checklinkname=0 -s -w -X github.com/sagernet/sing-box/constant.Version=$LABEL"
+          if [ "$PLATFORM" = "android" ]; then
+            src="$RUNNER_TEMP/sing-box-src"
+            curl -fsSL -o "$RUNNER_TEMP/sing-box.tar.gz" "https://github.com/SagerNet/sing-box/archive/$ANDROID_SRC_SHA.tar.gz"
+            echo "$ANDROID_SRC_SHA256  $RUNNER_TEMP/sing-box.tar.gz" | sha256sum -c -
+            mkdir -p "$src"
+            tar -xzf "$RUNNER_TEMP/sing-box.tar.gz" -C "$src" --strip-components=1
+            (cd "$src" && go build -trimpath -ldflags="$ldflags" -tags "$TAGS" -o "$GOBIN/sing-box" ./cmd/sing-box)
+          else
+            go install -trimpath -ldflags="$ldflags" -tags "$TAGS" \
+              "github.com/sagernet/sing-box/cmd/sing-box@$VERSION"
+            built="$(go version -m "$GOBIN/sing-box" | awk '$1=="mod" && $2=="github.com/sagernet/sing-box" {print $3}')"
+            [ "$built" = "$VERSION" ] || { echo "::error::built module version $built != $VERSION"; exit 1; }
+          fi
           "$GOBIN/sing-box" version
           go version -m "$GOBIN/sing-box" | head -n 12
-          built="$(go version -m "$GOBIN/sing-box" | awk '$1=="mod" && $2=="github.com/sagernet/sing-box" {print $3}')"
           built_tags="$(go version -m "$GOBIN/sing-box" | sed -nE 's/^[[:space:]]*build[[:space:]]+-tags=(.*)$/\1/p')"
-          [ "$built" = "$VERSION" ] || { echo "::error::built module version $built != $VERSION"; exit 1; }
           [ "$built_tags" = "$TAGS" ] || { echo "::error::built tags $built_tags != $TAGS"; exit 1; }
 
       - name: Version gate (Android, against libbox.aar)
