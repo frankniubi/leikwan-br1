@@ -215,10 +215,10 @@ object ClashRuleParser {
         if (value.isEmpty()) return "无效的端口（第 $lineNo 行）"
 
         return if (value.contains(':')) {
-            // Port range: a:b or a:b:c
+            // Port range: sing-box only accepts a single `a:b` range, not `a:b:c`.
             val parts = value.split(':')
-            if (parts.size < 2 || parts.size > 3) {
-                return "无效的端口范围 $value（第 $lineNo 行）"
+            if (parts.size != 2) {
+                return "无效的端口范围 $value（第 $lineNo 行），sing-box 仅支持单个端口或 a:b 范围"
             }
             val (a, b) = parts[0].toIntOrNull() to parts[1].toIntOrNull()
             if (a == null || b == null || a < 1 || b > 65535 || a >= b) {
@@ -233,10 +233,26 @@ object ClashRuleParser {
         }
     }
 
+    /**
+     * sing-box compiles DOMAIN-REGEX with Go's RE2 engine, which has no backtracking and therefore
+     * rejects lookaround assertions, backreferences, and atomic groups that Java's regex engine
+     * (used by [Regex] above) happily compiles. Reject those patterns here so an import never
+     * produces a config sing-box refuses to load.
+     */
+    private fun hasUnsupportedRe2Syntax(pattern: String): Boolean {
+        val forbiddenLiterals = listOf("(?=", "(?!", "(?<=", "(?<!", "(?>")
+        if (forbiddenLiterals.any { pattern.contains(it) }) return true
+        return Regex("""\\[1-9]""").containsMatchIn(pattern)
+    }
+
     private fun validateRegex(value: String, lineNo: Int): String? {
         return try {
             Regex(value)
-            null
+            if (hasUnsupportedRe2Syntax(value)) {
+                "第 $lineNo 行：正则使用了 sing-box 不支持的语法（前后断言/反向引用）"
+            } else {
+                null
+            }
         } catch (e: Exception) {
             "无效的正则表达式 $value（第 $lineNo 行）"
         }

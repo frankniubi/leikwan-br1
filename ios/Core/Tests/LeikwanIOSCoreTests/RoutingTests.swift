@@ -41,7 +41,8 @@ final class RoutingTests: XCTestCase {
         XCTAssertNil(CustomRoutingRule.parseLine("GEOIP,BV,DIRECT", id: "5b"), "no bundled geoip set")
         XCTAssertNil(CustomRoutingRule.parseLine("GEOIP,ZZ,DIRECT", id: "5c"), "not a country")
         XCTAssertNil(CustomRoutingRule.parseLine("USER-AGENT,foo,DIRECT", id: "6"))
-        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN,foo,MAYBE", id: "7"))
+        // Clash policy names: anything other than DIRECT/REJECT is a proxy group (Android parity).
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN,foo,MAYBE", id: "7")?.outcome, .proxy)
         XCTAssertNil(CustomRoutingRule.parseLine("IP-CIDR,1.2.3.4/33,DIRECT", id: "8"))
 
         // New types: GEOSITE/RULE-SET
@@ -56,10 +57,24 @@ final class RoutingTests: XCTestCase {
         XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,65536,PROXY", id: "p3"), "port out of range")
         XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,9000:8000,PROXY", id: "p4"), "range reversed")
         XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,8000:8000,PROXY", id: "p5"), "range not strictly increasing")
+        // sing-box only accepts a single port or an "a:b" range; confirm the 3-part Clash/Shadowrocket
+        // form "a:b:c" is rejected rather than silently truncated (maxSplits:1 leaves "b:c" as the
+        // second component, which fails UInt16 parsing and makes the whole rule nil).
+        XCTAssertNil(CustomRoutingRule.parseLine("DST-PORT,1000:2000:3000,PROXY", id: "p6"), "three-part port range rejected")
 
         // DOMAIN-REGEX
         XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-REGEX,^ad\\d+\\.example\\.com$,REJECT", id: "r1")?.normalizedValue(), "^ad\\d+\\.example\\.com$")
         XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,[invalid(regex,PROXY", id: "r2"), "invalid regex")
+        // sing-box compiles DOMAIN-REGEX with Go's RE2 engine, which has no lookaround support;
+        // NSRegularExpression (ICU-backed) compiles "(?=...)" fine, so this must be rejected separately.
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,^(?=foo).*,PROXY", id: "r3"), "RE2-unsupported lookahead rejected")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,^(?!ads).*\\.com$,PROXY", id: "r4"), "negative lookahead rejected")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,(?<=www\\.)example\\.com,PROXY", id: "r5"), "lookbehind rejected")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,(?<!cdn)\\.example\\.com$,PROXY", id: "r6"), "negative lookbehind rejected")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,^(?>a+)b\\.com$,PROXY", id: "r7"), "atomic group rejected")
+        XCTAssertNil(CustomRoutingRule.parseLine("DOMAIN-REGEX,^(a+)\\1\\.com$,PROXY", id: "r8"), "backreference rejected")
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-REGEX,^rx[0-9]+\\.test$,DIRECT", id: "r9")?.normalizedValue(), "^rx[0-9]+\\.test$", "RE2-safe pattern kept")
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-REGEX,^(?:www\\.)?example\\.com$,DIRECT", id: "r10")?.normalizedValue(), "^(?:www\\.)?example\\.com$", "non-capturing group is RE2-safe")
 
         // 2-field format defaults to PROXY
         XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN,example.com", id: "2f1")?.outcome, .proxy)
@@ -68,6 +83,31 @@ final class RoutingTests: XCTestCase {
         // Case insensitive type matching
         XCTAssertNotNil(CustomRoutingRule.parseLine("domain-suffix,example.com,direct", id: "ci1"))
         XCTAssertNotNil(CustomRoutingRule.parseLine("geosite,openai,proxy", id: "ci2"))
+    }
+
+    func testClashPolicyCompatibility() {
+        // Clash profiles write policies in upper case and name proxy groups freely.
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-SUFFIX,example.com,PROXY", id: "c1")?.outcome, .proxy)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-SUFFIX,example.com,Proxies", id: "c2")?.outcome, .proxy)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-SUFFIX,example.com,🚀 节点选择", id: "c3")?.outcome, .proxy)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN,example.com,DIRECT", id: "c4")?.outcome, .direct)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN,example.com,direct", id: "c5")?.outcome, .direct)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-KEYWORD,ads,REJECT", id: "c6")?.outcome, .reject)
+        XCTAssertEqual(CustomRoutingRule.parseLine("DOMAIN-KEYWORD,ads,Reject", id: "c7")?.outcome, .reject)
+        // A trailing option in the policy slot (`TYPE,value,no-resolve`) keeps the proxy default.
+        XCTAssertEqual(CustomRoutingRule.parseLine("IP-CIDR,198.51.100.0/24,no-resolve", id: "c8")?.outcome, .proxy)
+
+        // IP-CIDR6 is an IP-CIDR alias and keeps its v6 prefix.
+        let v6 = CustomRoutingRule.parseLine("IP-CIDR6,2001:db8:1::/48,PROXY", id: "c9")
+        XCTAssertEqual(v6?.type, .ipCidr)
+        XCTAssertEqual(v6?.outcome, .proxy)
+        XCTAssertEqual(v6?.normalizedValue(), "2001:db8:1:0:0:0:0:0/48")
+
+        // RULE-SET accepts the bare name and the full geosite tag (Android parity).
+        XCTAssertEqual(CustomRoutingRule.parseLine("RULE-SET,telegram,REJECT", id: "c10")?.ruleSetRef?.tag, "geosite-telegram")
+        XCTAssertEqual(CustomRoutingRule.parseLine("RULE-SET,geosite-telegram,REJECT", id: "c11")?.ruleSetRef?.tag, "geosite-telegram")
+        XCTAssertEqual(CustomRoutingRule.parseLine("GEOSITE,geosite-openai,DIRECT", id: "c12")?.singboxMatch()?["rule_set"] as? [String], ["geosite-openai"])
+        XCTAssertNil(CustomRoutingRule.parseLine("RULE-SET,geosite-,REJECT", id: "c13"), "empty name after the prefix")
     }
 
     func testParseLinesCollectsErrors() {

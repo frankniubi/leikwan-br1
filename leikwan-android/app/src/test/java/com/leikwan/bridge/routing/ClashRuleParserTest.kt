@@ -247,4 +247,63 @@ class ClashRuleParserTest {
         assertTrue(line.isOk)
         assertEquals(RoutingRuleKind.DOMAIN_KEYWORD, line.rule?.kind)
     }
+
+    @Test
+    fun testDstPortThreePartRangeRejected() {
+        // sing-box only accepts a single port or an "a:b" range; "a:b:c" must be rejected rather
+        // than silently truncated, or the resulting config would fail to load in sing-box.
+        val parsed = ClashRuleParser.parse("DST-PORT,1000:2000:3000", catalogTags)
+        assertEquals(1, parsed.size)
+        val line = parsed[0]
+        assertFalse(line.isOk)
+        assertNotNull(line.error)
+    }
+
+    @Test
+    fun testDomainRegexRejectsRe2UnsupportedLookahead() {
+        // sing-box compiles DOMAIN-REGEX with Go's RE2 engine, which has no lookaround support;
+        // Kotlin's Regex() happily compiles "(?=...)" so this must be caught separately.
+        val parsed = ClashRuleParser.parse("DOMAIN-REGEX,^(?=foo).*", catalogTags)
+        assertEquals(1, parsed.size)
+        val line = parsed[0]
+        assertFalse(line.isOk)
+        assertTrue(line.error?.contains("sing-box") ?: false)
+    }
+
+    @Test
+    fun testDomainRegexRejectsEveryRe2UnsupportedConstruct() {
+        val unsupported = listOf(
+            "DOMAIN-REGEX,^(?!ads).*[.]com$",          // negative lookahead
+            "DOMAIN-REGEX,(?<=www[.])example[.]com",   // lookbehind
+            "DOMAIN-REGEX,(?<!cdn)[.]example[.]com$",  // negative lookbehind
+            "DOMAIN-REGEX,^(?>a+)b[.]com$",            // atomic group
+            "DOMAIN-REGEX,^(a+)\\1[.]com$",            // backreference
+        )
+        unsupported.forEach { line ->
+            val parsed = ClashRuleParser.parse(line, catalogTags)
+            assertEquals(line, 1, parsed.size)
+            assertFalse(line, parsed[0].isOk)
+            assertTrue(line, parsed[0].error?.contains("sing-box") ?: false)
+        }
+    }
+
+    @Test
+    fun testDomainRegexKeepsRe2SafePatterns() {
+        listOf(
+            "DOMAIN-REGEX,^rx[0-9]+\\.test$",
+            "DOMAIN-REGEX,^(?:www\\.)?example\\.com$",
+            "DOMAIN-REGEX,^ad\\d+\\.example$",
+        )
+            .forEach { line ->
+                val parsed = ClashRuleParser.parse(line, catalogTags)
+                assertTrue(line, parsed.single().isOk)
+            }
+    }
+
+    @Test
+    fun testDstPortTwoPartRangeStillAccepted() {
+        val parsed = ClashRuleParser.parse("DST-PORT,1000:2000,DIRECT", catalogTags)
+        assertTrue(parsed.single().isOk)
+        assertEquals("1000:2000", parsed.single().rule?.matchValue)
+    }
 }
