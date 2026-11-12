@@ -1,0 +1,49 @@
+<p>一條轉發把本機連接埠的資料包轉送到目標機器，而雲端節點是你在 App 裡可以直接選用的伺服器設定。理解它們之間的配對規則，是把轉發用對的關鍵。</p>
+
+<h2>兩個概念</h2>
+<p><strong>轉發</strong>是一條通路規則：從你的設備上的本機連接埠，把資料包轉送到網際網路上某個遠端目標機器的特定連接埠。</p>
+<p><strong>雲端節點</strong>是一個被保存的伺服器設定，用戶端可以直接使用。你可以把節點看作「轉發目標機器的細節」的一個快照：它記錄了目標伺服器位址、連接埠、連線協議、密碼等參數。</p>
+
+<h2>核心規則</h2>
+<p><strong>一條轉發綁定一個節點，連接埠與節點一一對應。多個轉發不應共用同一個節點，除非它們完全滿足下面的複用條件。</strong></p>
+
+<h2>什麼時候才能複用同一個節點</h2>
+<p>只有當另一條轉發的以下三個要素與該節點 <strong>全部相同</strong> 時，才可以複用：</p>
+<ol>
+<li><strong>目標機器的連接埠</strong>：比如都是 30522。</li>
+<li><strong>連線協議</strong>：比如都是 Shadowsocks 2022。</li>
+<li><strong>密碼</strong>：登入該伺服器的認證密鑰。</li>
+</ol>
+<p>只要有一項不同，就必須新建一條轉發並新建一個節點。重用節點必然導致不通。</p>
+
+<h2>實例：什麼不能複用</h2>
+<table>
+<thead>
+<tr><th>轉發</th><th>目標</th><th>協議</th><th>密碼</th><th>能否複用節點 A？</th></tr>
+</thead>
+<tbody>
+<tr><td>轉發 A</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 X</td><td>—</td></tr>
+<tr><td>轉發 B</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 Y（≠X）</td><td><strong>不能</strong>，密碼不同 → 必須新建轉發 B 和節點 B</td></tr>
+<tr><td>轉發 C</td><td>node.example.com:30522</td><td>VLESS</td><td>密碼 X</td><td><strong>不能</strong>，協議不同 → 必須新建轉發 C 和節點 C</td></tr>
+<tr><td>轉發 D</td><td>node.example.com:30523</td><td>SS2022</td><td>密碼 X</td><td><strong>不能</strong>，連接埠不同 → 必須新建轉發 D 和節點 D</td></tr>
+</tbody>
+</table>
+
+<h2>自動配對：面板如何幫你匹配</h2>
+<p>面板會根據轉發的「目標機器:連接埠」自動尋找相匹配的節點（「節點位址:節點連接埠」）。這樣可以幫你省事，但自動配對 <strong>不會檢查協議和密碼是否一致</strong>。因此，複用節點前，你必須自己驗證：三個要素都確實相同。</p>
+
+<h2>常見錯誤</h2>
+<table>
+<thead>
+<tr><th>症狀</th><th>根本原因</th></tr>
+</thead>
+<tbody>
+<tr><td>某條轉發始終連不上，其他轉發正常</td><td>複用了同一個節點，但目標連接埠、協議或密碼其中之一不匹配</td></tr>
+<tr><td>改了轉發的目標連接埠，但轉發仍連不上</td><td>沒有相應修改配對的節點資訊；節點仍然指向舊連接埠</td></tr>
+<tr><td>刪除了一個節點，轉發卻仍在，現在用不了</td><td>轉發失去了配對的節點，但轉發本身還存在，只是沒有可用節點了</td></tr>
+<tr><td>新建兩條相同目標的轉發，其中一條頻繁掉線</td><td>兩條轉發都配對了同一個節點，但密碼或協議不匹配其中某一條</td></tr>
+</tbody>
+</table>
+
+<h2>相關指南</h2>
+<p>看完這篇，回到<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>確認轉發建立無誤。如果轉發本身的目標位址、連接埠或協議有問題，請參考<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>。</p>

@@ -28,6 +28,11 @@ struct BridgeApp: App {
             // background the tunnel controller drops to a 5 s cadence (or stops, once
             // iOS suspends the app). iOS 16 two-parameter form.
             model.tunnel.setAppVisible(phase == .active)
+            if phase == .active {
+                Task {
+                    await model.refreshCatalog()
+                }
+            }
         }
     }
 }

@@ -33,6 +33,10 @@ enum AppGroup {
     /// them as `local` rule-sets from this path.
     static var ruleSetDirectory: URL { ensure(containerURL.appendingPathComponent("rule-sets", isDirectory: true)) }
 
+    /// Imported Surge/Clash lists (`ImportedRuleListStore`). Never under `ruleSetDirectory`:
+    /// `RuleSetInstaller` empties that directory whenever the bundled sets change.
+    static var userRuleSetDirectory: URL { ensure(containerURL.appendingPathComponent("user-rule-sets", isDirectory: true)) }
+
     static var cacheDirectory: URL {
         ensure(containerURL.appendingPathComponent("Library/Caches", isDirectory: true))
     }

@@ -1,0 +1,41 @@
+<p>iPhone 和 iPad 版透過蘋果的 TestFlight 發佈，不在 App Store 上架。在控制台「用戶端」頁面申請一次邀請，之後安裝和更新都在 TestFlight 裡完成。</p>
+
+<h2>你將完成什麼</h2>
+<p>從 TestFlight 裝好 App，用客戶端 ID 和 Agent Token 登入，並且連上。</p>
+
+<h2>開始前準備</h2>
+<ul>
+<li>一個有效方案。只有方案有效時才能申請邀請。</li>
+<li>iOS 16 或以上的 iPhone 或 iPad。</li>
+<li>這台裝置上登入 App Store 用的 Apple ID。</li>
+<li>App Store 裡的 <strong>TestFlight</strong>（蘋果官方出品，免費）。</li>
+</ul>
+
+<h2>操作步驟</h2>
+<ol>
+<li><strong>打開「用戶端」頁面</strong>，找到 <strong>iOS · TestFlight</strong> 這一塊。</li>
+<li><strong>填寫 Apple ID</strong>，點「申请 TestFlight 邀请」。每個帳戶只記錄一個 Apple ID，請填這台裝置上用的那個。幾秒後卡片會出現「打开 TestFlight 邀请链接」按鈕，以及 App 要填的伺服器位址。</li>
+<li><strong>在 iPhone 或 iPad 上打開邀請連結。</strong>如果你是在電腦上操作，先把連結傳到手機上（例如傳給自己的一則訊息），再用手機上的 Safari 打開。TestFlight 會打開 App 頁面：點「接受」，再點「安裝」。</li>
+<li><strong>打開 App。</strong>主畫面上的名稱是 <strong>Bridge the Fox Sake</strong>。</li>
+<li><strong>填寫登入資訊。</strong>「伺服器位址」點 <strong>Cloudflare CDN</strong>；如果目前網路連不上，改點 <strong>Directly CDN</strong>。這兩個位址在 iOS 卡片上也有列出，可以直接複製。「客戶端 ID」和 Agent Token 從「用戶端」頁面複製。客戶端 ID 是那裡顯示的數字，不是方案的服務編號（Service ID）。最後點「儲存並登入」。</li>
+<li><strong>允許加入 VPN 設定。</strong>第一次連線時 iOS 會跳出詢問，點「允許」，然後點「連線」。</li>
+</ol>
+
+<h2>如何確認成功</h2>
+<p>App 顯示已連線，並且「用戶端」頁面底部的「線上裝置」裡出現這台 iPhone 或 iPad。</p>
+
+<h2>如何更新</h2>
+<p>新版本透過 TestFlight 推送，不走 App Store。在 TestFlight 的 App 頁面裡打開「自動更新」，或者看到新版本時打開 TestFlight 點「更新」。每個 TestFlight 版本發佈 90 天後會失效，到期前 TestFlight 會提醒，從同一個頁面裝最新版即可。</p>
+
+<h2>如果沒有成功</h2>
+<ul>
+<li><strong>卡片提示需要有效方案。</strong>購買或續費方案後重新整理「用戶端」頁面。</li>
+<li><strong>邀請連結打開的是網頁而不是 TestFlight。</strong>先從 App Store 安裝 TestFlight，再在裝置上重新打開連結。</li>
+<li><strong>TestFlight 提示測試名額已滿或不再接受測試員。</strong>請聯絡客服。</li>
+<li><strong>卡片上的 Apple ID 填錯了。</strong>控制台裡不能自行修改，請聯絡客服。</li>
+<li><strong>App 提示「此裝置未被伺服器信任」。</strong>客戶端 ID 填錯了，通常是填成了服務編號。登出後用「用戶端」頁面上的客戶端 ID 重新登入。</li>
+<li><strong>一直登入不了。</strong>編輯設定檔，把伺服器位址換成另一個預設。</li>
+</ul>
+
+<h2>相關指南</h2>
+<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。其他裝置看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。有問題可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>。</p>

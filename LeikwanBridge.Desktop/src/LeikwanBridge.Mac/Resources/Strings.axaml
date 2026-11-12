@@ -300,6 +300,8 @@
   <x:String x:Key="KeepInMenuBar">Keep in menu bar</x:String>
   <x:String x:Key="KeepInMenuBarHint">Closing the window keeps active forwards running.</x:String>
   <x:String x:Key="ActivityLog">Activity log</x:String>
+  <x:String x:Key="UploadLogs">Upload logs</x:String>
+  <x:String x:Key="UploadLogsSuccess">Uploaded diagnostic logs (ref {0}).</x:String>
   <x:String x:Key="SignOut">Sign out</x:String>
   <x:String x:Key="Endpointcloudflare">Main site (Cloudflare)</x:String>
   <x:String x:Key="Endpointaliyun-cdn">Mainland China (Aliyun CDN)</x:String>

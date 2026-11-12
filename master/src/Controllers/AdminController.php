@@ -197,7 +197,7 @@ final class AdminController extends BaseController
 
         $clients = $this->db->fetchAll(
             'SELECT id, name, display_host, agent_version, last_sync_at, last_diag_status, last_diag_run_at, last_diag_error, last_diag_result_json,
-                    debug_collection_status, debug_collection_expires_at, debug_collection_bytes
+                    debug_collection_uuid, debug_collection_status, debug_collection_expires_at, debug_collection_bytes
              FROM clients
              ORDER BY updated_at DESC, id DESC
              LIMIT 50'
@@ -243,8 +243,19 @@ final class AdminController extends BaseController
 
         $clientRows = '';
         foreach ($clients as $client) {
+            $cid = (int) ($client['id'] ?? 0);
+            $debugBytes = (int) ($client['debug_collection_bytes'] ?? 0);
+            $debugUuid = trim((string) ($client['debug_collection_uuid'] ?? ''));
+            $debugSummary = $this->escape((string) ($client['debug_collection_status'] ?? 'closed')) . ' / ' . $debugBytes . ' bytes';
+            if ($debugUuid !== '') {
+                $debugSummary .= ' <code>' . $this->escape(substr($debugUuid, 0, 8)) . '</code>';
+            }
+            if ($debugBytes > 0) {
+                $debugSummary .= ' <a href="/admin/clients/' . $cid . '/debug-log" target="_blank">View</a>'
+                    . ' · <a href="/admin/clients/' . $cid . '/debug-log?download=1">Download</a>';
+            }
             $clientRows .= '<tr>
-                <td>' . (int) ($client['id'] ?? 0) . '</td>
+                <td>' . $cid . '</td>
                 <td>' . $this->escape((string) ($client['name'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['display_host'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['agent_version'] ?? '')) . '</td>
@@ -252,7 +263,7 @@ final class AdminController extends BaseController
                 <td>' . $this->escape((string) ($client['last_diag_status'] ?? 'not run')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_run_at'] ?? '')) . '</td>
                 <td>' . $this->escape((string) ($client['last_diag_error'] ?? '')) . '</td>
-                <td>' . $this->escape((string) ($client['debug_collection_status'] ?? 'closed')) . ' / ' . (int) ($client['debug_collection_bytes'] ?? 0) . ' bytes</td>
+                <td>' . $debugSummary . '</td>
                 <td>' . $this->renderClientDiagnosticsHtml($client) . '</td>
             </tr>';
         }
@@ -1431,6 +1442,7 @@ final class AdminController extends BaseController
                     <div class="field"><label>Status</label>
                       <select name="status"><option value="active"' . (((string) ($editing['status'] ?? 'active')) === 'active' ? ' selected' : '') . '>active</option><option value="pending_verification"' . (((string) ($editing['status'] ?? '')) === 'pending_verification' ? ' selected' : '') . '>pending_verification</option><option value="suspended"' . (((string) ($editing['status'] ?? '')) === 'suspended' ? ' selected' : '') . '>suspended</option></select>
                     </div>
+                    <div class="field"><label>Online Device Limit Override</label><input type="number" min="0" name="online_device_limit" value="' . $this->escape((string) ($editing['online_device_limit'] ?? '')) . '" placeholder="blank = plan default"></div>
                   </div>
                   <div class="field" style="margin-top:14px;">
                     <label>Tenant Feature Overrides</label>
@@ -4535,6 +4547,8 @@ final class AdminController extends BaseController
             $name = trim((string) $request->input('name', ''));
             $password = (string) $request->input('password', '');
             $status = (string) $request->input('status', 'active');
+            $limitInput = trim((string) $request->input('online_device_limit', ''));
+            $deviceLimit = $limitInput === '' ? null : max(1, (int) $limitInput);
             if ($email === '' || $name === '' || ($password === '' && $id <= 0)) {
                 throw new ApiException('tenant_form_invalid', 422, ['message' => 'Name and email are required, and password is required for new tenants.']);
             }
@@ -4562,6 +4576,7 @@ final class AdminController extends BaseController
                     'email_verified_at' => $emailVerifiedAt,
                     'email_verification_token' => $emailVerificationToken,
                     'verification_sent_at' => $verificationSentAt,
+                    'online_device_limit' => $deviceLimit,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
@@ -4579,6 +4594,7 @@ final class AdminController extends BaseController
                          email_verified_at = :email_verified_at,
                          email_verification_token = :email_verification_token,
                          verification_sent_at = :verification_sent_at,
+                         online_device_limit = :online_device_limit,
                          updated_at = :updated_at
                      WHERE id = :id',
                     [
@@ -4592,6 +4608,7 @@ final class AdminController extends BaseController
                         'email_verified_at' => $emailVerifiedAt,
                         'email_verification_token' => $emailVerificationToken,
                         'verification_sent_at' => $verificationSentAt,
+                        'online_device_limit' => $deviceLimit,
                         'updated_at' => $now,
                     ]
                 );
@@ -4768,6 +4785,242 @@ final class AdminController extends BaseController
         return Response::redirect('/admin/plans');
     }
 
+    public function routeDirectionsPage(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        $directions = [];
+        $plans = [];
+        $rules = [];
+        $loadError = '';
+        try {
+            $directions = $this->provisioning?->listRouteDirections(true) ?? [];
+            $plans = $this->provisioning?->listPlans() ?? [];
+            $rules = array_slice($this->provisioning?->listClientRulesForAdmin() ?? [], 0, 200);
+        } catch (\Throwable $throwable) {
+            $loadError = $throwable->getMessage();
+        }
+
+        $directionRows = '';
+        $directionChecks = '';
+        foreach ($directions as $direction) {
+            $realization = is_array($direction['realization'] ?? null) ? $direction['realization'] : [];
+            $state = (string) ($realization['binding_state'] ?? 'none');
+            $directionRows .= '<tr>
+                <td><code>' . $this->escape((string) $direction['id']) . '</code></td>
+                <td>' . $this->escape((string) $direction['label']) . '</td>
+                <td>' . $this->escape((string) $direction['status']) . '</td>
+                <td>' . $this->escape((string) ($realization['forward_id'] ?? '-')) . '</td>
+                <td>' . $this->escape((string) ($realization['local_tcp_port'] ?? '-')) . '</td>
+                <td>' . $this->escape($state) . '</td>
+                <td>' . (int) ($direction['usage']['rules'] ?? 0) . '</td>
+            </tr>';
+            $directionChecks .= '<label style="display:block;"><input type="checkbox" name="direction_ids[]" value="'
+                . $this->escape((string) $direction['id']) . '"> '
+                . $this->escape((string) $direction['label']) . ' <code>' . $this->escape((string) $direction['id']) . '</code></label>';
+        }
+        if ($directionRows === '') {
+            $directionRows = '<tr><td colspan="7" class="muted">No route directions yet.</td></tr>';
+        }
+
+        $planOptions = '';
+        $planRows = '';
+        foreach ($plans as $plan) {
+            $planId = (int) ($plan['id'] ?? 0);
+            $planOptions .= '<option value="' . $planId . '">' . $this->escape((string) ($plan['name'] ?? ('#' . $planId))) . '</option>';
+            $allowed = [];
+            try {
+                $allowed = $this->provisioning?->allowedRouteDirectionIdsForPlan($planId) ?? [];
+            } catch (\Throwable) {
+                $allowed = [];
+            }
+            if ($allowed !== []) {
+                $planRows .= '<tr><td>' . $this->escape((string) ($plan['name'] ?? '')) . '</td><td><code>'
+                    . $this->escape(implode(', ', $allowed)) . '</code></td><td>'
+                    . (int) ($plan['max_client_rules_per_service_scope'] ?? 0) . '</td></tr>';
+            }
+        }
+        if ($planRows === '') {
+            $planRows = '<tr><td colspan="3" class="muted">No plan grants route directions yet.</td></tr>';
+        }
+
+        $csrf = $this->escape(SessionAuth::csrfToken());
+        $ruleRows = '';
+        foreach ($rules as $rule) {
+            $tombstoned = (string) ($rule['tombstoned_at'] ?? '') !== '';
+            $action = $tombstoned ? '<span class="muted">deleted</span>' : '<form method="post" action="/admin/route-directions/rules/'
+                . rawurlencode((string) $rule['id']) . '/delete" style="display:inline;"><input type="hidden" name="csrf_token" value="' . $csrf
+                . '"><button class="button secondary" type="submit">Delete</button></form>';
+            $ruleRows .= '<tr>
+                <td><code>' . $this->escape((string) $rule['id']) . '</code></td>
+                <td>' . $this->escape((string) $rule['service_scope_id']) . '</td>
+                <td>' . $this->escape((string) $rule['destination_ip']) . ':' . (int) $rule['destination_port'] . '</td>
+                <td><code>' . $this->escape((string) $rule['direction_id']) . '</code></td>
+                <td>' . ($rule['enabled'] ? 'yes' : 'no') . '</td>
+                <td>' . $this->escape((string) $rule['effective_state']) . '</td>
+                <td>' . $action . '</td>
+            </tr>';
+        }
+        if ($ruleRows === '') {
+            $ruleRows = '<tr><td colspan="7" class="muted">No client rules yet.</td></tr>';
+        }
+
+        $errorHtml = $loadError !== ''
+            ? '<div class="flash danger">Route directions are unavailable: ' . $this->escape($loadError) . '</div>'
+            : '';
+        $body = $errorHtml . '
+            <div class="hero">
+              <div>
+                <h2>Route Directions</h2>
+                <p class="muted">Directions users can send an exact destination (IPv4 + port) to from the Android client. A direction is ready when it has a helper forward and one shared TCP/UDP local port; rules on a direction that is not ready are rejected on the device.</p>
+              </div>
+            </div>
+            <div class="grid two">
+              <section class="card">
+                <h3>Save Direction</h3>
+                <form method="post" action="/admin/route-directions">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <div class="form-grid">
+                    <div class="field"><label>Direction ID</label><input type="text" name="id" placeholder="dir_sh_jp_1" required></div>
+                    <div class="field"><label>User Label</label><input type="text" name="label" placeholder="沪日1" required></div>
+                    <div class="field"><label>Status</label><select name="status"><option value="available">available</option><option value="maintenance">maintenance</option><option value="unavailable">unavailable</option><option value="retired">retired</option></select></div>
+                    <div class="field"><label>Sort Order</label><input type="number" name="sort_order" value="100"></div>
+                    <div class="field"><label>Helper Forward ID</label><input type="number" name="forward_id" placeholder="leave empty: not ready"></div>
+                    <div class="field"><label>Local Port (TCP+UDP)</label><input type="number" name="local_port" min="1" max="65535"></div>
+                  </div>
+                  <div class="actions"><button class="button" type="submit">Save Direction</button></div>
+                </form>
+              </section>
+              <section class="card">
+                <h3>Plan Entitlements</h3>
+                <form method="post" action="/admin/route-directions/entitlements">
+                  <input type="hidden" name="csrf_token" value="' . $csrf . '">
+                  <div class="form-grid">
+                    <div class="field"><label>Plan</label><select name="plan_id">' . $planOptions . '</select></div>
+                    <div class="field"><label>Max Client Rules per Service</label><input type="number" name="max_client_rules_per_service_scope" value="5" min="0"></div>
+                  </div>
+                  <div class="field" style="margin-top:14px;"><label>Allowed Directions (replaces the current list)</label>' . $directionChecks . '</div>
+                  <div class="actions"><button class="button" type="submit">Save Entitlements</button></div>
+                </form>
+                <div class="table-wrap" style="margin-top:14px;">
+                  <table>
+                    <thead><tr><th>Plan</th><th>Directions</th><th>Max Rules</th></tr></thead>
+                    <tbody>' . $planRows . '</tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+            <section class="card">
+              <h3>Directions</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Label</th><th>Status</th><th>Forward</th><th>Port</th><th>Binding</th><th>Rules</th></tr></thead>
+                  <tbody>' . $directionRows . '</tbody>
+                </table>
+              </div>
+            </section>
+            <section class="card">
+              <h3>Client Rules (latest 200)</h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Rule</th><th>Service Scope</th><th>Destination</th><th>Direction</th><th>Enabled</th><th>State</th><th></th></tr></thead>
+                  <tbody>' . $ruleRows . '</tbody>
+                </table>
+              </div>
+            </section>';
+
+        return $this->adminPage('Route Directions', $body, $viewer, 'route-directions');
+    }
+
+    public function saveRouteDirection(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $payload = [
+                'id' => (string) $request->input('id', ''),
+                'label' => (string) $request->input('label', ''),
+                'status' => (string) $request->input('status', 'available'),
+                'sort_order' => (int) $request->input('sort_order', 100),
+            ];
+            $forwardId = (int) $request->input('forward_id', 0);
+            $port = (int) $request->input('local_port', 0);
+            if ($forwardId > 0 || $port > 0) {
+                if ($forwardId <= 0 || $port < 1 || $port > 65535) {
+                    throw new ApiException('Helper forward ID and local port must be set together.', 422);
+                }
+                $payload['realization'] = [
+                    'binding_state' => 'ready',
+                    'forward_id' => $forwardId,
+                    'local_endpoint_host' => '127.0.0.1',
+                    'local_tcp_port' => $port,
+                    'local_udp_port' => $port,
+                    'tcp_ready' => true,
+                    'udp_ready' => true,
+                    'helper_only' => true,
+                ];
+            }
+            $saved = $this->provisioning?->saveRouteDirection($payload);
+            SessionAuth::flash('success', 'Route direction ' . (string) ($saved['id'] ?? '') . ' saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save route direction: ' . $throwable->getMessage());
+        }
+
+        return Response::redirect('/admin/route-directions');
+    }
+
+    public function saveRouteDirectionEntitlements(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $planId = (int) $request->input('plan_id', 0);
+            if ($planId <= 0) {
+                throw new ApiException('Choose a plan.', 422);
+            }
+            $directionIds = $request->input('direction_ids', []);
+            $this->provisioning?->routeDirections()->savePlanEntitlements(
+                $planId,
+                is_array($directionIds) ? array_values(array_map('strval', $directionIds)) : [],
+                max(0, (int) $request->input('max_client_rules_per_service_scope', 5))
+            );
+            SessionAuth::flash('success', 'Plan route directions saved.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to save plan route directions: ' . $throwable->getMessage());
+        }
+
+        return Response::redirect('/admin/route-directions');
+    }
+
+    public function deleteClientRuleFromAdmin(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            SessionAuth::validateCsrf($request);
+            $this->provisioning?->tombstoneClientRuleFromAdmin((string) ($params['id'] ?? ''), 'admin');
+            SessionAuth::flash('success', 'Client rule deleted.');
+        } catch (\Throwable $throwable) {
+            SessionAuth::flash('error', 'Failed to delete client rule: ' . $throwable->getMessage());
+        }
+
+        return Response::redirect('/admin/route-directions');
+    }
+
     public function saveClientGroup(Request $request, array $params): Response
     {
         $viewer = $this->adminViewer();
@@ -4923,6 +5176,35 @@ final class AdminController extends BaseController
         }
 
         return Response::redirect('/admin/clients');
+    }
+
+    public function downloadClientDebugLog(Request $request, array $params): Response
+    {
+        $viewer = $this->adminViewer();
+        if ($viewer === null) {
+            return Response::redirect('/login');
+        }
+
+        try {
+            $clientId = $this->idParam($params);
+            $uuidParam = trim((string) $request->input('uuid', ''));
+            $assembled = (new DebugCollectionStore($this->db, $this->config))->assembleText(
+                $clientId,
+                $uuidParam !== '' ? $uuidParam : null
+            );
+            $shortUuid = substr((string) ($assembled['uuid'] ?? ''), 0, 8);
+            $headers = [
+                'Content-Type' => 'text/plain; charset=utf-8',
+                'Cache-Control' => 'no-store, no-cache, must-revalidate',
+                'X-Content-Type-Options' => 'nosniff',
+            ];
+            if ((string) $request->input('download', '') === '1') {
+                $headers['Content-Disposition'] = 'attachment; filename="client-' . $clientId . '-' . $shortUuid . '.log"';
+            }
+            return new Response(200, $headers, (string) ($assembled['content'] ?? ''));
+        } catch (ApiException $exception) {
+            return new Response($exception->statusCode(), ['Content-Type' => 'text/plain; charset=utf-8'], $exception->getMessage() . "\n");
+        }
     }
 
     public function createOpenWrtPairingCode(Request $request, array $params): Response

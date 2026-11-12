@@ -28,6 +28,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
 import com.leikwan.bridge.runtime.ProtectedConnectivitySet
+import com.leikwan.bridge.shadowsocks.SS2022KeyNormalizer
 import com.leikwan.bridge.runtime.RuntimeContext
 import com.leikwan.bridge.service.ProxyConnectionMode
 import java.net.URI
@@ -182,7 +183,17 @@ class SingboxConfigBuilder(
                 nativeOutboundLease,
                 nativeLocalProxy,
                 defaultProxyNodeId,
-            ),
+            ).also { outbounds ->
+                // Synthetic latency probe (see latencyProbeOutbound): never referenced by
+                // route rules or final, so routing is unchanged. Skipped on the Ultra
+                // runtime-only bridge (finalProxyTag is a plain local bridge there, so the
+                // urltest would measure loopback, not the relay path).
+                val bridging = runtimeOnlyProxy && connectionMode == ProxyConnectionMode.SERVICES &&
+                    runtimeContext != null && activeProxyNodes.isEmpty() && !nativeMode
+                if (!nativeMode && !bridging) {
+                    outbounds.add(latencyProbeOutbound(finalProxyTag))
+                }
+            },
         )
         buildEndpoints(activeProxyNodes).takeIf { it.size() > 0 }?.let { root.add("endpoints", it) }
         val bridgeOverride = if (
@@ -457,6 +468,23 @@ class SingboxConfigBuilder(
         addProperty("tag", tag)
     }
 
+    /**
+     * Synthetic latency probe: a urltest group over the active exit + direct. It is never
+     * referenced by any route rule or route.final, so routing is unchanged; the group
+     * self-tests on its interval and the group stream carries URLTestDelay to the UI.
+     * libbox drops groups with fewer than 2 members, hence the two entries.
+     */
+    private fun latencyProbeOutbound(finalProxyTag: String): JsonObject = JsonObject().apply {
+        addProperty("type", "urltest")
+        addProperty("tag", "probe")
+        add("outbounds", JsonArray().apply {
+            add(finalProxyTag)
+            add("direct")
+        })
+        addProperty("url", "http://www.gstatic.com/generate_204")
+        addProperty("interval", "60s")
+    }
+
     private fun buildEndpoints(proxyNodes: List<ProxyNode>): JsonArray {
         val endpoints = JsonArray()
         proxyNodes
@@ -548,8 +576,19 @@ class SingboxConfigBuilder(
                 addProperty("tag", "proxy-${node.id}")
                 addProperty("server", outboundServer)
                 addProperty("server_port", outboundPort)
-                addProperty("method", config.get("method")?.asString ?: "")
-                addProperty("password", config.get("password")?.asString ?: "")
+                val method = config.get("method")?.asString ?: ""
+                val rawPassword = config.get("password")?.asString ?: ""
+                // Normalize SS2022 keys: ensures compatibility with sing-box client libs and
+                // sing-box/Xray servers that accept over-long or raw-ASCII keys
+                val password = if (method.startsWith("2022-", ignoreCase = true)) {
+                    val result = SS2022KeyNormalizer.normalizePassword(rawPassword, method)
+                    result.error?.let { throw IllegalArgumentException("SS2022 密钥无效: $it") }
+                    result.normalized
+                } else {
+                    rawPassword
+                }
+                addProperty("method", method)
+                addProperty("password", password)
                 config.get("plugin")?.asString?.takeIf { it.isNotBlank() }?.let {
                     addProperty("plugin", it)
                 }
@@ -804,8 +843,8 @@ class SingboxConfigBuilder(
             })
         }
 
-        // (4) User country/category rules (the 用户自定义分流 surface). Each compiled rule routes its
-        //     rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
+        // (4) User clash rules (second priority), then country/category rules (the 用户自定义分流 surface).
+        //     Each compiled rule routes its rule_set(s) to "direct" (DIRECT) or the proxy tag (TUNNEL, sentinel swapped here).
         if (snapshot != null) {
             effectiveRoutingEngine.compileRouteRules(snapshot).forEach { compiled ->
                 val outbound = when {
@@ -815,14 +854,27 @@ class SingboxConfigBuilder(
                         else "proxy-" + compiled.outbound.removePrefix("<NODE:").removeSuffix(">")
                     else -> compiled.outbound
                 }
-                rules.add(JsonObject().apply {
-                    if (compiled.packageNames.isNotEmpty()) {
-                        add("package_name", JsonArray().apply { compiled.packageNames.forEach { add(it) } })
+
+                // For Clash rules with rawMatch, emit the raw JSON with outbound or action added
+                if (compiled.rawMatch != null) {
+                    val rule = compiled.rawMatch.deepCopy()
+                    if (compiled.outbound == "reject") {
+                        rule.addProperty("action", "reject")
                     } else {
-                        add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                        rule.addProperty("outbound", outbound)
                     }
-                    addProperty("outbound", outbound)
-                })
+                    rules.add(rule)
+                } else {
+                    // Standard rule_set-based routing (app rules, country, category)
+                    rules.add(JsonObject().apply {
+                        if (compiled.packageNames.isNotEmpty()) {
+                            add("package_name", JsonArray().apply { compiled.packageNames.forEach { add(it) } })
+                        } else {
+                            add("rule_set", JsonArray().apply { compiled.ruleSetTags.forEach { add(it) } })
+                        }
+                        addProperty("outbound", outbound)
+                    })
+                }
             }
         }
 
@@ -877,9 +929,10 @@ class SingboxConfigBuilder(
         }
 
         route.add("rules", rules)
-        if (nativeRestrictedScope) {
-            route.addProperty("default_domain_resolver", "remote")
-        }
+        // sing-box 1.14 drops the implicit outbound domain resolver, and its CLI already treats a
+        // missing one as fatal on 1.14 pre-releases. Name it explicitly: restricted native scopes
+        // resolve through the remote server; everything else uses the direct DNS server, matching iOS.
+        route.addProperty("default_domain_resolver", if (nativeRestrictedScope) "remote" else "direct-dns")
         // route.final follows the user-settable global default: TUNNEL -> proxy tag; DIRECT -> direct.
         val defaultTunnelTag = snapshot?.globalDefaultNodeId?.let { "proxy-$it" } ?: finalProxyTag
         route.addProperty(
@@ -921,7 +974,10 @@ class SingboxConfigBuilder(
         if (snapshot != null) {
             effectiveRoutingEngine.requiredRuleSets(snapshot).forEach { ref ->
                 if (seenTags.add(ref.tag)) {
-                    ruleSetArray.add(remoteRuleSet(ref.tag, ref.url))
+                    val localPath = ref.localPath
+                    ruleSetArray.add(
+                        if (localPath != null) localSourceRuleSet(ref.tag, localPath) else remoteRuleSet(ref.tag, ref.url)
+                    )
                 }
             }
         }
@@ -976,6 +1032,14 @@ class SingboxConfigBuilder(
         add("ip_cidr", JsonArray().apply { add(normalizeIpCidr(rule.destinationIp)) })
         add("port", JsonArray().apply { add(rule.destinationPort) })
         addProperty("network", network)
+    }
+
+    /** An imported Surge/Clash list, converted on the device to a sing-box source rule-set file. */
+    private fun localSourceRuleSet(tag: String, path: String): JsonObject = JsonObject().apply {
+        addProperty("tag", tag)
+        addProperty("type", "local")
+        addProperty("format", "source")
+        addProperty("path", path)
     }
 
     private fun remoteRuleSet(tag: String, url: String, downloadDetour: String? = null): JsonObject = JsonObject().apply {

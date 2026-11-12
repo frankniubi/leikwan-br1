@@ -385,7 +385,7 @@ extension AppModel {
         let preferences = bindingPreferences
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
-            customRules: routing.customRules,
+            customRules: compilableCustomRules,
             appPresetRules: routing.appPresets.sorted { $0.key < $1.key }.map { key, outcome in
                 RoutingRule(id: "app-\(key)", kind: .appPreset, matchValue: key, outcome: outcome,
                             targetNodeId: outcome == .tunnel ? preferences.appPresetTargets[key] : nil)

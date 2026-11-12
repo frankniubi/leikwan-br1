@@ -199,6 +199,8 @@ struct TunnelStatusSnapshot: Codable, Equatable {
     var connectionsIn: Int32 = 0
     var connectionsOut: Int32 = 0
     var memory: Int64 = 0
+    /// URL-test delay of the active exit through the tunnel (ms); 0 = not measured.
+    var latencyMs: Int64 = 0
     var runtimes: [RuntimeStatus] = []
     /// Terminal panel/runtime problem the app should surface (kicked,
     /// device limit, runtime failed).

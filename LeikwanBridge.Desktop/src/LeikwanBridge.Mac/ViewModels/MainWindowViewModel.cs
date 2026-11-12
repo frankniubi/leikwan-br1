@@ -1351,6 +1351,43 @@ public sealed partial class MainWindowViewModel : ObservableObject
         IsConnectionsVisible = false;
     }
 
+    [ObservableProperty] private bool _isUploadingLogs;
+    [ObservableProperty] private string _logUploadSummary = string.Empty;
+
+    [RelayCommand]
+    private async Task UploadLogsAsync()
+    {
+        if (IsUploadingLogs)
+            return;
+        IsUploadingLogs = true;
+        LogUploadSummary = string.Empty;
+        try
+        {
+            var snapshotLines = Logs.ToArray();
+            var result = await _controller.UploadDebugLogsAsync(snapshotLines).ConfigureAwait(false);
+            _dispatch(() =>
+            {
+                LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
+                ShowNotice(string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    L.T("UploadLogsSuccess", "Uploaded diagnostic logs (ref {0})."),
+                    result.ReferenceCode));
+            });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _dispatch(() =>
+            {
+                LogUploadSummary = ex.Message;
+                ShowNotice(ex.Message);
+            });
+        }
+        finally
+        {
+            _dispatch(() => IsUploadingLogs = false);
+        }
+    }
+
     [RelayCommand]
     private void ShowLogs()
     {

@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Palette
@@ -96,6 +97,7 @@ fun SettingsScreen(
         onOpenAppRouting = onOpenAppRouting,
         onCheckUpdate = { AppUpdateController.check(context) },
         onUpdate = { AppUpdateController.downloadAndInstall(context) },
+        onUploadLogs = viewModel::uploadLogs,
         onLogout = { viewModel.logout(); onLogout() },
     )
 }
@@ -117,6 +119,7 @@ internal fun SettingsScreenContent(
     onCheckUpdate: () -> Unit,
     onOpenAppRouting: () -> Unit = {},
     onUpdate: () -> Unit,
+    onUploadLogs: () -> Unit = {},
     onLogout: () -> Unit,
 ) {
     Column(
@@ -205,6 +208,16 @@ internal fun SettingsScreenContent(
                     UpdateSettingsBlock(state = updateState, onCheck = onCheckUpdate, onUpdate = onUpdate)
                 }
             }
+            GroupDivider()
+            SettingsRow(
+                icon = Icons.Outlined.BugReport,
+                title = stringResource(R.string.settings_upload_logs),
+                summary = state.logUploadMessage ?: stringResource(R.string.settings_upload_logs_hint),
+                onClick = if (state.isUploadingLogs) null else onUploadLogs,
+                trailing = if (state.isUploadingLogs) {
+                    { CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) }
+                } else null,
+            )
         }
         // Room for the floating navigation dock.
         Spacer(Modifier.height(72.dp))

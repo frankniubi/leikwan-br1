@@ -1729,6 +1729,7 @@ abstract class BaseController
             ['group' => 'Products & Lines', 'href' => '/admin/plans', 'label' => 'Plans', 'active' => $active === 'plans'],
             ['group' => 'Products & Lines', 'href' => '/admin/forward-combinations', 'label' => 'Forward Combinations', 'active' => $active === 'forward-combinations'],
             ['group' => 'Products & Lines', 'href' => '/admin/ultra', 'label' => 'Ultra Operations', 'active' => $active === 'ultra'],
+            ['group' => 'Products & Lines', 'href' => '/admin/route-directions', 'label' => 'Route Directions', 'active' => $active === 'route-directions'],
             ['group' => 'Products & Lines', 'href' => '/admin/leigod-lines', 'label' => 'Managed TYO Lines', 'active' => $active === 'leigod-lines'],
             ['group' => 'Nodes', 'href' => '/admin/nodes', 'label' => 'Slave Nodes', 'active' => $active === 'nodes'],
             ['group' => 'Nodes', 'href' => '/admin/node-groups', 'label' => 'Slave Groups', 'active' => $active === 'node-groups'],

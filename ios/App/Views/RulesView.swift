@@ -7,6 +7,9 @@ struct RulesView: View {
     @EnvironmentObject private var model: AppModel
     @State private var addingRule = false
     @State private var addingCountry = false
+    @State private var importingRules = false
+    @State private var importingList = false
+    @State private var listMessage: String?
 
     var body: some View {
         Form {
@@ -78,11 +81,31 @@ struct RulesView: View {
                 Section {
                     ForEach(model.routing.customRules) { rule in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(rule.value)
-                                .font(.body.monospaced())
-                            Text("\(rule.type.rawValue) → \(Self.outcomeLabel(rule.outcome))" + (rule.outcome == .proxy ? " · " + model.routingTargetTitle(nodeID: rule.targetNodeId) : ""))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            if rule.type == .userList {
+                                let list = model.importedRuleLists.get(rule.value)
+                                HStack {
+                                    Label(list?.name ?? L("Missing rule list"), systemImage: "list.bullet.rectangle")
+                                    Spacer()
+                                    if list?.sourceURL != nil {
+                                        Button {
+                                            Task { await refreshList(rule.id) }
+                                        } label: {
+                                            Image(systemName: "arrow.clockwise")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .accessibilityLabel(L("Update rule list"))
+                                    }
+                                }
+                                Text(L("%@ rules", String(describing: list?.ruleCount ?? 0)) + " → \(Self.outcomeLabel(rule.outcome))" + (rule.outcome == .proxy ? " · " + model.routingTargetTitle(nodeID: rule.targetNodeId) : ""))
+                                    .font(.caption)
+                                    .foregroundStyle(list == nil ? Color.red : Color.secondary)
+                            } else {
+                                Text(rule.value)
+                                    .font(.body.monospaced())
+                                Text("\(rule.type.rawValue) → \(Self.outcomeLabel(rule.outcome))" + (rule.outcome == .proxy ? " · " + model.routingTargetTitle(nodeID: rule.targetNodeId) : ""))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             if rule.outcome == .proxy && model.routingTargetBindings.count > 1 {
                                 TargetPicker(selection: Binding(
                                     get: { rule.targetNodeId },
@@ -91,12 +114,31 @@ struct RulesView: View {
                             }
                         }
                     }
-                    .onDelete { model.routing.customRules.remove(atOffsets: $0) }
+                    .onDelete { offsets in
+                        let removed = offsets.map { model.routing.customRules[$0] }
+                        model.routing.customRules.remove(atOffsets: offsets)
+                        model.discardRuleListFiles(for: removed)
+                    }
                     .onMove { model.routing.customRules.move(fromOffsets: $0, toOffset: $1) }
                     Button {
                         addingRule = true
                     } label: {
                         Label(L("Add rule"), systemImage: "plus")
+                    }
+                    Button {
+                        importingRules = true
+                    } label: {
+                        Label(L("Paste rules"), systemImage: "doc.on.clipboard")
+                    }
+                    Button {
+                        importingList = true
+                    } label: {
+                        Label(L("Import rule list from URL"), systemImage: "link.badge.plus")
+                    }
+                    if let listMessage {
+                        Text(listMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text(L("Custom rules"))
@@ -138,6 +180,33 @@ struct RulesView: View {
                     model.routing.countries[code.lowercased()] = .direct
                 }
             }
+            .sheet(isPresented: $importingRules) {
+                ImportRulesSheet { newRules, text in
+                    if AppModel.shouldImportAsList(text) {
+                        // A whole .list or logical rules: one rule-set file, not thousands of rows.
+                        do {
+                            listMessage = try model.importRuleListText(text, name: L("Pasted rules"))
+                        } catch {
+                            listMessage = error.localizedDescription
+                        }
+                    } else {
+                        model.routing.customRules.append(contentsOf: newRules)
+                    }
+                }
+            }
+            .sheet(isPresented: $importingList) {
+                RuleListImportSheet { message in
+                    listMessage = message
+                }
+            }
+    }
+
+    private func refreshList(_ ruleID: String) async {
+        do {
+            listMessage = try await model.refreshRuleList(ruleID: ruleID)
+        } catch {
+            listMessage = error.localizedDescription
+        }
     }
 
     private func presetBinding(_ key: String) -> Binding<UserTrafficOutcome?> {
@@ -193,7 +262,7 @@ private struct CustomRuleEditor: View {
         NavigationStack {
             Form {
                 Picker(L("Type"), selection: $type) {
-                    ForEach(CustomRuleType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(CustomRuleType.manualTypes, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 TextField(placeholder, text: $value)
                     .textInputAutocapitalization(.never)
@@ -236,6 +305,10 @@ private struct CustomRuleEditor: View {
         case .domainKeyword: return "example"
         case .ipCidr: return "1.2.3.0/24"
         case .geoip: return L("Country code, e.g. jp")
+        case .geosite, .ruleSet: return "openai"
+        case .dstPort: return "443 or 8000:8999"
+        case .domainRegex: return "^ad\\d+\\.example\\.com$"
+        case .userList: return ""
         }
     }
 }
@@ -356,5 +429,173 @@ private struct TargetPicker: View {
                 .foregroundStyle(Palette.onSurfaceVariant)
         }
         .pickerStyle(.menu)
+    }
+}
+
+private struct ImportRulesSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var pasteText = ""
+    @State private var validationErrors: [String] = []
+    @State private var parsedRules: [CustomRoutingRule] = []
+    /// Parsed line rules plus the raw text (large or logical pastes import as one list).
+    let onImport: ([CustomRoutingRule], String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $pasteText)
+                        .font(.footnote.monospaced())
+                        .frame(minHeight: 120)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onChange(of: pasteText) { newValue in
+                            updateValidation(newValue)
+                        }
+                } header: {
+                    Text(L("Paste rules"))
+                }
+
+                if !validationErrors.isEmpty {
+                    Section {
+                        ForEach(validationErrors, id: \.self) { error in
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    } header: {
+                        Text(L("Errors"))
+                    }
+                }
+
+                if !parsedRules.isEmpty {
+                    Section {
+                        ForEach(parsedRules) { rule in
+                            Text(rule.value)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.green)
+                        }
+                    } header: {
+                        HStack {
+                            Text(L("Paste rules"))
+                            Spacer()
+                            Text("\(parsedRules.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Text(L("Quick presets:"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(ClashPresets.all, id: \.name) { preset in
+                            Button {
+                                if !pasteText.isEmpty {
+                                    pasteText += "\n"
+                                }
+                                pasteText += preset.lines
+                            } label: {
+                                Text(preset.name)
+                                    .font(.caption)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 10)
+                                    .background(Palette.primaryContainer, in: Capsule())
+                                    .foregroundStyle(Palette.onPrimaryContainer)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(L("Import rules"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("Import")) {
+                        onImport(parsedRules, pasteText)
+                        dismiss()
+                    }
+                    .disabled(parsedRules.isEmpty && !AppModel.shouldImportAsList(pasteText))
+                }
+            }
+        }
+    }
+
+    private func updateValidation(_ text: String) {
+        let result = CustomRoutingRule.parseLines(text)
+        parsedRules = result.rules
+        validationErrors = result.errors
+    }
+}
+
+/// Downloads a Surge / Clash rule list (e.g. a blackmatrix7 `.list`) into one routing rule.
+private struct RuleListImportSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var url = ""
+    @State private var name = ""
+    @State private var outcome = CustomRuleOutcome.proxy
+    @State private var busy = false
+    @State private var error: String?
+    let onDone: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField(L("Rule list URL"), text: $url)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField(L("Name (optional)"), text: $name)
+                    Picker(L("Action"), selection: $outcome) {
+                        ForEach(CustomRuleOutcome.allCases, id: \.self) { Text(RulesView.outcomeLabel($0)).tag($0) }
+                    }
+                } footer: {
+                    Text(L("Surge or Clash .list files, e.g. a blackmatrix7 rule set. The whole list goes to the action you choose; rule types iOS cannot match (process, URL regex, ASN) are skipped."))
+                }
+                if let error {
+                    Section {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle(L("Import rule list"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if busy {
+                        ProgressView()
+                    } else {
+                        Button(L("Import")) {
+                            Task { await runImport() }
+                        }
+                        .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    private func runImport() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let message = try await model.importRuleList(urlString: url, name: name, outcome: outcome)
+            onDone(message)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

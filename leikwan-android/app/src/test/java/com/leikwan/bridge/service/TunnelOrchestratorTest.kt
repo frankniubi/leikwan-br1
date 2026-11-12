@@ -1118,6 +1118,8 @@ class TunnelOrchestratorTest {
         override suspend fun createClientRule(auth: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
         override suspend fun updateClientRule(auth: String, ruleId: String, request: ClientRuleWriteRequest): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
         override suspend fun deleteClientRule(auth: String, ruleId: String): Response<ClientRuleWriteResponse> = throw UnsupportedOperationException()
+        override suspend fun startDebugCollection(auth: String, body: Map<String, String>): retrofit2.Response<com.leikwan.bridge.api.DebugCollectionStartResponse> = throw UnsupportedOperationException()
+        override suspend fun uploadDebugLogChunk(auth: String, request: com.leikwan.bridge.api.DebugLogChunkRequest): retrofit2.Response<com.leikwan.bridge.api.DebugLogChunkResponse> = throw UnsupportedOperationException()
         override suspend fun getForwardConfig(auth: String, forwardId: Long): JsonElement = JsonObject()
     }
 

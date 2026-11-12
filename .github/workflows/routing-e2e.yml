@@ -1,0 +1,291 @@
+name: Routing E2E
+
+# Proves the Clash-style split routing takes effect at runtime on Android and iOS: each app's own
+# config builder emits the sing-box config (unit tests below), the same sing-box core the app ships
+# runs it, and real connections are checked to land on proxy / direct / reject as the rules in
+# tools/routing-e2e/rules.txt say (tools/routing-e2e/harness.py, cases in cases.json).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/macos-client
+
+permissions:
+  contents: read
+
+concurrency:
+  group: routing-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-config:
+    name: Android config (SingboxConfigBuilder)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Build routing configs with the app's builder
+        shell: bash
+        working-directory: leikwan-android
+        env:
+          ROUTING_E2E_OUT: ${{ runner.temp }}/routing-configs
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest \
+            --tests '*RoutingE2eConfigDumpTest' \
+            --tests '*ClashRuleParserTest'
+          ls -la "$ROUTING_E2E_OUT"
+          test -s "$ROUTING_E2E_OUT/android-s1.json"
+          test -s "$ROUTING_E2E_OUT/android-s2.json"
+
+      - name: Upload Android configs
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-configs-android
+          path: ${{ runner.temp }}/routing-configs/android-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unit test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-android-unit-test-reports
+          path: leikwan-android/app/build/reports/tests
+          if-no-files-found: ignore
+          retention-days: 14
+
+  ios-config:
+    name: iOS config (SingboxConfigBuilder)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build routing configs with the app's builder
+        shell: bash
+        working-directory: ios/Core
+        env:
+          ROUTING_E2E_OUT: ${{ runner.temp }}/routing-configs
+        run: |
+          set -euo pipefail
+          swift test --filter 'RoutingE2EConfigDumpTests|RoutingTests'
+          ls -la "$ROUTING_E2E_OUT"
+          test -s "$ROUTING_E2E_OUT/ios-s1.json"
+          test -s "$ROUTING_E2E_OUT/ios-s2.json"
+
+      - name: Upload iOS configs
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-configs-ios
+          path: ${{ runner.temp }}/routing-configs/ios-*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  cores:
+    name: sing-box core (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The sing-box the iOS app ships: SING_BOX_VERSION in ios-client.yml and
+          # ios/scripts/build-go-mobile.sh, with that script's build tags.
+          - platform: ios
+            version: v1.13.12
+            label: "1.13.12"
+            tags: with_gvisor,with_low_memory,with_clash_api,badlinkname,tfogo_checklinkname0,grpcnotrace
+          # The sing-box inside leikwan-android/app/libs/libbox.aar (1.14.0-alpha, commit
+          # 2e64545db483); its module graph and build tags are checked against the .so below.
+          - platform: android
+            version: v0.0.0-20260412144634-2e64545db483
+            label: "1.14.0-alpha+2e64545db483"
+            tags: with_gvisor,with_quic,with_wireguard,with_utls,with_clash_api,badlinkname,tfogo_checklinkname0
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        id: go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: sing-box-${{ matrix.platform }}-${{ matrix.version }}-go${{ steps.go.outputs.go-version }}
+          restore-keys: |
+            sing-box-${{ matrix.platform }}-${{ matrix.version }}-
+
+      - name: Version gate (iOS)
+        if: ${{ matrix.platform == 'ios' }}
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          TAGS: ${{ matrix.tags }}
+        run: |
+          set -euo pipefail
+          workflow="$(sed -nE 's/^[[:space:]]*SING_BOX_VERSION:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' .github/workflows/ios-client.yml | head -n1)"
+          script="$(sed -nE 's/^SING_BOX_VERSION="\$\{SING_BOX_VERSION:-([^}]+)\}"$/\1/p' ios/scripts/build-go-mobile.sh | head -n1)"
+          script_tags="$(sed -nE 's/^tags="([^"]+)"$/\1/p' ios/scripts/build-go-mobile.sh | head -n1)"
+          echo "matrix=$VERSION ios-client.yml=$workflow build-go-mobile.sh=$script"
+          echo "matrix tags=$TAGS"
+          echo "script tags=$script_tags"
+          [ "$workflow" = "$VERSION" ] || { echo "::error::ios-client.yml SING_BOX_VERSION ($workflow) != $VERSION"; exit 1; }
+          [ "$script" = "$VERSION" ] || { echo "::error::build-go-mobile.sh SING_BOX_VERSION ($script) != $VERSION"; exit 1; }
+          [ "$script_tags" = "$TAGS" ] || { echo "::error::build-go-mobile.sh tags ($script_tags) != $TAGS"; exit 1; }
+
+      - name: Build sing-box
+        shell: bash
+        env:
+          VERSION: ${{ matrix.version }}
+          LABEL: ${{ matrix.label }}
+          TAGS: ${{ matrix.tags }}
+          PLATFORM: ${{ matrix.platform }}
+          CGO_ENABLED: "0"
+          # Android's libbox is built from a SagerNet testing-branch commit that was later
+          # rebased away, so the Go module proxy cannot resolve its pseudo-version. GitHub
+          # still serves the commit by SHA; build from that tarball, pinned by SHA-256.
+          ANDROID_SRC_SHA: 2e64545db4838c06dd16d9cb75621bc7136600cd
+          ANDROID_SRC_SHA256: 47143dd4ad2f81fa3f4ef38205c1c3bec47531a6f88627a90bd1b7c489e9f70d
+        run: |
+          set -euo pipefail
+          export GOBIN="$RUNNER_TEMP/sing-box-bin"
+          mkdir -p "$GOBIN"
+          ldflags="-checklinkname=0 -s -w -X github.com/sagernet/sing-box/constant.Version=$LABEL"
+          if [ "$PLATFORM" = "android" ]; then
+            src="$RUNNER_TEMP/sing-box-src"
+            curl -fsSL -o "$RUNNER_TEMP/sing-box.tar.gz" "https://github.com/SagerNet/sing-box/archive/$ANDROID_SRC_SHA.tar.gz"
+            echo "$ANDROID_SRC_SHA256  $RUNNER_TEMP/sing-box.tar.gz" | sha256sum -c -
+            mkdir -p "$src"
+            tar -xzf "$RUNNER_TEMP/sing-box.tar.gz" -C "$src" --strip-components=1
+            (cd "$src" && go build -trimpath -ldflags="$ldflags" -tags "$TAGS" -o "$GOBIN/sing-box" ./cmd/sing-box)
+          else
+            go install -trimpath -ldflags="$ldflags" -tags "$TAGS" \
+              "github.com/sagernet/sing-box/cmd/sing-box@$VERSION"
+            built="$(go version -m "$GOBIN/sing-box" | awk '$1=="mod" && $2=="github.com/sagernet/sing-box" {print $3}')"
+            [ "$built" = "$VERSION" ] || { echo "::error::built module version $built != $VERSION"; exit 1; }
+          fi
+          "$GOBIN/sing-box" version
+          go version -m "$GOBIN/sing-box" | head -n 12
+          built_tags="$(go version -m "$GOBIN/sing-box" | sed -nE 's/^[[:space:]]*build[[:space:]]+-tags=(.*)$/\1/p')"
+          [ "$built_tags" = "$TAGS" ] || { echo "::error::built tags $built_tags != $TAGS"; exit 1; }
+
+      - name: Version gate (Android, against libbox.aar)
+        if: ${{ matrix.platform == 'android' }}
+        shell: bash
+        env:
+          TAGS: ${{ matrix.tags }}
+        run: |
+          set -euo pipefail
+          # libbox reports sing-box as "(devel)", so compare everything else Go recorded: build
+          # tags and the version of every dependency module both binaries link.
+          unzip -p leikwan-android/app/libs/libbox.aar jni/x86_64/libbox.so > "$RUNNER_TEMP/libbox.so"
+          go version -m "$RUNNER_TEMP/libbox.so" > "$RUNNER_TEMP/libbox.info"
+          go version -m "$RUNNER_TEMP/sing-box-bin/sing-box" > "$RUNNER_TEMP/sing-box.info"
+          lib_tags="$(sed -nE 's/^[[:space:]]*build[[:space:]]+-tags=(.*)$/\1/p' "$RUNNER_TEMP/libbox.info")"
+          echo "libbox tags=$lib_tags"
+          [ "$lib_tags" = "$TAGS" ] || { echo "::error::libbox.aar tags ($lib_tags) != $TAGS"; exit 1; }
+          awk '$1=="dep"{print $2, $3}' "$RUNNER_TEMP/libbox.info" | sort > "$RUNNER_TEMP/lib.deps"
+          awk '$1=="dep"{print $2, $3}' "$RUNNER_TEMP/sing-box.info" | sort > "$RUNNER_TEMP/bin.deps"
+          join "$RUNNER_TEMP/lib.deps" "$RUNNER_TEMP/bin.deps" > "$RUNNER_TEMP/common.deps"
+          common="$(wc -l < "$RUNNER_TEMP/common.deps")"
+          mismatched="$(awk '$2!=$3' "$RUNNER_TEMP/common.deps")"
+          echo "dependency modules linked by both: $common"
+          for module in github.com/sagernet/sing github.com/sagernet/sing-tun github.com/sagernet/sing-quic github.com/sagernet/gvisor github.com/sagernet/quic-go; do
+            grep -q "^$module " "$RUNNER_TEMP/common.deps" || { echo "::error::$module missing from libbox or sing-box"; exit 1; }
+          done
+          if [ -n "$mismatched" ] || [ "$common" -lt 40 ]; then
+            echo "::error::sing-box module graph differs from libbox.aar"
+            echo "$mismatched"
+            exit 1
+          fi
+
+      - name: Upload sing-box
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-${{ matrix.platform }}
+          path: ${{ runner.temp }}/sing-box-bin/sing-box
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime:
+    name: Runtime routing (${{ matrix.platform }} ${{ matrix.scenario }})
+    needs: [android-config, ios-config, cores]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [android, ios]
+        scenario: [s1, s2]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download configs
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-configs-${{ matrix.platform }}
+          path: ${{ runner.temp }}/configs
+
+      - name: Download sing-box
+        uses: actions/download-artifact@v4
+        with:
+          name: sing-box-${{ matrix.platform }}
+          path: ${{ runner.temp }}/core
+
+      - name: Bind direct-marker addresses on lo
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "$RUNNER_TEMP/core/sing-box"
+          for ip in $(python3 -c 'import json; print(" ".join(json.load(open("tools/routing-e2e/cases.json"))["direct_marker"]["ips"]))'); do
+            sudo ip addr add "$ip/32" dev lo
+          done
+          ip addr show dev lo
+
+      - name: Run routing harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/routing-e2e/harness.py \
+            --config "$RUNNER_TEMP/configs/${{ matrix.platform }}-${{ matrix.scenario }}.json" \
+            --scenario "${{ matrix.scenario }}" \
+            --platform "${{ matrix.platform }}" \
+            --singbox "$RUNNER_TEMP/core/sing-box" \
+            --rulesets ios/RuleSets \
+            --cases tools/routing-e2e/cases.json \
+            --out "$RUNNER_TEMP/routing-e2e-out"
+
+      - name: Upload logs and configs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-e2e-${{ matrix.platform }}-${{ matrix.scenario }}
+          path: |
+            ${{ runner.temp }}/routing-e2e-out/
+            ${{ runner.temp }}/configs/
+          if-no-files-found: ignore
+          retention-days: 14

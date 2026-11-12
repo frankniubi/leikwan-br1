@@ -16,6 +16,9 @@ interface UserRoutingRuleDao {
     @Query("SELECT * FROM user_routing_rules WHERE kind = :kind ORDER BY created_at ASC")
     suspend fun byKind(kind: String): List<UserRoutingRuleEntity>
 
+    @Query("SELECT * FROM user_routing_rules WHERE kind IN (:kinds) ORDER BY created_at ASC")
+    suspend fun byKinds(kinds: List<String>): List<UserRoutingRuleEntity>
+
     @Query("UPDATE user_routing_rules SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
 

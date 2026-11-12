@@ -1,0 +1,41 @@
+<p>iPhone 和 iPad 版通过苹果的 TestFlight 分发，不在 App Store 上架。在控制台「客户端」页面申请一次邀请，之后安装和更新都在 TestFlight 里完成。</p>
+
+<h2>你将完成什么</h2>
+<p>从 TestFlight 装好 App，用客户端 ID 和 Agent Token 登录，并且连上。</p>
+
+<h2>开始前准备</h2>
+<ul>
+<li>一个有效套餐。只有套餐有效时才能申请邀请。</li>
+<li>iOS 16 或以上的 iPhone 或 iPad。</li>
+<li>这台设备上登录 App Store 用的 Apple ID。</li>
+<li>App Store 里的 <strong>TestFlight</strong>（苹果官方出品，免费）。</li>
+</ul>
+
+<h2>操作步骤</h2>
+<ol>
+<li><strong>打开「客户端」页面</strong>，找到 <strong>iOS · TestFlight</strong> 这一块。</li>
+<li><strong>填写 Apple ID</strong>，点「申请 TestFlight 邀请」。每个账户只记录一个 Apple ID，请填这台设备上用的那个。几秒后卡片会出现「打开 TestFlight 邀请链接」按钮，以及 App 要填的服务器地址。</li>
+<li><strong>在 iPhone 或 iPad 上打开邀请链接。</strong>如果你是在电脑上操作，先把链接发到手机上（比如发给自己的一条消息），再用手机上的 Safari 打开。TestFlight 会打开 App 页面：点「接受」，再点「安装」。</li>
+<li><strong>打开 App。</strong>桌面上的名字是 <strong>Bridge the Fox Sake</strong>。</li>
+<li><strong>填写登录信息。</strong>「服务器地址」点 <strong>Cloudflare CDN</strong>；如果当前网络连不上，改点 <strong>Directly CDN</strong>。这两个地址在 iOS 卡片上也列出来了，可以直接复制。「客户端 ID」和 Agent Token 从「客户端」页面复制。客户端 ID 是那里显示的数字，不是套餐的服务编号（Service ID）。最后点「保存并登录」。</li>
+<li><strong>允许添加 VPN 配置。</strong>第一次连接时 iOS 会弹窗询问，点「允许」，然后点「连接」。</li>
+</ol>
+
+<h2>如何确认成功</h2>
+<p>App 显示已连接，并且「客户端」页面底部的「在线设备」里出现这台 iPhone 或 iPad。</p>
+
+<h2>如何更新</h2>
+<p>新版本通过 TestFlight 推送，不走 App Store。在 TestFlight 的 App 页面里打开「自动更新」，或者看到新版本时打开 TestFlight 点「更新」。每个 TestFlight 版本发布 90 天后会失效，到期前 TestFlight 会提醒，从同一个页面装最新版即可。</p>
+
+<h2>如果没有成功</h2>
+<ul>
+<li><strong>卡片提示需要有效套餐。</strong>购买或续费套餐后刷新「客户端」页面。</li>
+<li><strong>邀请链接打开的是网页而不是 TestFlight。</strong>先从 App Store 安装 TestFlight，再在设备上重新打开链接。</li>
+<li><strong>TestFlight 提示测试名额已满或不再接受测试员。</strong>请联系客服。</li>
+<li><strong>卡片上的 Apple ID 填错了。</strong>控制台里不能自己改，请联系客服。</li>
+<li><strong>App 提示「此设备未被服务器信任」。</strong>客户端 ID 填错了，通常是填成了服务编号。退出登录，用「客户端」页面上的客户端 ID 重新登录。</li>
+<li><strong>一直登录不上。</strong>编辑配置，把服务器地址换成另一个预设。</li>
+</ul>
+
+<h2>相关指南</h2>
+<p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。其他设备看<a href="/knowledgebase?thread=install-client">安装客户端</a>。有问题可以看<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>。</p>

@@ -149,4 +149,25 @@ return [
             ],
         ],
     ],
+    'cloud-nodes-and-forward-pairing' => [
+        'is_pinned' => 0,
+        'sort_order' => 80,
+        'articles' => [
+            'en' => [
+                'title' => 'How Cloud Nodes Pair with Forwards',
+                'excerpt' => 'A forward and a cloud node are one-to-one paired by port: they must match exactly, or reuse a node only when protocol and password also match.',
+                'body' => 'en/cloud-nodes-and-forward-pairing.html',
+            ],
+            'zh-Hans' => [
+                'title' => '云端节点与转发如何配对',
+                'excerpt' => '一条转发与一个云端节点一一对应：仅当目标端口相同、协议相同、密码相同时，才可复用同一节点；否则必须新建转发和节点。',
+                'body' => 'zh-Hans/cloud-nodes-and-forward-pairing.html',
+            ],
+            'zh-TW' => [
+                'title' => '雲端節點與轉發如何配對',
+                'excerpt' => '一條轉發與一個雲端節點一一對應：僅當目標連接埠相同、協議相同、密碼相同時，才可複用同一節點；否則必須新建轉發和節點。',
+                'body' => 'zh-TW/cloud-nodes-and-forward-pairing.html',
+            ],
+        ],
+    ],
 ];

@@ -241,15 +241,15 @@ selectionDone:
 			if stringsContainsUDP(policy.Transport) && externalUoTEnabled(server.config) {
 				server.status.UpdateUDPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
-				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+				server.store.MarkCandidateLeaseSuccess(selected)
 			} else if stringsContainsUDP(policy.Transport) {
 				server.status.UpdateUDPProbeWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "udp", selected.LeaseHash)
-				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+				server.store.MarkCandidateLeaseSuccess(selected)
 			} else {
 				server.status.UpdateTCPWithTierAndCandidate(selected.SelectionRef, selected.SelectionTier, selected.CandidateKeyHash, probeResult.MedianRTT, selected.LeaseHash)
 				server.status.RecordCandidateSuccess(selected.CandidateKeyHash, "tcp", selected.LeaseHash)
-				server.store.MarkCandidateSuccess(selected.CandidateKeyHash)
+				server.store.MarkCandidateLeaseSuccess(selected)
 			}
 		}
 	}

@@ -31,9 +31,9 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "47779bf48f08d4471831b8e37847dea1e77d8df6c3d4e2de5aab5694a426a6dd",
+    "sha256": "7c3ee3fee7d7ab11946eb7a1b2c220e7c4c1a42c95ddf19aced487090f859a0d",
     "size": 417991,
-    "size_bytes": 417991,
+    "size_bytes": 423321,
     "version": "2026.11.8.1"
   },
   "client_agent_installer": {
@@ -420,23 +420,23 @@
   },
   "openwrt_leikwand_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.8-r1_aarch64_generic.ipk",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.9-r1_aarch64_generic.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.8-r1_aarch64_generic.ipk",
-    "sha256": "72510b72776fb4063981eb112a4cc7fe6bcdabce08418354bd7422f95a5ce06e",
-    "size_bytes": 2660050,
-    "version": "1.2.8"
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.9-r1_aarch64_generic.ipk",
+    "sha256": "e88c44ffa0070df02c393d7d9baccfcf7d4466cbf8dbbbf8e1053f8755ab284a",
+    "size_bytes": 2683678,
+    "version": "1.2.9"
   },
   "openwrt_leikwand_apk_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.8-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.9-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.8-r1.apk",
-    "sha256": "2190a2e7972005dad6f5011767ef2777a9ea40301c17be298208f3a81daf9ccd",
-    "size_bytes": 2648499,
-    "version": "1.2.8"
+    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.9-r1.apk",
+    "sha256": "40bd679434df12d394e334e5a6f48802e13b31f55ffd9c6d8454a9ac136020e0",
+    "size_bytes": 2671704,
+    "version": "1.2.9"
   },
   "openwrt_leikwand_x86_64": {
     "architecture": "amd64",

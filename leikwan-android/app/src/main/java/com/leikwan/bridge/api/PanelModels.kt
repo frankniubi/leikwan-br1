@@ -4,6 +4,8 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
+import com.leikwan.bridge.runtime.UltraCandidateFeedbackReport
+import com.leikwan.bridge.runtime.UltraStatusReport
 import com.leikwan.bridge.runtime.UltraUsageRow
 
 data class PullConfigsResponse(
@@ -27,6 +29,13 @@ data class HeartbeatRequest(
     @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
     /** Per-forward Ultra usage deltas; null (omitted) when there is nothing to report. */
     @SerializedName("ultra_usage") val ultraUsage: List<UltraUsageRow>? = null,
+    /**
+     * Per-forward Ultra runtime health; a list (possibly empty) on every heartbeat that can see
+     * the runtime directory. The panel stores it as the device's `ultra_status_json`.
+     */
+    @SerializedName("ultra_status") val ultraStatus: List<UltraStatusReport>? = null,
+    /** Fresh, not yet delivered candidate outcomes from the runtimes; null (omitted) when none. */
+    @SerializedName("ultra_candidate_feedback") val ultraCandidateFeedback: List<UltraCandidateFeedbackReport>? = null,
 )
 
 data class HeartbeatResponse(
@@ -144,4 +153,32 @@ data class ForwardInfo(
     @SerializedName("endpoint_mode") val endpointMode: String = "",
     val endpoints: List<JsonElement> = emptyList(),
     @SerializedName("speed_limit_mbps") val speedLimitMbps: Int? = null,
+)
+
+data class DebugCollectionDto(
+    val uuid: String = "",
+    val status: String = "",
+    @SerializedName("expires_at") val expiresAt: String = "",
+)
+
+data class DebugCollectionStartResponse(
+    val ok: Boolean,
+    val error: String? = null,
+    @SerializedName("reference_code") val referenceCode: String? = null,
+    @SerializedName("debug_collection") val debugCollection: DebugCollectionDto? = null,
+)
+
+data class DebugLogChunkRequest(
+    @SerializedName("collection_uuid") val collectionUuid: String,
+    val sequence: Int,
+    val sha256: String,
+    @SerializedName("chunk_base64") val chunkBase64: String,
+    val source: String = "android-client.log",
+)
+
+data class DebugLogChunkResponse(
+    val ok: Boolean,
+    val accepted: Boolean? = null,
+    val duplicate: Boolean? = null,
+    val error: String? = null,
 )

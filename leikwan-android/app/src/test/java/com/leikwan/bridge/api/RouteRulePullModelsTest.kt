@@ -1,6 +1,7 @@
 package com.leikwan.bridge.api
 
 import com.google.gson.Gson
+import com.leikwan.bridge.clientrules.toDomain
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -196,5 +197,33 @@ class RouteRulePullModelsTest {
         assertTrue(success.ok)
         assertEquals("rule_abc", success.clientRule?.id)
         assertEquals(1L, success.clientRule?.syncVersion)
+    }
+
+    @Test
+    fun `panel pull payload with nested-only binding is installable`() {
+        // Exact shape master/src/Support/RouteDirectionService.php emits (locked by
+        // master/tests/route_direction_client_rules_test.php): bindings carry only the
+        // nested local_endpoint, never the legacy flat local_tcp_port/local_udp_port.
+        val parsed = gson.fromJson(
+            """
+            {"ok":true,"client":{"id":1,"name":"phone"},"forwards":[],
+             "route_directions":[{"id":"dir_sh_jp_1","label":"沪日1","status":"available","is_available":true,"sort_order":10}],
+             "route_rule_entitlements":[{"service_scope_id":"svc_scope_1","service_id":1,"subscription_id":9001,"max_rules":2,"remaining_rules":1,"allowed_direction_ids":["dir_sh_jp_1"],"over_quota":false}],
+             "client_rules":[{"id":"rule_abc","service_scope_id":"svc_scope_1","destination_ip":"93.184.216.34","destination_port":443,"protocol":"tcp_udp","direction_id":"dir_sh_jp_1","enabled":true,"effective_state":"active","sync_version":3}],
+             "direction_runtime_bindings":[{"service_scope_id":"svc_scope_1","client_runtime_binding_id":"svc_scope_1:dir_sh_jp_1","direction_id":"dir_sh_jp_1","binding_state":"ready","runtime_ref":{"type":"forward_ref","forward_id":1,"selectable":false,"transport":"tcp_udp"},"local_endpoint":{"host":"127.0.0.1","tcp_port":11001,"udp_port":11001},"tcp_ready":true,"udp_ready":true}],
+             "capabilities":{"route_direction_rules":true,"exact_destination_rules":true}}
+            """.trimIndent(),
+            PullConfigsResponse::class.java,
+        )
+
+        val binding = parsed.directionRuntimeBindings.orEmpty().single().toDomain()
+        assertEquals(11001, binding.localTcpPort)
+        assertEquals(11001, binding.localUdpPort)
+        assertEquals(1L, binding.runtimeForwardId)
+        assertTrue(binding.readyForAndroid)
+        val rule = parsed.clientRules.orEmpty().single().toDomain(nowMs = 0L)
+        assertTrue(rule.installable)
+        assertEquals(1, parsed.routeRuleEntitlements.orEmpty().single().remainingRules)
+        assertTrue(parsed.routeRuleCapabilities.toDomain().routeDirectionRules)
     }
 }

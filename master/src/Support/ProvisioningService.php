@@ -19,6 +19,8 @@ final class ProvisioningService
     private ?bool $nodeGroupIngressColumnsAvailable = null;
     private ?bool $nodeGroupDescriptionColumnAvailable = null;
     private ?LeigodLineCatalogService $leigodLineCatalogService = null;
+    private ?RouteDirectionService $routeDirectionService = null;
+    private ?ClientRuleValidator $clientRuleValidator = null;
 
     /**
      * Per-(sidecar point) uniqueness-checked allocation registries. Keyed by point id,
@@ -268,6 +270,7 @@ final class ProvisioningService
                     'source' => 'whmcs',
                 ]);
             } else {
+                $previousUserId = (int) ($service['user_id'] ?? 0);
                 $existingServerIp = trim((string) ($service['server_public_ip'] ?? ''));
                 $effectiveServerIp = $serverPublicIp !== '' ? $serverPublicIp : $existingServerIp;
                 $effectiveIpState = $serverPublicIp !== '' ? 'fresh' : ($effectiveServerIp !== '' ? 'stale' : 'missing');
@@ -319,6 +322,39 @@ final class ProvisioningService
             }
 
             $serviceId = (int) $service['id'];
+            // An ownership change through the billing module must not leave the
+            // previous owner's forwards (scoped by line_client_id) attached: their
+            // client would keep receiving live config for a service it no longer
+            // owns. Delete them exactly like the tenant delete API, then rotate
+            // the service client_token so any exported connection config dies.
+            if ($previousUserId > 0 && $previousUserId !== (int) $user['id']) {
+                $staleForwards = $this->db->fetchAll(
+                    'SELECT f.id FROM forwards f
+                     LEFT JOIN clients c ON c.id = f.line_client_id
+                     WHERE f.service_id = :service_id
+                       AND (c.owner_user_id IS NULL OR c.owner_user_id <> :new_user_id)',
+                    ['service_id' => $serviceId, 'new_user_id' => $user['id']]
+                );
+                foreach ($staleForwards as $stale) {
+                    try {
+                        $this->deleteForward((int) $stale['id'], 'whmcs_owner_change');
+                    } catch (ApiException $staleException) {
+                        if ($staleException->getMessage() !== 'forward_not_found') {
+                            throw $staleException;
+                        }
+                    }
+                }
+                if ($staleForwards !== []) {
+                    $this->regenerateClientToken($serviceId);
+                    $this->audit('service.owner_changed', [
+                        'service_id' => $serviceId,
+                        'previous_user_id' => $previousUserId,
+                        'new_user_id' => $user['id'],
+                        'deleted_forwards' => count($staleForwards),
+                        'source' => 'whmcs_module',
+                    ]);
+                }
+            }
             // Desktop/Android login refuses an account without a client, so a
             // billing-created tenant could never obtain an Ultra lease.
             if ((string) ($user['status'] ?? '') === 'active') {
@@ -3154,6 +3190,295 @@ final class ProvisioningService
     /**
      * @return array<int, array<string, mixed>>
      */
+    public function routeDirections(): RouteDirectionService
+    {
+        if (!$this->routeDirectionService instanceof RouteDirectionService) {
+            $this->routeDirectionService = new RouteDirectionService($this->config, $this->db, $this->clientRuleValidator());
+        }
+        return $this->routeDirectionService;
+    }
+
+    public function clientRuleValidator(): ClientRuleValidator
+    {
+        if (!$this->clientRuleValidator instanceof ClientRuleValidator) {
+            $this->clientRuleValidator = new ClientRuleValidator($this->config, $this->db);
+        }
+        return $this->clientRuleValidator;
+    }
+
+    public function listRouteDirections(bool $admin = false): array
+    {
+        return $this->routeDirections()->listDirections($admin);
+    }
+
+    public function saveRouteDirection(array $payload): array
+    {
+        return $this->routeDirections()->saveDirection($payload);
+    }
+
+    public function allowedRouteDirectionIdsForPlan(int $planId): array
+    {
+        return $this->routeDirections()->allowedDirectionIdsForPlan($planId);
+    }
+
+    /** Route-rule capabilities the device advertised in its heartbeat (agent_config_json). */
+    public function clientRouteRuleCapabilities(array $client): array
+    {
+        $config = $this->decodeJsonAssoc($client['agent_config_json'] ?? null);
+        return [
+            'route_direction_rules' => !empty($config['supports_route_direction_rules']),
+            'exact_destination_rules' => !empty($config['supports_exact_destination_rules']),
+        ];
+    }
+
+    public function routeDirectionConfigPullForClient(int $clientId, array $capabilities, array $forwards): array
+    {
+        return $this->routeDirections()->configPullForClient($clientId, $capabilities, $forwards);
+    }
+
+    /**
+     * Helper-only forwards back a Route Direction and are never offered as a selectable
+     * line: devices without route-rule support do not receive them at all, upgraded
+     * devices receive them marked non-selectable.
+     */
+    public function filterRouteRuleHelperForwardsForPull(array $forwards, array $capabilities): array
+    {
+        $upgraded = !empty($capabilities['route_direction_rules']) && !empty($capabilities['exact_destination_rules']);
+        $filtered = [];
+        foreach ($forwards as $forward) {
+            if (!is_array($forward)) {
+                continue;
+            }
+            $helperOnly = !empty($forward['route_rule_helper_only']);
+            if ($helperOnly && !$upgraded) {
+                continue;
+            }
+            if ($helperOnly) {
+                $forward['selectable'] = false;
+                $forward['route_rule_helper_only'] = true;
+            }
+            $filtered[] = $forward;
+        }
+        return $filtered;
+    }
+
+    public function clientCanAccessScope(int $clientId, string $serviceScopeId): bool
+    {
+        $serviceId = $this->routeDirections()->serviceIdForScope($serviceScopeId);
+        return $this->db->fetchOne(
+            'SELECT s.id
+             FROM services s
+             INNER JOIN clients c ON c.owner_user_id = s.user_id
+             WHERE s.id = :service_id AND c.id = :client_id AND s.status = :active
+             LIMIT 1',
+            ['service_id' => $serviceId, 'client_id' => $clientId, 'active' => 'active']
+        ) !== null;
+    }
+
+    public function createClientRuleForAgent(int $clientId, array $payload): array
+    {
+        return $this->saveClientRule($clientId, null, $payload, false);
+    }
+
+    public function updateClientRuleForAgent(int $clientId, string $ruleId, array $payload): array
+    {
+        $rule = $this->loadClientRule($ruleId);
+        if ($rule === null || !$this->clientCanAccessScope($clientId, (string) $rule['service_scope_id'])) {
+            throw new ApiException('rule_not_found', 404);
+        }
+        return $this->saveClientRule($clientId, $ruleId, $payload, false);
+    }
+
+    public function tombstoneClientRuleForAgent(int $clientId, string $ruleId): array
+    {
+        $rule = $this->loadClientRule($ruleId);
+        if ($rule === null || !$this->clientCanAccessScope($clientId, (string) $rule['service_scope_id'])) {
+            throw new ApiException('rule_not_found', 404);
+        }
+        return $this->tombstoneClientRule($ruleId, 'client');
+    }
+
+    public function saveClientRuleFromAdmin(string $ruleId, array $payload): array
+    {
+        return $this->saveClientRule(0, $ruleId, $payload, true);
+    }
+
+    public function tombstoneClientRuleFromAdmin(string $ruleId, string $reason = ''): array
+    {
+        return $this->tombstoneClientRule($ruleId, $reason !== '' ? $reason : 'admin');
+    }
+
+    public function listClientRulesForAdmin(array $filters = []): array
+    {
+        $where = [];
+        $params = [];
+        if (!empty($filters['service_scope_id'])) {
+            $where[] = 'service_scope_id = :service_scope_id';
+            $params['service_scope_id'] = (string) $filters['service_scope_id'];
+        }
+        $sql = 'SELECT * FROM client_rules' . ($where !== [] ? ' WHERE ' . implode(' AND ', $where) : '') . ' ORDER BY updated_at DESC, id DESC';
+        return array_map(fn(array $row): array => $this->clientRulePayload($row), $this->db->fetchAll($sql, $params));
+    }
+
+    private function saveClientRule(int $clientId, ?string $ruleId, array $payload, bool $adminWrite): array
+    {
+        $existing = $ruleId !== null ? $this->loadClientRule($ruleId) : null;
+        if ($ruleId !== null && $existing === null) {
+            throw new ApiException('rule_not_found', 404);
+        }
+        $serviceScopeId = (string) ($payload['service_scope_id'] ?? ($existing['service_scope_id'] ?? ''));
+        if ($existing !== null && $serviceScopeId !== (string) $existing['service_scope_id']) {
+            // A rule never moves between service scopes; quota and entitlements are per scope.
+            throw new ApiException('rule_not_found', 404);
+        }
+        if (preg_match('/^svc_scope_\d+$/', $serviceScopeId) !== 1) {
+            throw new ApiException('service_not_active', 422);
+        }
+        if (!$adminWrite && !$this->clientCanAccessScope($clientId, $serviceScopeId)) {
+            throw new ApiException('service_not_active', 422);
+        }
+        $routeDirections = $this->routeDirections();
+        $validator = $this->clientRuleValidator();
+        $service = $routeDirections->serviceForScope($serviceScopeId);
+        if ($service === null || (string) ($service['status'] ?? '') !== 'active') {
+            throw new ApiException('service_not_active', 422);
+        }
+        $entitlement = $routeDirections->entitlementForScope($serviceScopeId);
+        try {
+            $directionId = $routeDirections->normalizeDirectionId((string) ($payload['direction_id'] ?? ($existing['direction_id'] ?? '')));
+        } catch (ApiException) {
+            throw new ApiException('direction_not_allowed', 422);
+        }
+        $direction = $routeDirections->getDirection($directionId, false);
+        $enabled = array_key_exists('enabled', $payload) ? (bool) $payload['enabled'] : ((int) ($existing['enabled'] ?? 1) === 1);
+        $syncVersionMatches = $existing === null
+            || !array_key_exists('sync_version', $payload)
+            || (int) $payload['sync_version'] === (int) $existing['sync_version'];
+        $ip = $payload['destination_ip'] ?? ($existing['destination_ip'] ?? '');
+        $port = $payload['destination_port'] ?? ($existing['destination_port'] ?? 0);
+        // validateWrite owns the error precedence (service, version, ip, port, direction,
+        // duplicate, quota); the duplicate lookup only runs for a destination it accepts.
+        $activeDuplicateKey = null;
+        try {
+            $activeDuplicateKey = $validator->activeDuplicateKey(
+                $validator->normalizeDestinationIp($ip),
+                $validator->normalizeDestinationPort($port),
+                $enabled
+            );
+        } catch (ApiException) {
+            $activeDuplicateKey = null;
+        }
+        $duplicate = null;
+        if ($activeDuplicateKey !== null) {
+            $duplicate = $this->db->fetchOne(
+                'SELECT id FROM client_rules
+                 WHERE service_scope_id = :service_scope_id
+                   AND active_duplicate_key = :active_duplicate_key
+                   AND tombstoned_at IS NULL
+                   AND id <> :id
+                 LIMIT 1',
+                ['service_scope_id' => $serviceScopeId, 'active_duplicate_key' => $activeDuplicateKey, 'id' => $ruleId ?? '']
+            );
+        }
+        $savedCount = (int) (($this->db->fetchOne(
+            'SELECT COUNT(*) AS total FROM client_rules WHERE service_scope_id = :service_scope_id AND tombstoned_at IS NULL',
+            ['service_scope_id' => $serviceScopeId]
+        )['total'] ?? 0));
+        $validated = $validator->validateWrite([
+            'service_active' => true,
+            'sync_version_matches' => $syncVersionMatches,
+            'destination_ip' => $ip,
+            'destination_port' => $port,
+            'direction_exists' => $direction !== null,
+            'direction_allowed' => in_array($directionId, $entitlement['allowed_direction_ids'] ?? [], true),
+            'direction_status' => (string) ($direction['status'] ?? 'missing'),
+            'enabled' => $enabled,
+            'duplicate_enabled_exists' => $duplicate !== null,
+            'saved_count_after_write' => $existing === null ? $savedCount + 1 : $savedCount,
+            'max_rules' => (int) ($entitlement['max_rules'] ?? 0),
+        ]);
+        $now = $this->now();
+        $id = $ruleId ?? 'rule_' . bin2hex(random_bytes(12));
+        $rule = [
+            'id' => $id,
+            'service_scope_id' => $serviceScopeId,
+            'service_id' => (int) $service['id'],
+            'subscription_id' => ($service['whmcs_service_id'] ?? null) !== null ? (int) $service['whmcs_service_id'] : null,
+            'destination_ip' => $validated['destination_ip'],
+            'destination_port' => $validated['destination_port'],
+            'protocol' => 'tcp_udp',
+            'direction_id' => $directionId,
+            'enabled' => $enabled ? 1 : 0,
+            'effective_state' => 'runtime_missing',
+            'sync_version' => $existing === null ? 1 : ((int) $existing['sync_version'] + 1),
+            'active_duplicate_key' => $activeDuplicateKey,
+            'notes' => (string) ($payload['notes'] ?? ($existing['notes'] ?? '')),
+            'created_by_client_id' => $existing !== null ? ($existing['created_by_client_id'] ?? null) : ($adminWrite ? null : $clientId),
+            'updated_by_client_id' => $adminWrite ? ($existing['updated_by_client_id'] ?? null) : $clientId,
+            'updated_by_admin_id' => null,
+            'updated_at' => $now,
+        ];
+        // The quota gate above already admitted this write, so it is not over quota.
+        $rule['effective_state'] = $routeDirections->effectiveStateForRule($rule, ['over_quota' => false] + $entitlement);
+        if ($existing === null) {
+            $this->db->insert('client_rules', $rule + ['created_at' => $now, 'tombstoned_at' => null, 'tombstoned_by' => null]);
+        } else {
+            $update = $rule;
+            unset($update['service_scope_id'], $update['service_id'], $update['subscription_id'], $update['created_by_client_id']);
+            $this->db->execute(
+                'UPDATE client_rules SET destination_ip = :destination_ip, destination_port = :destination_port, protocol = :protocol, direction_id = :direction_id, enabled = :enabled, effective_state = :effective_state, sync_version = :sync_version, active_duplicate_key = :active_duplicate_key, notes = :notes, updated_by_client_id = :updated_by_client_id, updated_by_admin_id = :updated_by_admin_id, updated_at = :updated_at WHERE id = :id',
+                $update
+            );
+        }
+        return $this->clientRulePayload($this->loadClientRule($id) ?? $rule);
+    }
+
+    private function tombstoneClientRule(string $ruleId, string $by): array
+    {
+        $rule = $this->loadClientRule($ruleId);
+        if ($rule === null) {
+            throw new ApiException('rule_not_found', 404);
+        }
+        $now = $this->now();
+        $this->db->execute(
+            'UPDATE client_rules SET enabled = 0, active_duplicate_key = NULL, tombstoned_at = :tombstoned_at, tombstoned_by = :tombstoned_by, sync_version = sync_version + 1, updated_at = :updated_at WHERE id = :id',
+            ['id' => $ruleId, 'tombstoned_at' => $now, 'tombstoned_by' => $by, 'updated_at' => $now]
+        );
+        return $this->clientRulePayload($this->loadClientRule($ruleId, true) ?? $rule);
+    }
+
+    private function loadClientRule(string $ruleId, bool $includeTombstoned = false): ?array
+    {
+        if ($ruleId === '') {
+            return null;
+        }
+        $sql = 'SELECT * FROM client_rules WHERE id = :id';
+        if (!$includeTombstoned) {
+            $sql .= ' AND tombstoned_at IS NULL';
+        }
+        return $this->db->fetchOne($sql . ' LIMIT 1', ['id' => $ruleId]);
+    }
+
+    private function clientRulePayload(array $rule): array
+    {
+        return [
+            'id' => (string) $rule['id'],
+            'service_scope_id' => (string) $rule['service_scope_id'],
+            'service_id' => (int) $rule['service_id'],
+            'subscription_id' => ($rule['subscription_id'] ?? null) !== null ? (int) $rule['subscription_id'] : null,
+            'destination_ip' => (string) $rule['destination_ip'],
+            'destination_port' => (int) $rule['destination_port'],
+            'protocol' => 'tcp_udp',
+            'direction_id' => (string) $rule['direction_id'],
+            'enabled' => (int) ($rule['enabled'] ?? 0) === 1,
+            'effective_state' => (string) ($rule['effective_state'] ?? 'runtime_missing'),
+            'sync_version' => (int) ($rule['sync_version'] ?? 1),
+            'notes' => (string) ($rule['notes'] ?? ''),
+            'tombstoned_at' => (string) ($rule['tombstoned_at'] ?? ''),
+            'updated_at' => (string) ($rule['updated_at'] ?? ''),
+        ];
+    }
+
     public function listPlans(): array
     {
         $plans = $this->db->fetchAll(
@@ -4202,6 +4527,7 @@ final class ProvisioningService
 
             $config = $this->buildClientConfig($forwardId);
             $config['service_status'] = (string) $forward['service_status'];
+            $config['route_rule_helper_only'] = (int) ($row['route_rule_helper_only'] ?? 0) === 1;
             $config['runtime_preference'] = (string) ($config['forward_combination_runtime_preference'] ?? 'single');
             $config['self_leg_cf_transport'] = (string) ($config['forward_combination_self_leg_cf_transport'] ?? 'cf_direct');
             $maxLegs = max(0, (int) ($config['forward_combination_helper_group_cap'] ?? 0));
@@ -5905,6 +6231,22 @@ final class ProvisioningService
         );
         foreach ($rows as $row) {
             $map[(int) $row['forward_id']] = (int) $row['used_bytes'];
+        }
+        // Ultra forwards carry no service_endpoints: their usage is recorded
+        // per forward in ultra_usage_events (recordUltraUsage), so add it here
+        // or every Ultra line shows 0 while the service total keeps growing.
+        $ultraRows = $this->db->fetchAll(
+            'SELECT uue.forward_id, COALESCE(SUM(uue.bytes_in + uue.bytes_out), 0) AS used_bytes
+             FROM ultra_usage_events uue
+             INNER JOIN forwards f ON f.id = uue.forward_id
+             WHERE f.service_id = :service_id
+               AND uue.created_at >= :cycle_started_at
+             GROUP BY uue.forward_id',
+            ['service_id' => $serviceId, 'cycle_started_at' => $cycleStartedAt]
+        );
+        foreach ($ultraRows as $row) {
+            $forwardId = (int) $row['forward_id'];
+            $map[$forwardId] = ($map[$forwardId] ?? 0) + (int) $row['used_bytes'];
         }
         return $map;
     }

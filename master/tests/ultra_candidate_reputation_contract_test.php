@@ -119,10 +119,19 @@ $fingerprintService = new UltraCandidateReputationService(null, static function 
     return $now;
 });
 $fingerprintBefore = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
-// Two observers, because the fingerprint covers state and one failure from one
-// observer no longer moves it.
+// The fingerprint covers eligibility only. Two failures from two observers
+// put the candidate on probation, which serves exactly like healthy, so the
+// fingerprint (and with it every client's policy generation) must hold still.
 $fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'fingerprint-1');
-$fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'fingerprint-2');
+$probationRow = $fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'fingerprint-2');
+assertUltraCandidateReputation(($probationRow['state'] ?? '') === 'probation', 'two observers must put the candidate on probation');
+assertUltraCandidateReputation(
+    $fingerprintService->snapshotFingerprint([$scope, $otherScope]) === $fingerprintBefore,
+    'probation rotated the snapshot fingerprint although eligibility did not change'
+);
+// A third independent observer quarantines it: eligibility changed.
+$quarantinedRow = $fingerprintService->observeFailure($scope, 'relay_connect_timeout', 'observer-c', 'fingerprint-3');
+assertUltraCandidateReputation(($quarantinedRow['state'] ?? '') === 'quarantined', 'three observers must quarantine the candidate');
 $fingerprintAfter = $fingerprintService->snapshotFingerprint([$scope, $otherScope]);
 assertUltraCandidateReputation($fingerprintBefore !== $fingerprintAfter, 'reputation state change did not rotate snapshot fingerprint');
 assertUltraCandidateReputation(preg_match('/^[a-f0-9]{64}$/', $fingerprintAfter) === 1, 'snapshot fingerprint is not sha256');

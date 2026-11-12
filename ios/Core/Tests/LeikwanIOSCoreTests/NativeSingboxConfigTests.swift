@@ -43,7 +43,7 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual(compiled.finalProxyTag, "proxy-native")
 
         let outbounds = config["outbounds"] as! [[String: Any]]
-        XCTAssertEqual(outbounds.count, 2)
+        XCTAssertEqual(outbounds.count, 3)
         XCTAssertEqual(outbounds[0]["type"] as? String, "socks")
         XCTAssertEqual(outbounds[0]["tag"] as? String, "proxy-native")
         XCTAssertEqual(outbounds[0]["server"] as? String, "127.0.0.1")
@@ -52,6 +52,8 @@ final class NativeSingboxConfigTests: XCTestCase {
         XCTAssertEqual((outbounds[0]["udp_over_tcp"] as? [String: Any])?["enabled"] as? Bool, false)
         XCTAssertNil(outbounds[0]["username"], "no credentials in the sing-box config")
         XCTAssertEqual(outbounds[1]["tag"] as? String, "direct")
+        XCTAssertEqual(outbounds[2]["tag"] as? String, "probe")
+        XCTAssertEqual(outbounds[2]["type"] as? String, "urltest")
         XCTAssertFalse(outbounds.contains { ($0["type"] as? String) == "selector" })
 
         let inbound = (config["inbounds"] as! [[String: Any]])[0]

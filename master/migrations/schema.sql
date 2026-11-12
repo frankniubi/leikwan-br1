@@ -313,6 +313,7 @@ CREATE TABLE IF NOT EXISTS service_plans (
     extra_client_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     default_client_online_device_limit INT NOT NULL DEFAULT 1,
     max_client_profiles INT NOT NULL DEFAULT 1,
+    max_client_rules_per_service_scope INT NOT NULL DEFAULT 5,
     max_forward_rule_quantity INT NOT NULL DEFAULT 64,
     is_active TINYINT(1) NOT NULL DEFAULT 1,
     is_tenant_visible TINYINT(1) NOT NULL DEFAULT 1,
@@ -469,6 +470,7 @@ CREATE TABLE IF NOT EXISTS forwards (
     native_outbound_enabled TINYINT(1) NOT NULL DEFAULT 0,
     native_direction_key VARCHAR(64) NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
+    route_rule_helper_only TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     CONSTRAINT fk_forwards_service FOREIGN KEY (service_id) REFERENCES services(id),
@@ -1863,4 +1865,74 @@ CREATE TABLE IF NOT EXISTS auth_rate_limits (
     hits INT UNSIGNED NOT NULL DEFAULT 0,
     expires_at BIGINT UNSIGNED NOT NULL,
     INDEX idx_auth_rate_limits_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS route_directions (
+    id VARCHAR(64) NOT NULL PRIMARY KEY,
+    label VARCHAR(191) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'available',
+    admin_notes TEXT NULL,
+    sort_order INT NOT NULL DEFAULT 100,
+    internal_mapping_json JSON NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_route_directions_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS direction_realizations (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    direction_id VARCHAR(64) NOT NULL,
+    is_primary TINYINT(1) NOT NULL DEFAULT 1,
+    binding_state VARCHAR(32) NOT NULL DEFAULT 'missing',
+    forward_id BIGINT UNSIGNED NULL,
+    local_endpoint_host VARCHAR(64) NOT NULL DEFAULT '127.0.0.1',
+    local_tcp_port INT NULL,
+    local_udp_port INT NULL,
+    tcp_ready TINYINT(1) NOT NULL DEFAULT 0,
+    udp_ready TINYINT(1) NOT NULL DEFAULT 0,
+    helper_only TINYINT(1) NOT NULL DEFAULT 1,
+    internal_mapping_json JSON NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_direction_primary_realization (direction_id, is_primary),
+    INDEX idx_direction_realizations_forward (forward_id),
+    INDEX idx_direction_realizations_state (binding_state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS service_plan_route_directions (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    plan_id BIGINT UNSIGNED NOT NULL,
+    direction_id VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_plan_route_direction (plan_id, direction_id),
+    INDEX idx_plan_route_directions_direction (direction_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS client_rules (
+    id VARCHAR(64) NOT NULL PRIMARY KEY,
+    service_scope_id VARCHAR(64) NOT NULL,
+    service_id BIGINT UNSIGNED NOT NULL,
+    subscription_id BIGINT UNSIGNED NULL,
+    destination_ip VARCHAR(45) NOT NULL,
+    destination_port INT NOT NULL,
+    protocol VARCHAR(16) NOT NULL DEFAULT 'tcp_udp',
+    direction_id VARCHAR(64) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    effective_state VARCHAR(32) NOT NULL DEFAULT 'runtime_missing',
+    sync_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    active_duplicate_key VARCHAR(191) NULL,
+    tombstoned_at DATETIME NULL,
+    tombstoned_by VARCHAR(32) NULL,
+    notes TEXT NULL,
+    created_by_client_id BIGINT UNSIGNED NULL,
+    updated_by_client_id BIGINT UNSIGNED NULL,
+    updated_by_admin_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uniq_client_rule_active_duplicate (service_scope_id, active_duplicate_key),
+    INDEX idx_client_rules_scope (service_scope_id, tombstoned_at),
+    INDEX idx_client_rules_service (service_id),
+    INDEX idx_client_rules_direction (direction_id),
+    INDEX idx_client_rules_sync (sync_version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

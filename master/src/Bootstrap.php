@@ -223,6 +223,10 @@ final class Bootstrap
         $this->router->add('GET', '/admin/plans', [$admin, 'plansPage']);
         $this->router->add('POST', '/admin/plans', [$admin, 'savePlan']);
         $this->router->add('POST', '/admin/plans/{id}/delete', [$admin, 'deletePlan']);
+        $this->router->add('GET', '/admin/route-directions', [$admin, 'routeDirectionsPage']);
+        $this->router->add('POST', '/admin/route-directions', [$admin, 'saveRouteDirection']);
+        $this->router->add('POST', '/admin/route-directions/entitlements', [$admin, 'saveRouteDirectionEntitlements']);
+        $this->router->add('POST', '/admin/route-directions/rules/{id}/delete', [$admin, 'deleteClientRuleFromAdmin']);
         $this->router->add('GET', '/admin/client-groups', [$admin, 'clientGroupsPage']);
         $this->router->add('POST', '/admin/client-groups', [$admin, 'saveClientGroup']);
         $this->router->add('GET', '/admin/credentials', [$admin, 'credentialsPage']);
@@ -260,6 +264,7 @@ final class Bootstrap
         $this->router->add('POST', '/admin-transport-endpoints/{id}/delete', [$admin, 'deleteSidecarPoint']);
         $this->router->add('POST', '/admin-transport-endpoints/{id}/request-update', [$admin, 'requestSidecarUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/diagnose', [$admin, 'requestClientDiagnostics']);
+        $this->router->add('GET', '/admin/clients/{id}/debug-log', [$admin, 'downloadClientDebugLog']);
         $this->router->add('POST', '/admin/clients/{id}/request-update', [$admin, 'requestClientUpdate']);
         $this->router->add('POST', '/admin/clients/{id}/openwrt-pairing-code', [$admin, 'createOpenWrtPairingCode']);
         $this->router->add('GET', '/admin/node-groups', [$admin, 'nodeGroupsPage']);
@@ -387,6 +392,9 @@ final class Bootstrap
         $this->router->add('POST', '/api/client/devices/code/identity-enroll', [$clientAgent, 'enrollmentCodeIdentityEnroll']);
         $this->router->add('POST', '/api/client/devices/openwrt/pair', [$clientAgent, 'pairOpenWrtDevice']);
         $this->router->add('GET', '/api/client/configs/pull', [$clientAgent, 'pullConfigs']);
+        $this->router->add('POST', '/api/client/client-rules', [$clientAgent, 'createClientRule']);
+        $this->router->add('PUT', '/api/client/client-rules/{id}', [$clientAgent, 'updateClientRule']);
+        $this->router->add('DELETE', '/api/client/client-rules/{id}', [$clientAgent, 'deleteClientRule']);
         $this->router->add('GET', '/api/client/hosted-nodes', [$hostedNodes, 'clientList']);
         $this->router->add('POST', '/api/client/hosted-nodes', [$hostedNodes, 'clientCreate']);
         $this->router->add('POST', '/api/client/hosted-nodes/batch', [$hostedNodes, 'clientBatchCreate']);
@@ -397,6 +405,7 @@ final class Bootstrap
         $this->router->add('POST', UltraMode::LEASE_ENDPOINT, [$clientAgent, 'resolveUltraLease']);
         $this->router->add('POST', '/api/client/heartbeat', [$clientAgent, 'heartbeat']);
         $this->router->add('POST', '/api/client/diagnostics/result', [$clientAgent, 'diagnosticsResult']);
+        $this->router->add('POST', '/api/client/debug/start', [$clientAgent, 'startDebugCollection']);
         $this->router->add('POST', '/api/client/debug/log', [$clientAgent, 'debugLogChunk']);
         $this->router->add('GET', '/api/ultra/source/jobs', [$ultraSource, 'jobs']);
         $this->router->add('POST', '/api/ultra/source/materials', [$ultraSource, 'upload']);

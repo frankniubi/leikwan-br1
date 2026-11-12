@@ -51,6 +51,10 @@ public interface IDesktopClientController : IAsyncDisposable
         CancellationToken ct = default)
         => ResolveNativeOutboundLeaseAsync(forwardId, routeScope, ct);
     Task SignOutAsync(CancellationToken ct = default);
+    Task<DebugManualUploadResult> UploadDebugLogsAsync(
+        IReadOnlyList<string>? extraLines = null,
+        CancellationToken ct = default)
+        => throw new InvalidOperationException("debug_upload_unavailable");
 }
 
 public sealed class DesktopClientController : IDesktopClientController
@@ -69,6 +73,7 @@ public sealed class DesktopClientController : IDesktopClientController
     private readonly Func<string, string, int, CancellationToken, Task<ClientSelectionResponse>> _selectClient;
     private readonly Func<string, string, int, CancellationToken, Task<PullResponse>> _agentTokenPull;
     private readonly Func<AgentConfig, ClientPlatformIdentity, IDesktopRuntimeSession> _runtimeFactory;
+    private readonly string? _logDirectory;
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly object _snapshotLock = new();
     private IDesktopRuntimeSession? _runtimeSession;
@@ -82,7 +87,8 @@ public sealed class DesktopClientController : IDesktopClientController
         Func<AgentConfig, ClientPlatformIdentity, IDesktopRuntimeSession> runtimeFactory,
         Func<string, string, string, CancellationToken, Task<DesktopLoginResponse>>? login = null,
         Func<string, string, int, CancellationToken, Task<ClientSelectionResponse>>? selectClient = null,
-        Func<string, string, int, CancellationToken, Task<PullResponse>>? agentTokenPull = null)
+        Func<string, string, int, CancellationToken, Task<PullResponse>>? agentTokenPull = null,
+        string? logDirectory = null)
     {
         _config = config;
         _identity = identity;
@@ -91,6 +97,7 @@ public sealed class DesktopClientController : IDesktopClientController
         _login = login ?? LoginWithMasterAsync;
         _selectClient = selectClient ?? SelectWithMasterAsync;
         _agentTokenPull = agentTokenPull ?? PullWithMasterAsync;
+        _logDirectory = logDirectory;
         _snapshot = SnapshotFromConfig(config);
     }
 
@@ -434,6 +441,21 @@ public sealed class DesktopClientController : IDesktopClientController
             SetBusy(false);
             _lifecycleGate.Release();
         }
+    }
+
+    public async Task<DebugManualUploadResult> UploadDebugLogsAsync(
+        IReadOnlyList<string>? extraLines = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(_config.MasterUrl) || string.IsNullOrWhiteSpace(_config.AgentToken))
+            throw new InvalidOperationException("client_not_signed_in");
+        var stateDir = _config.GetEffectiveStateDir();
+        var logDir = !string.IsNullOrWhiteSpace(_logDirectory)
+            ? _logDirectory!
+            : Path.Combine(Directory.GetParent(stateDir)?.FullName ?? stateDir, "logs");
+        using var api = new MasterApiClient(_config.MasterUrl, _config.AgentToken, platformIdentity: _identity);
+        var uploader = new DebugLogUploader(logDir, stateDir);
+        return await uploader.UploadNowAsync(api, extraLines, ct).ConfigureAwait(false);
     }
 
     public async Task SignOutAsync(CancellationToken ct = default)

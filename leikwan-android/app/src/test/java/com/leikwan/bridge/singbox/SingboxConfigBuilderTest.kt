@@ -25,6 +25,46 @@ import org.junit.Test
 class SingboxConfigBuilderTest {
 
     @Test
+    fun `builder emits unreferenced probe urltest group for latency`() {
+        val builder = SingboxConfigBuilder(
+            settings = SingboxSettings(
+                panelUrl = "https://panel.example.com",
+                dnsServer = "1.1.1.1",
+                dnsFallback = "8.8.8.8",
+                dnsStrategy = "prefer_ipv4",
+                bypassLan = true,
+                bypassChina = false,
+                customBypassRules = "",
+            )
+        )
+        val node = ProxyNode(
+            id = 7,
+            name = "ss-probe",
+            type = "ss",
+            originalServer = "probe.example.com",
+            originalPort = 8388,
+            configJson = """{"method":"aes-128-gcm","password":"secret"}""",
+            enabled = true,
+        )
+        val config = JsonParser.parseString(builder.build(listOf(node), runtimeContext = null).configJson).asJsonObject
+
+        val probe = config.getAsJsonArray("outbounds")
+            .map { it.asJsonObject }
+            .single { it.get("tag").asString == "probe" }
+        assertEquals("urltest", probe.get("type").asString)
+        val members = probe.getAsJsonArray("outbounds").map { it.asString }
+        assertEquals(listOf("proxy-7", "direct"), members)
+        assertEquals("60s", probe.get("interval").asString)
+
+        // The probe must never participate in routing.
+        val route = config.getAsJsonObject("route")
+        assertEquals("proxy-7", route.get("final").asString)
+        val rules = route.getAsJsonArray("rules").map { it.asJsonObject }
+        assertFalse(rules.any { it.has("outbound") && it.get("outbound").asString == "probe" })
+        assertFalse(rules.any { it.has("rule_set") })
+    }
+
+    @Test
     fun `builder uses selected runtime port and direct bypass hosts`() {
         val builder = SingboxConfigBuilder(
             settings = SingboxSettings(
@@ -178,7 +218,7 @@ class SingboxConfigBuilderTest {
             type = "ss",
             originalServer = "sh36.ctyun.mcbar.cc",
             originalPort = 30522,
-            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"secret"}""",
+            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg"}""",
             enabled = true,
         )
 
@@ -196,7 +236,7 @@ class SingboxConfigBuilderTest {
         assertEquals("127.0.0.1", proxy.get("server").asString)
         assertEquals(11090, proxy.get("server_port").asInt)
         assertEquals("2022-blake3-aes-256-gcm", proxy.get("method").asString)
-        assertEquals("secret", proxy.get("password").asString)
+        assertEquals("c2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg=", proxy.get("password").asString)
         assertFalse(
             config.getAsJsonObject("route").getAsJsonArray("rules").any {
                 val rule = it.asJsonObject
@@ -547,7 +587,7 @@ class SingboxConfigBuilderTest {
             type = "ss",
             originalServer = "14.103.220.245",
             originalPort = 32469,
-            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"server:user"}""",
+            configJson = """{"method":"2022-blake3-aes-256-gcm","password":"c2VydmVyLTAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg:dXNlci0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWE"}""",
             forwardId = null,
         )
 

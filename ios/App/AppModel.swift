@@ -148,7 +148,7 @@ final class AppModel: ObservableObject {
         let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
         let result = try await candidate.pullCatalog(
             selectedForwardId: sameAccount ? selectedForwardID : nil,
-            heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
+            heartbeat: HeartbeatRequest(osRelease: Self.osRelease, ultraStatus: Self.currentUltraStatus())
         )
         applyClientUpdate(result.response)
         var list = profiles
@@ -238,12 +238,13 @@ final class AppModel: ObservableObject {
         do {
             let result = try await client.pullCatalog(
                 selectedForwardId: selectedForwardID,
-                heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
+                heartbeat: HeartbeatRequest(osRelease: Self.osRelease, ultraStatus: Self.currentUltraStatus())
             )
             applyClientUpdate(result.response)
             apply(result.catalog)
             catalogError = nil
             scheduleCloudSync(after: result.response)
+            scheduleDebugLogUpload(after: result.response)
         } catch {
             catalogError = Self.describe(error)
         }
@@ -283,7 +284,8 @@ final class AppModel: ObservableObject {
             customBypassRules: routing.customBypass,
             enableIPv6: routing.enableIPv6,
             cacheFilePath: AppGroup.workingDirectory.appendingPathComponent("cache.db").path,
-            ruleSetDirectory: AppGroup.ruleSetDirectory.path
+            ruleSetDirectory: AppGroup.ruleSetDirectory.path,
+            userRuleSetDirectory: AppGroup.userRuleSetDirectory.path
         )
         return SingboxConfigBuilder(settings: settings, safePathRegistry: .iosBaseline(panelHosts: profile?.panelHosts ?? []))
     }
@@ -490,7 +492,7 @@ final class AppModel: ObservableObject {
         let builder = makeSingboxBuilder()
         let snapshot = builder.routingEngine.compile(
             globalMode: routing.mode,
-            customRules: routing.customRules,
+            customRules: compilableCustomRules,
             appPresetRules: routing.appPresets.sorted { $0.key < $1.key }.map { key, outcome in
                 RoutingRule(id: "app-\(key)", kind: .appPreset, matchValue: key, outcome: outcome)
             },
@@ -553,6 +555,13 @@ final class AppModel: ObservableObject {
 
     static var osRelease: String {
         "iOS \(UIDevice.current.systemVersion)"
+    }
+
+    /// The tunnel's Ultra runtimes write their status documents into the shared app group, so the
+    /// app's own heartbeats (sent with every catalog pull) carry the same `ultra_status` as the
+    /// tunnel's instead of clearing the panel's view of this device. Small bounded files.
+    static func currentUltraStatus() -> [UltraStatusReport] {
+        UltraStatusCollector.collect(statusDirectory: AppGroup.runtimeDirectory)
     }
 
     static var deviceName: String {

@@ -107,6 +107,17 @@ WHERE NOT EXISTS (
     WHERE existing_topic.topic_key = 'no-gui-clients'
 );
 
+INSERT INTO knowledgebase_topics (
+    topic_key, is_pinned, sort_order, created_at, updated_at
+)
+SELECT
+    'cloud-nodes-and-forward-pairing', 0, 80, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM knowledgebase_topics AS existing_topic
+    WHERE existing_topic.topic_key = 'cloud-nodes-and-forward-pairing'
+);
+
 INSERT INTO knowledgebase_articles (
     topic_id, locale, author_user_id, title, excerpt, body_html,
     status, published_at, created_at, updated_at
@@ -184,6 +195,7 @@ SELECT
 <li>Your panel email and password.</li>
 <li>The device you play on. The app runs on Windows, macOS, Android, and Linux.</li>
 <li>Android 8.0+ for phones and tablets.</li>
+<li>iPhone and iPad install through TestFlight instead: see <a href="/knowledgebase?thread=ios-testflight">install the iOS app with TestFlight</a>.</li>
 <li>On Linux, Debian 11, 12 or 13 (x86_64 or arm64) and one root command.</li>
 </ul>
 
@@ -276,7 +288,7 @@ F --> G[Note the assigned local port]
 <p><strong>Stop</strong> if the panel refuses to save. Three usual reasons: the plan is not active any more, the target host or port is not right, or the local port you typed is already in use - clear it and let the panel suggest one again.</p>
 
 <h2>Related guides</h2>
-<p>Next, <a href="/knowledgebase?thread=connect-and-verify">connect and verify</a>. If the app is not installed yet, start with <a href="/knowledgebase?thread=install-client">install the client</a>.</p>
+<p>Next, <a href="/knowledgebase?thread=connect-and-verify">connect and verify</a>. If the app is not installed yet, start with <a href="/knowledgebase?thread=install-client">install the client</a>. To understand how forwards and nodes pair, read <a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">how cloud nodes pair with forwards</a>.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -389,7 +401,7 @@ F --> G[Contact support with the forward ID]
 <p><strong>Stop</strong> before changing anything else. Do not change settings at random - it hides the real cause and makes the next round slower. If all four checks are clean, contact support; that is the fastest path from there.</p>
 
 <h2>Related guides</h2>
-<p><a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a>, or <a href="/knowledgebase?thread=getting-started-first-forward-checklist">create your first forward</a> if the row itself looks wrong.</p>
+<p><a href="/knowledgebase?thread=connect-and-verify">Connect and verify</a>, or <a href="/knowledgebase?thread=getting-started-first-forward-checklist">create your first forward</a> if the row itself looks wrong. If node pairing is the issue, read <a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">how cloud nodes pair with forwards</a>.</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -530,6 +542,71 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
+    topic.id, 'en', NULL, 'How Cloud Nodes Pair with Forwards', 'A forward and a cloud node are one-to-one paired by port: they must match exactly, or reuse a node only when protocol and password also match.', '<p>A forward carries packets from your local listen port to a remote target server, while a cloud node is a saved server configuration that your client can use directly. Understanding how they pair is key to setting up forwards correctly.</p>
+
+<h2>Two Concepts</h2>
+<p><strong>A forward</strong> is a routing rule: from a local listen port on your device, deliver packets to a specific port on a remote target server on the internet.</p>
+<p><strong>A cloud node</strong> is a saved server configuration that a client can use directly. Think of a node as a snapshot of "target server details": it records the server address, port, protocol, password, and other parameters needed to connect.</p>
+
+<h2>The Core Rule</h2>
+<p><strong>A forward is paired with exactly one node: the local port and node are one-to-one. Multiple forwards should not share the same node, except when they fully meet the reuse conditions below.</strong></p>
+
+<h2>When You Can Reuse the Same Node</h2>
+<p>Another forward can reuse a node only if all three of these elements match the node exactly:</p>
+<ol>
+<li><strong>Target server port</strong> — for example, both are 30522.</li>
+<li><strong>Protocol</strong> — for example, both are Shadowsocks 2022.</li>
+<li><strong>Password</strong> — the authentication key to log in to that server.</li>
+</ol>
+<p>If even one item differs, you must create a new forward and a new node. Reusing a node with mismatched settings always fails.</p>
+
+<h2>Example: What Cannot Be Reused</h2>
+<table>
+<thead>
+<tr><th>Forward</th><th>Target</th><th>Protocol</th><th>Password</th><th>Can reuse Node A?</th></tr>
+</thead>
+<tbody>
+<tr><td>Forward A</td><td>node.example.com:30522</td><td>SS2022</td><td>Password X</td><td>—</td></tr>
+<tr><td>Forward B</td><td>node.example.com:30522</td><td>SS2022</td><td>Password Y (≠X)</td><td><strong>No</strong> — password differs → create new forward B and node B</td></tr>
+<tr><td>Forward C</td><td>node.example.com:30522</td><td>VLESS</td><td>Password X</td><td><strong>No</strong> — protocol differs → create new forward C and node C</td></tr>
+<tr><td>Forward D</td><td>node.example.com:30523</td><td>SS2022</td><td>Password X</td><td><strong>No</strong> — port differs → create new forward D and node D</td></tr>
+</tbody>
+</table>
+
+<h2>Automatic Pairing: How the Panel Matches Them</h2>
+<p>The panel automatically finds a matching node based on the forward''s target (server and port). If a node''s server and port match the forward''s target, they pair automatically. This is convenient, but automatic pairing <strong>does not verify protocol or password match</strong>. Before reusing a node, you must verify yourself: all three elements really are identical.</p>
+
+<h2>Common Mistakes</h2>
+<table>
+<thead>
+<tr><th>Symptom</th><th>Root Cause</th></tr>
+</thead>
+<tbody>
+<tr><td>One forward never connects, others work fine</td><td>Reused the same node, but the target port, protocol, or password does not match</td></tr>
+<tr><td>Changed a forward''s target port, but it still does not connect</td><td>Did not update the paired node''s settings; the node still points to the old port</td></tr>
+<tr><td>Deleted a node, the forward still exists, now it does not work</td><td>The forward lost its paired node, but the forward itself remains; there is no available node anymore</td></tr>
+<tr><td>Created two forwards to the same target, one drops constantly</td><td>Both forwards are paired with the same node, but password or protocol does not match one of them</td></tr>
+</tbody>
+</table>
+
+<h2>Related Guides</h2>
+<p>After reading this, return to <a href="/knowledgebase?thread=getting-started-first-forward-checklist">Create Your First Forward</a> to confirm your forward is correct. If the forward''s target address, port, or protocol are wrong, see <a href="/knowledgebase?thread=troubleshooting-common-mistakes">Troubleshoot Common Problems</a>.</p>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'cloud-nodes-and-forward-pairing'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'en'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
     topic.id, 'zh-Hans', NULL, '五分钟完成首次连接', '按最短路径完成套餐、转发、客户端安装和连接验证。', '<h2>你将完成什么</h2>
 <p>你会从"套餐已生效"走到"线路可用"：在控制台建一条转发、装上客户端、连接，然后看到线路在运行。大约五分钟，而且你不需要选择任何连接类型 —— 所有线路都用 ultra，它做的就是在你打游戏时把线路保持稳定。</p>
 
@@ -602,6 +679,7 @@ SELECT
 <li>你的控制台邮箱和密码。</li>
 <li>你玩游戏用的设备。客户端支持 Windows、macOS、Android 和 Linux。</li>
 <li>手机或平板需要 Android 8.0 以上。</li>
+<li>iPhone 和 iPad 通过 TestFlight 安装，步骤见<a href="/knowledgebase?thread=ios-testflight">通过 TestFlight 安装 iOS 版</a>。</li>
 <li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），并且能用 root 执行命令。</li>
 </ul>
 
@@ -694,7 +772,7 @@ F --> G[记下分配的本地端口]
 <p>控制台不让保存时，<strong>先停止</strong>，别反复点。三个常见原因：套餐已经到期；目标地址或端口填错；你填的本地端口已经被占用——清空它，让系统重新分配一个。如果「线路」下拉框是空的，说明你的套餐还没有开放线路，请联系客服。</p>
 
 <h2>相关指南</h2>
-<p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。客户端还没装的话，先看<a href="/knowledgebase?thread=install-client">安装客户端</a>。</p>
+<p>接着做<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>。客户端还没装的话，先看<a href="/knowledgebase?thread=install-client">安装客户端</a>。要了解转发和节点的配对规则，看<a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">云端节点与转发如何配对</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -807,7 +885,7 @@ F --> G[带上转发编号联系客服]
 <p>在改别的东西之前，<strong>先停止</strong>。不要随手改一堆设置——那样只会盖住真正的原因，让下一次排查更慢。上面四项都没问题的话，直接联系客服，这是从这里出发最快的路。</p>
 
 <h2>相关指南</h2>
-<p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。</p>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">连接并验证</a>；如果那一行本身看着就不对，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>。如果是节点配对导致的问题，看<a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">云端节点与转发如何配对</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -949,6 +1027,71 @@ INSERT INTO knowledgebase_articles (
     status, published_at, created_at, updated_at
 )
 SELECT
+    topic.id, 'zh-Hans', NULL, '云端节点与转发如何配对', '一条转发与一个云端节点一一对应：仅当目标端口相同、协议相同、密码相同时，才可复用同一节点；否则必须新建转发和节点。', '<p>一条转发把本地监听端口的数据包转送到目标机器，而云端节点是你在 App 里可以直接选用的服务器配置。理解它们之间的配对规则，是把转发用对的关键。</p>
+
+<h2>两个概念</h2>
+<p><strong>转发</strong>是一条通路规则：从你的设备上的本地监听端口，把数据包转送到互联网上某个远端目标机器的特定端口。</p>
+<p><strong>云端节点</strong>是一个被保存的服务器配置，客户端可以直接使用。你可以把节点看作「转发目标机器的细节」的一个快照：它记录了目标服务器地址、端口、连接协议、密码等参数。</p>
+
+<h2>核心规则</h2>
+<p><strong>一条转发绑定一个节点，端口与节点一一对应。多个转发不应共用同一个节点，除非它们完全满足下面的复用条件。</strong></p>
+
+<h2>什么时候才能复用同一个节点</h2>
+<p>只有当另一条转发的以下三个要素与该节点 <strong>全部相同</strong> 时，才可以复用：</p>
+<ol>
+<li><strong>目标机器的端口</strong>：比如都是 30522。</li>
+<li><strong>连接协议</strong>：比如都是 Shadowsocks 2022。</li>
+<li><strong>密码</strong>：登录该服务器的认证密钥。</li>
+</ol>
+<p>只要有一项不同，就必须新建一条转发并新建一个节点。重用节点必然导致不通。</p>
+
+<h2>实例：什么不能复用</h2>
+<table>
+<thead>
+<tr><th>转发</th><th>目标</th><th>协议</th><th>密码</th><th>能否复用节点 A？</th></tr>
+</thead>
+<tbody>
+<tr><td>转发 A</td><td>node.example.com:30522</td><td>SS2022</td><td>密码 X</td><td>—</td></tr>
+<tr><td>转发 B</td><td>node.example.com:30522</td><td>SS2022</td><td>密码 Y（≠X）</td><td><strong>不能</strong>，密码不同 → 必须新建转发 B 和节点 B</td></tr>
+<tr><td>转发 C</td><td>node.example.com:30522</td><td>VLESS</td><td>密码 X</td><td><strong>不能</strong>，协议不同 → 必须新建转发 C 和节点 C</td></tr>
+<tr><td>转发 D</td><td>node.example.com:30523</td><td>SS2022</td><td>密码 X</td><td><strong>不能</strong>，端口不同 → 必须新建转发 D 和节点 D</td></tr>
+</tbody>
+</table>
+
+<h2>自动配对：面板如何帮你匹配</h2>
+<p>面板会根据转发的「目标机器:端口」自动寻找相匹配的节点（「节点地址:节点端口」）。这样可以帮你省事，但自动配对 <strong>不会检查协议和密码是否一致</strong>。因此，复用节点前，你必须自己验证：三个要素都确实相同。</p>
+
+<h2>常见错误</h2>
+<table>
+<thead>
+<tr><th>症状</th><th>根本原因</th></tr>
+</thead>
+<tbody>
+<tr><td>某条转发始终连不上，其他转发正常</td><td>复用了同一个节点，但目标端口、协议或密码其中之一不匹配</td></tr>
+<tr><td>改了转发的目标端口，但转发仍连不上</td><td>没有相应修改配对的节点信息；节点仍然指向旧端口</td></tr>
+<tr><td>删除了一个节点，转发却仍在，现在用不了</td><td>转发失去了配对的节点，但转发本身还存在，只是没有可用节点了</td></tr>
+<tr><td>新建两条相同目标的转发，其中一条频繁掉线</td><td>两条转发都配对了同一个节点，但密码或协议不匹配其中某一条</td></tr>
+</tbody>
+</table>
+
+<h2>相关指南</h2>
+<p>看完这篇，回到<a href="/knowledgebase?thread=getting-started-first-forward-checklist">创建第一条转发</a>确认转发建立无误。如果转发本身的目标地址、端口或协议有问题，请参考<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常见问题</a>。</p>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'cloud-nodes-and-forward-pairing'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'zh-Hans'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
     topic.id, 'zh-TW', NULL, '五分鐘完成首次連線', '按最短路徑完成方案、轉發、用戶端安裝和連線驗證。', '<h2>你將完成什麼</h2>
 <p>你會從"套餐已生效"走到"線路可用"：在控制台建一條轉發、裝上用戶端、連線，然後看到線路在執行。大約五分鐘，而且你不需要選擇任何連線型別 —— 所有線路都用 ultra，它做的就是在你打遊戲時把線路保持穩定。</p>
 
@@ -1021,6 +1164,7 @@ SELECT
 <li>你的控制台郵箱和密碼。</li>
 <li>你玩遊戲用的裝置。用戶端支援 Windows、macOS、Android 和 Linux。</li>
 <li>手機或平板需要 Android 8.0 以上。</li>
+<li>iPhone 和 iPad 透過 TestFlight 安裝，步驟見<a href="/knowledgebase?thread=ios-testflight">透過 TestFlight 安裝 iOS 版</a>。</li>
 <li>Linux 需要 Debian 11、12 或 13（x86_64 或 arm64 都可以），並且能用 root 執行命令。</li>
 </ul>
 
@@ -1113,7 +1257,7 @@ F --> G[記下分配的本機連接埠]
 <p>控制台不讓儲存時，<strong>先停止</strong>，別反覆點。三個常見原因：套餐已經到期；目標位址或連接埠填錯；你填的本機連接埠已經被佔用——清空它，讓系統重新分配一個。如果「線路」下拉框是空的，說明你的套餐還沒有開放線路，請聯絡客服。</p>
 
 <h2>相關指南</h2>
-<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。</p>
+<p>接著做<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>。用戶端還沒裝的話，先看<a href="/knowledgebase?thread=install-client">安裝用戶端</a>。要瞭解轉發和節點的配對規則，看<a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">雲端節點與轉發如何配對</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1226,7 +1370,7 @@ F --> G[帶上轉發編號聯絡客服]
 <p>在改別的東西之前，<strong>先停止</strong>。不要隨手改一堆設定——那樣只會蓋住真正的原因，讓下一次排查更慢。上面四項都沒問題的話，直接聯絡客服，這是從這裡出發最快的路。</p>
 
 <h2>相關指南</h2>
-<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一行本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。</p>
+<p>回到<a href="/knowledgebase?thread=connect-and-verify">連線並驗證</a>；如果那一行本身看著就不對，看<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>。如果是節點配對導致的問題，看<a href="/knowledgebase?thread=cloud-nodes-and-forward-pairing">雲端節點與轉發如何配對</a>。</p>
 ',
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
@@ -1356,6 +1500,71 @@ E --&gt; F[在控制台看到裝置線上]</pre>
     'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM knowledgebase_topics AS topic
 WHERE topic.topic_key = 'no-gui-clients'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM knowledgebase_articles AS existing_article
+      WHERE existing_article.topic_id = topic.id
+        AND existing_article.locale = 'zh-TW'
+  );
+
+INSERT INTO knowledgebase_articles (
+    topic_id, locale, author_user_id, title, excerpt, body_html,
+    status, published_at, created_at, updated_at
+)
+SELECT
+    topic.id, 'zh-TW', NULL, '雲端節點與轉發如何配對', '一條轉發與一個雲端節點一一對應：僅當目標連接埠相同、協議相同、密碼相同時，才可複用同一節點；否則必須新建轉發和節點。', '<p>一條轉發把本機連接埠的資料包轉送到目標機器，而雲端節點是你在 App 裡可以直接選用的伺服器設定。理解它們之間的配對規則，是把轉發用對的關鍵。</p>
+
+<h2>兩個概念</h2>
+<p><strong>轉發</strong>是一條通路規則：從你的設備上的本機連接埠，把資料包轉送到網際網路上某個遠端目標機器的特定連接埠。</p>
+<p><strong>雲端節點</strong>是一個被保存的伺服器設定，用戶端可以直接使用。你可以把節點看作「轉發目標機器的細節」的一個快照：它記錄了目標伺服器位址、連接埠、連線協議、密碼等參數。</p>
+
+<h2>核心規則</h2>
+<p><strong>一條轉發綁定一個節點，連接埠與節點一一對應。多個轉發不應共用同一個節點，除非它們完全滿足下面的複用條件。</strong></p>
+
+<h2>什麼時候才能複用同一個節點</h2>
+<p>只有當另一條轉發的以下三個要素與該節點 <strong>全部相同</strong> 時，才可以複用：</p>
+<ol>
+<li><strong>目標機器的連接埠</strong>：比如都是 30522。</li>
+<li><strong>連線協議</strong>：比如都是 Shadowsocks 2022。</li>
+<li><strong>密碼</strong>：登入該伺服器的認證密鑰。</li>
+</ol>
+<p>只要有一項不同，就必須新建一條轉發並新建一個節點。重用節點必然導致不通。</p>
+
+<h2>實例：什麼不能複用</h2>
+<table>
+<thead>
+<tr><th>轉發</th><th>目標</th><th>協議</th><th>密碼</th><th>能否複用節點 A？</th></tr>
+</thead>
+<tbody>
+<tr><td>轉發 A</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 X</td><td>—</td></tr>
+<tr><td>轉發 B</td><td>node.example.com:30522</td><td>SS2022</td><td>密碼 Y（≠X）</td><td><strong>不能</strong>，密碼不同 → 必須新建轉發 B 和節點 B</td></tr>
+<tr><td>轉發 C</td><td>node.example.com:30522</td><td>VLESS</td><td>密碼 X</td><td><strong>不能</strong>，協議不同 → 必須新建轉發 C 和節點 C</td></tr>
+<tr><td>轉發 D</td><td>node.example.com:30523</td><td>SS2022</td><td>密碼 X</td><td><strong>不能</strong>，連接埠不同 → 必須新建轉發 D 和節點 D</td></tr>
+</tbody>
+</table>
+
+<h2>自動配對：面板如何幫你匹配</h2>
+<p>面板會根據轉發的「目標機器:連接埠」自動尋找相匹配的節點（「節點位址:節點連接埠」）。這樣可以幫你省事，但自動配對 <strong>不會檢查協議和密碼是否一致</strong>。因此，複用節點前，你必須自己驗證：三個要素都確實相同。</p>
+
+<h2>常見錯誤</h2>
+<table>
+<thead>
+<tr><th>症狀</th><th>根本原因</th></tr>
+</thead>
+<tbody>
+<tr><td>某條轉發始終連不上，其他轉發正常</td><td>複用了同一個節點，但目標連接埠、協議或密碼其中之一不匹配</td></tr>
+<tr><td>改了轉發的目標連接埠，但轉發仍連不上</td><td>沒有相應修改配對的節點資訊；節點仍然指向舊連接埠</td></tr>
+<tr><td>刪除了一個節點，轉發卻仍在，現在用不了</td><td>轉發失去了配對的節點，但轉發本身還存在，只是沒有可用節點了</td></tr>
+<tr><td>新建兩條相同目標的轉發，其中一條頻繁掉線</td><td>兩條轉發都配對了同一個節點，但密碼或協議不匹配其中某一條</td></tr>
+</tbody>
+</table>
+
+<h2>相關指南</h2>
+<p>看完這篇，回到<a href="/knowledgebase?thread=getting-started-first-forward-checklist">建立第一條轉發</a>確認轉發建立無誤。如果轉發本身的目標位址、連接埠或協議有問題，請參考<a href="/knowledgebase?thread=troubleshooting-common-mistakes">排查常見問題</a>。</p>
+',
+    'published', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+FROM knowledgebase_topics AS topic
+WHERE topic.topic_key = 'cloud-nodes-and-forward-pairing'
   AND NOT EXISTS (
       SELECT 1
       FROM knowledgebase_articles AS existing_article

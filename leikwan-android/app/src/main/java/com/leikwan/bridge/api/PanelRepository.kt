@@ -10,6 +10,8 @@ import com.leikwan.bridge.data.PanelEndpoint
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.hosted.HostedNodeSync
+import com.leikwan.bridge.diagnostics.DebugLogUploader
+import com.leikwan.bridge.diagnostics.DebugUploadSummary
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -24,8 +26,11 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.nativeDirectionsMatch
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.runtime.UltraCandidateFeedbackLedger
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraStatusCollector
+import com.leikwan.bridge.runtime.UltraStatusReport
 import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
@@ -85,6 +90,12 @@ class PanelRepository(
     private val panelEndpointOverride: PanelEndpoint? = null,
     private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
     private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
+    private val ultraStatusCollectorProvider: () -> UltraStatusCollector? = {
+        UltraStatusCollector.forFilesDir(context.filesDir)
+    },
+    private val ultraFeedbackLedgerProvider: () -> UltraCandidateFeedbackLedger? = {
+        UltraCandidateFeedbackLedger.forFilesDir(context.filesDir)
+    },
     private val hostedNodeApiOverride: HostedNodeApi? = null,
     hostedNodeSyncOverride: HostedNodeSync? = null,
     /** Fetches the update manifest once a pull says this build is below the panel minimum. */
@@ -424,7 +435,7 @@ class PanelRepository(
     private suspend fun pullCatalogOnce(selectedForwardId: Long): ForwardCatalog {
         requireActiveSession()
         try {
-            api.heartbeat(authHeader(), HeartbeatRequest())
+            api.heartbeat(authHeader(), HeartbeatRequest(ultraStatus = currentUltraStatus()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: PanelControlException) {
@@ -452,6 +463,7 @@ class PanelRepository(
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
         syncHostedNodesAfterPull(resp.client)
+        uploadDebugLogsIfRequested(resp.client)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -507,13 +519,25 @@ class PanelRepository(
         // Ultra usage rides the heartbeat: unacknowledged rows stay pending and are resent.
         val ledger = runCatching { ultraUsageLedgerProvider() }.getOrNull()
         val usage = ledger?.let { runCatching { it.collect() }.getOrNull() }.orEmpty()
+        // Candidate outcomes are read even when no bytes moved; delivered evidence is remembered.
+        val feedbackLedger = runCatching { ultraFeedbackLedgerProvider() }.getOrNull()
+        val feedback = feedbackLedger?.let {
+            runCatching { it.collect(Instant.ofEpochMilli(nowMs())) }.getOrNull()
+        }.orEmpty()
         try {
             val response = api.heartbeat(
                 authHeader(),
-                HeartbeatRequest(ultraUsage = usage.takeIf { it.isNotEmpty() }),
+                HeartbeatRequest(
+                    ultraUsage = usage.takeIf { it.isNotEmpty() },
+                    ultraStatus = currentUltraStatus(),
+                    ultraCandidateFeedback = feedback.takeIf { it.isNotEmpty() },
+                ),
             )
             if (usage.isNotEmpty()) {
                 runCatching { ledger?.acknowledge(usage, response.ultraUsageAcknowledged ?: response.ok) }
+            }
+            if (feedback.isNotEmpty() && response.ok) {
+                runCatching { feedbackLedger?.acknowledge(feedback) }
             }
             response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {
@@ -526,6 +550,15 @@ class PanelRepository(
             false
         }
     }
+
+    /**
+     * The runtimes' current health for `ultra_status`. Always a list: the panel replaces the
+     * device's stored status with whatever a heartbeat carries, so an empty list (no runtime)
+     * is as meaningful as a full one.
+     */
+    private fun currentUltraStatus(): List<UltraStatusReport> = runCatching {
+        ultraStatusCollectorProvider()?.collect(Instant.ofEpochMilli(nowMs()))
+    }.getOrNull().orEmpty()
 
     /** Publishes a device-limit refusal (from the session renewal or the call itself) to the UI. */
     private suspend fun <T> reportingDeviceLimit(block: suspend () -> T): T = try {
@@ -839,6 +872,61 @@ class PanelRepository(
         enabled = enabled,
         syncVersion = syncVersion,
     )
+
+    private suspend fun uploadDebugLogsIfRequested(client: JsonElement?) {
+        val (uuid, status) = runCatching {
+            val coll = client?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.get("debug_collection")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: return
+            val u = coll.get("uuid")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
+            val s = coll.get("status")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
+            u to s
+        }.getOrNull() ?: return
+        if (status != "active" || !DebugLogUploader.isValidCollectionUuid(uuid)) return
+        if (DebugLogUploader.hasUploadedPassiveCollection(context.filesDir, uuid)) return
+        try {
+            val bytes = DebugLogUploader.collectAppBundle(context)
+            DebugLogUploader.uploadBytes(uuid, bytes) { seq, sha, b64, src ->
+                val resp = api.uploadDebugLogChunk(
+                    authHeader(),
+                    DebugLogChunkRequest(uuid, seq, sha, b64, src),
+                )
+                if (!resp.isSuccessful || resp.body()?.ok != true) {
+                    throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+                }
+            }
+            DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Best-effort passive upload; retried on the next pull while active.
+        }
+    }
+
+    suspend fun uploadDebugLogsNow(): DebugUploadSummary = reportingDeviceLimit {
+        requireActiveSession()
+        val startResp = api.startDebugCollection(authHeader())
+        val startBody = startResp.body()
+        val uuid = startBody?.debugCollection?.uuid?.trim()?.lowercase().orEmpty()
+        if (!startResp.isSuccessful || startBody?.ok != true || !DebugLogUploader.isValidCollectionUuid(uuid)) {
+            val code = startBody?.error?.takeIf { it.isNotBlank() }
+                ?: PanelErrorParser.messageFromHttp(startResp.code(), startResp.message(), startResp.errorBody()?.string())
+            throw Exception(code)
+        }
+        val refCode = startBody.referenceCode?.takeIf { it.isNotBlank() } ?: uuid.take(8)
+        val bundle = DebugLogUploader.collectAppBundle(context)
+        val (chunks, totalBytes) = DebugLogUploader.uploadBytes(uuid, bundle) { seq, sha, b64, src ->
+            val resp = api.uploadDebugLogChunk(
+                authHeader(),
+                DebugLogChunkRequest(uuid, seq, sha, b64, src),
+            )
+            if (!resp.isSuccessful || resp.body()?.ok != true) {
+                throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+            }
+        }
+        DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
+        DebugUploadSummary(referenceCode = refCode, uuid = uuid, chunks = chunks, bytes = totalBytes)
+    }
 
     fun isLoggedIn(): Boolean = prefs.isLoggedIn()
 

@@ -242,10 +242,26 @@ $expectedTopics = [
             'excerpt' => '在 Windows 或 macOS 上把無介面用戶端安裝為服務或守護程序，驗證並移除。',
         ],
     ],
+    'cloud-nodes-and-forward-pairing' => [
+        'is_pinned' => 0,
+        'sort_order' => 80,
+        'en' => [
+            'title' => 'How Cloud Nodes Pair with Forwards',
+            'excerpt' => 'A forward and a cloud node are one-to-one paired by port: they must match exactly, or reuse a node only when protocol and password also match.',
+        ],
+        'zh-Hans' => [
+            'title' => '云端节点与转发如何配对',
+            'excerpt' => '一条转发与一个云端节点一一对应：仅当目标端口相同、协议相同、密码相同时，才可复用同一节点；否则必须新建转发和节点。',
+        ],
+        'zh-TW' => [
+            'title' => '雲端節點與轉發如何配對',
+            'excerpt' => '一條轉發與一個雲端節點一一對應：僅當目標連接埠相同、協議相同、密碼相同時，才可複用同一節點；否則必須新建轉發和節點。',
+        ],
+    ],
 ];
 
 assertCatalogSame(array_keys($expectedTopics), array_keys($topics), 'topic keys and order must be exact');
-assertCatalogSame(7, count($topics), 'catalog must contain exactly seven topics');
+assertCatalogSame(8, count($topics), 'catalog must contain exactly eight topics');
 
 $requiredArticleText = [
     'getting-started-five-minute-overview' => [
@@ -387,7 +403,14 @@ $localizedDiagramRequirements = [
         'no-gui-clients' => ['不用螢幕的電腦設定流程', '選擇電腦', '哪個系統', 'macOS', '先裝應用，再執行一條命令', 'Windows', '解壓下載包，再執行一條命令'],
     ],
 ];
-$allTopicKeys = array_keys($expectedTopics);
+// Catalog guides may also link to the supplementary topics published by
+// scripts/publish_knowledgebase_topics.php.
+$supplementaryTopics = require __DIR__ . '/../resources/knowledgebase/supplementary_topics.php';
+$allTopicKeys = array_merge(array_keys($expectedTopics), array_keys($supplementaryTopics));
+// Reference articles explain concepts rather than walk through an operation,
+// so the tutorial-structure assertions (fixed headings, ordered steps, screenshot,
+// Mermaid diagram) do not apply to them; language-hygiene checks still do.
+$referenceTopics = ['cloud-nodes-and-forward-pairing'];
 $totalDiagrams = 0;
 $diagramGraphs = [];
 
@@ -421,6 +444,8 @@ foreach ($topics as $topicKey => $topic) {
         }
         assertCatalog(preg_match('/\b(?:token|password|route key|private key|session material)\s*[:=]\s*\S+/i', strip_tags($body)) !== 1, $topicKey . ': body appears to expose a secret value');
 
+        $isReference = in_array($topicKey, $referenceTopics, true);
+        if (!$isReference) {
         $h2Elements = catalogElementsByTag($body, 'h2');
         $headings = array_map(static fn (DOMElement $heading): string => trim($heading->textContent), $h2Elements);
         assertCatalogSame($expectedHeadings[$locale], $headings, $topicKey . ': ' . $locale . ' h2 headings must appear exactly once and in order');
@@ -428,7 +453,8 @@ foreach ($topics as $topicKey => $topic) {
         assertCatalogSame($expectedSectionRoles, $normalizedRoles, $topicKey . ': ' . $locale . ' section roles must match every language');
 
         assertCatalog(str_contains($body, '<ol>'), $topicKey . ': actions must be presented as short ordered steps');
-        if ($topicKey !== 'glossary') {
+        } // end tutorial-structure guard
+        if (!$isReference && $topicKey !== 'glossary') {
             $images = catalogElementsByTag($body, 'img');
             assertCatalog($images !== [], $topicKey . ': operation screenshot is required');
             foreach ($images as $image) {
@@ -444,12 +470,16 @@ foreach ($topics as $topicKey => $topic) {
             }
         }
         if ($locale === 'en') {
+            if (!$isReference) {
             assertCatalog(str_contains($body, '<strong>Stop'), $topicKey . ': failure guidance must include a safe stop');
             foreach ($requiredArticleText[$topicKey] as $requiredText) {
                 assertCatalog(str_contains($body, $requiredText), $topicKey . ': missing required beginner guidance: ' . $requiredText);
             }
+            }
         } else {
+            if (!$isReference) {
             assertCatalog(str_contains($body, '<strong>先停止') || str_contains($body, '<strong>請先停止'), $topicKey . ': ' . $locale . ' failure guidance must include a safe stop');
+            }
             if ($locale === 'zh-Hans') {
                 assertCatalog(str_contains($body, '连接') && str_contains($body, '转发') && str_contains($body, '客户端'), $topicKey . ': zh-Hans must naturally use representative terminology');
                 foreach (['連線', '轉發', '用戶端'] as $forbiddenTerm) {
@@ -461,7 +491,10 @@ foreach ($topics as $topicKey => $topic) {
                     assertCatalog(!str_contains(strip_tags($body), $forbiddenTerm), $topicKey . ': zh-TW contains Simplified-only prose: ' . $forbiddenTerm);
                 }
             }
-            foreach ($requiredLocalizedArticleText[$locale][$topicKey] as $requiredText) {
+            foreach ($requiredLocalizedArticleText[$locale][$topicKey] ?? [] as $requiredText) {
+                if (in_array($topicKey, $referenceTopics, true) && !isset($requiredLocalizedArticleText[$locale][$topicKey])) {
+                    continue;
+                }
                 assertCatalog(str_contains($body, $requiredText), $topicKey . ': ' . $locale . ' missing required factual guidance: ' . $requiredText);
             }
             foreach ($forbiddenLocalizedArticleText[$locale][$topicKey] ?? [] as $forbiddenText) {
@@ -470,7 +503,7 @@ foreach ($topics as $topicKey => $topic) {
         }
 
         $diagrams = MermaidSourcePolicy::extract($body);
-        $expectedDiagramCount = $topicKey === 'glossary' ? 0 : 1;
+        $expectedDiagramCount = ($topicKey === 'glossary' || in_array($topicKey, $referenceTopics, true)) ? 0 : 1;
         assertCatalogSame($expectedDiagramCount, count($diagrams), $topicKey . ': Mermaid diagram count');
         MermaidSourcePolicy::assertPreviewable($body);
         $totalDiagrams += count($diagrams);
@@ -518,7 +551,7 @@ foreach ($topics as $topicKey => $topic) {
     }
 }
 
-assertCatalogSame(21, count($topics) * count($expectedLocales), 'catalog must contain 21 localized articles');
+assertCatalogSame(24, count($topics) * count($expectedLocales), 'catalog must contain 24 localized articles');
 assertCatalogSame(18, $totalDiagrams, 'catalog must preserve exactly 18 Mermaid diagrams across 21 articles');
 foreach ($expectedLocales as $locale) {
     assertCatalogSame(6, count(array_filter(
@@ -546,7 +579,7 @@ $generator = file_get_contents($generatorPath);
 assertCatalog(is_string($generator) && trim($generator) !== '', 'knowledgebase seed generator is empty');
 foreach ([
     "['en', 'zh-Hans', 'zh-TW']",
-    'exactly 7 topics',
+    'exactly 8 topics',
     'all required locale metadata and body files',
     '--output=',
     '20260729_seed_multilingual_knowledgebase.sql',

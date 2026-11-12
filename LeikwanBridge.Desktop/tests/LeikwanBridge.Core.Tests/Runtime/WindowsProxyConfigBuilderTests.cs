@@ -29,7 +29,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 30526,
             Method = "2022-blake3-aes-256-gcm",
-            Password = "server-key=:client-secret=",
+            Password = "c2VydmVyLWtleS0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ=:Y2xpZW50LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDE=",
         };
 
         var result = WindowsProxyConfigBuilder.Build(
@@ -47,8 +47,8 @@ public sealed class WindowsProxyConfigBuilderTests
         var outbound = root.GetProperty("outbounds")[0];
         Assert.Equal("shadowsocks", outbound.GetProperty("type").GetString());
         Assert.Equal("2022-blake3-aes-256-gcm", outbound.GetProperty("method").GetString());
-        Assert.Equal("server-key=:client-secret=", outbound.GetProperty("password").GetString());
-        Assert.DoesNotContain("server-key=:client-secret=", WindowsProxyProcessHost.BuildStartInfo(
+        Assert.Equal("c2VydmVyLWtleS0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ=:Y2xpZW50LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDE=", outbound.GetProperty("password").GetString());
+        Assert.DoesNotContain("c2VydmVyLWtleS0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ=:Y2xpZW50LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDE=", WindowsProxyProcessHost.BuildStartInfo(
             "sing-box.exe", "C:\\Temp\\proxy.json", WindowsProxyMode.Http).Arguments);
     }
 
@@ -171,7 +171,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 30526,
             Method = "2022-blake3-aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
             UdpOverTcp = false,
         };
 
@@ -198,7 +198,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = method,
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(
@@ -221,7 +221,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 30526,
             Method = "2022-blake3-aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(
@@ -255,7 +255,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = "aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(
@@ -288,7 +288,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = "aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         var error = Assert.Throws<InvalidOperationException>(() => WindowsProxyConfigBuilder.Build(
@@ -340,7 +340,7 @@ public sealed class WindowsProxyConfigBuilderTests
                 Server = "198.51.100.7",
                 Port = 30526,
                 Method = "2022-blake3-aes-256-gcm",
-                Password = "test-secret",
+                Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
             };
 
             using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(
@@ -375,7 +375,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = "aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         var error = Assert.Throws<InvalidOperationException>(() => WindowsProxyConfigBuilder.Build(
@@ -650,7 +650,7 @@ public sealed class WindowsProxyConfigBuilderTests
             Server = "198.51.100.7",
             Port = 443,
             Method = "aes-256-gcm",
-            Password = "test-secret",
+            Password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
         };
 
         using var document = JsonDocument.Parse(WindowsProxyConfigBuilder.Build(

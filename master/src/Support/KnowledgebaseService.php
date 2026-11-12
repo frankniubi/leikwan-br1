@@ -229,6 +229,7 @@ final class KnowledgebaseService
 
         $excerpt = trim((string) ($payload['excerpt'] ?? ''));
         $bodyHtml = (new KnowledgebaseHtmlSanitizer())->sanitize((string) ($payload['body_html'] ?? ''));
+        (new KnowledgebaseAddressGuard($this->db))->assertClean($title, $excerpt, $bodyHtml);
         if ($status === 'published') {
             if ($excerpt === '') {
                 throw new InvalidArgumentException('Published article excerpt is required.');
@@ -408,6 +409,11 @@ final class KnowledgebaseService
         if ($bodyText === '') {
             throw new InvalidArgumentException('Thread body is required.');
         }
+        (new KnowledgebaseAddressGuard($this->db))->assertClean(
+            $title,
+            (string) ($payload['excerpt'] ?? ''),
+            $bodyHtml
+        );
 
         $status = trim((string) ($payload['status'] ?? 'draft'));
         if (!in_array($status, ['draft', 'published'], true)) {

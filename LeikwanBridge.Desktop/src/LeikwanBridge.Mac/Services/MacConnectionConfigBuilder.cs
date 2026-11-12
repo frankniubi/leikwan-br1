@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using LeikwanBridge.Core.Models;
+using LeikwanBridge.Core.Shadowsocks;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Ultra;
 
@@ -355,6 +356,19 @@ public static class MacConnectionConfigBuilder
 
     private static JsonObject BuildShadowsocks(MacConnectionProfile profile)
     {
+        // Normalize SS2022 keys: ensures compatibility with sing-box client libs and
+        // sing-box/Xray servers that accept over-long or raw-ASCII keys
+        var password = profile.Password;
+        if (profile.Method.StartsWith("2022-", StringComparison.OrdinalIgnoreCase))
+        {
+            var result = SS2022KeyNormalizer.NormalizePassword(profile.Password, profile.Method);
+            if (result.Error != null)
+            {
+                throw new InvalidOperationException($"SS2022 密钥无效: {result.Error}");
+            }
+            password = result.Normalized;
+        }
+
         var outbound = new JsonObject
         {
             ["type"] = "shadowsocks",
@@ -362,7 +376,7 @@ public static class MacConnectionConfigBuilder
             ["server"] = profile.Server,
             ["server_port"] = profile.Port,
             ["method"] = profile.Method,
-            ["password"] = profile.Password,
+            ["password"] = password,
         };
         return outbound;
     }

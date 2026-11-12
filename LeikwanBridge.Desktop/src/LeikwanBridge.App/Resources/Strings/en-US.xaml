@@ -122,6 +122,7 @@
     <system:String x:Key="SettingsSaved">Settings saved.</system:String>
 
     <!-- Log -->
+    <system:String x:Key="LogUpload">Upload Logs</system:String>
     <system:String x:Key="LogClear">Clear</system:String>
     <system:String x:Key="LogExport">Export</system:String>
     <system:String x:Key="LogFilter">Filter...</system:String>

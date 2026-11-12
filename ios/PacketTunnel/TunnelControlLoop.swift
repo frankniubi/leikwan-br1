@@ -14,10 +14,18 @@ final class TunnelControlLoop {
     private var currentAlert: String?
     /// Ultra usage rides the heartbeat; unacknowledged rows stay pending and are resent.
     private let usageLedger: UltraUsageLedger?
+    /// Runtime candidate outcomes ride the heartbeat too; delivered evidence is never resent.
+    private let feedbackLedger: UltraCandidateFeedbackLedger?
     private let wakeup = LoopWakeup()
 
-    init(client: PanelClient, usageLedger: UltraUsageLedger? = nil, onTerminal: @escaping (String) -> Void) {
+    init(
+        client: PanelClient,
+        usageLedger: UltraUsageLedger? = nil,
+        feedbackLedger: UltraCandidateFeedbackLedger? = nil,
+        onTerminal: @escaping (String) -> Void
+    ) {
         self.usageLedger = usageLedger
+        self.feedbackLedger = feedbackLedger
         self.client = client
         self.onTerminal = onTerminal
     }
@@ -53,11 +61,24 @@ final class TunnelControlLoop {
             let outcome: ControlPollOutcome
             do {
                 let usage = usageLedger?.collect() ?? []
+                // Runtime health reads the same status documents the ledger counts; it is sent
+                // on every heartbeat (an empty list when no runtime runs) so the panel's view of
+                // this device never outlives its runtimes.
+                let status = usageLedger.map { UltraStatusCollector.collect(statusDirectory: $0.statusDirectory) }
+                let feedback = feedbackLedger?.collect() ?? []
                 let response = try await client.heartbeat(
-                    HeartbeatRequest(osRelease: Self.osRelease, ultraUsage: usage.isEmpty ? nil : usage)
+                    HeartbeatRequest(
+                        osRelease: Self.osRelease,
+                        ultraUsage: usage.isEmpty ? nil : usage,
+                        ultraStatus: status,
+                        ultraCandidateFeedback: feedback.isEmpty ? nil : feedback
+                    )
                 )
                 if !usage.isEmpty {
                     usageLedger?.acknowledge(usage, acknowledged: response.usageAcknowledged)
+                }
+                if !feedback.isEmpty && response.ok {
+                    feedbackLedger?.acknowledge(feedback)
                 }
                 outcome = .success
             } catch {

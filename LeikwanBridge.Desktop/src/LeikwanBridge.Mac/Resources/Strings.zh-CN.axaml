@@ -300,6 +300,8 @@
   <x:String x:Key="KeepInMenuBar">保留在菜单栏</x:String>
   <x:String x:Key="KeepInMenuBarHint">关闭窗口后，活动的转发会继续运行。</x:String>
   <x:String x:Key="ActivityLog">活动日志</x:String>
+  <x:String x:Key="UploadLogs">上传日志</x:String>
+  <x:String x:Key="UploadLogsSuccess">已上传诊断日志（编号 {0}）。</x:String>
   <x:String x:Key="SignOut">退出登录</x:String>
   <x:String x:Key="Endpointcloudflare">会聚总站 (Cloudflare)</x:String>
   <x:String x:Key="Endpointaliyun-cdn">会聚中国内地 (Aliyun CDN)</x:String>

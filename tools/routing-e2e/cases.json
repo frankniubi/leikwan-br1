@@ -1,0 +1,141 @@
+{
+  "_comment": [
+    "Runtime routing matrix for rules.txt, driven by harness.py against a real sing-box core running the app-built config.",
+    "Outcomes: P = proxy outbound (the SOCKS5 marker on 127.0.0.1:1081 answered), D = direct outbound (an HTTP direct marker answered), R = rejected (SOCKS5 failure reply, or the connection closed/reset before any byte).",
+    "Scenarios: s1 = config built with global default TUNNEL (route.final -> proxy tag); s2 = global default DIRECT (route.final -> direct).",
+    "`expect` is the baseline for both platforms; `override.<platform>.expect` wins for that platform only and must carry a `note`.",
+    "Every test domain resolves (via the hosts DNS server the harness puts in place of the app's DNS servers) to dns_hosts_target. That address is deliberately NOT covered by any rule in rules.txt (the DIRECT CIDR is 192.0.2.128/25), so a domain case's outcome never depends on whether sing-box resolves the destination before matching ip_cidr rules.",
+    "Literal-IP direct cases use 192.0.2.200, inside the DIRECT CIDR; the direct marker listens on both addresses (CI binds them to lo)."
+  ],
+  "dns_hosts_target": "192.0.2.10",
+  "direct_marker": { "ips": ["192.0.2.10", "192.0.2.200"], "ports": [8080, 8443] },
+  "proxy_marker": { "ip": "127.0.0.1", "port": 1081 },
+  "cases": [
+    {
+      "id": "domain-suffix-proxy",
+      "host": "a.example-proxy.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "P" },
+      "note": "Rule 1 (DOMAIN-SUFFIX example-proxy.test,PROXY). An explicit PROXY rule wins in both scenarios."
+    },
+    {
+      "id": "suffix-before-keyword-reject",
+      "host": "blockme.example-proxy.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "P" },
+      "note": "Matches rule 1 (PROXY) and rule 3 (DOMAIN-KEYWORD blockme,REJECT). sing-box takes the first matching route rule, so rule order, not specificity, decides: PROXY."
+    },
+    {
+      "id": "domain-exact-direct",
+      "host": "direct.test",
+      "port": 8080,
+      "expect": { "s1": "D", "s2": "D" },
+      "note": "Rule 2 (DOMAIN direct.test,DIRECT)."
+    },
+    {
+      "id": "domain-exact-not-subdomain",
+      "host": "sub.direct.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "D" },
+      "note": "DOMAIN is an exact match, so a subdomain falls through to route.final (S1 proxy, S2 direct)."
+    },
+    {
+      "id": "domain-keyword-reject",
+      "host": "x.blockme.test",
+      "port": 8080,
+      "expect": { "s1": "R", "s2": "R" },
+      "note": "Rule 3 (DOMAIN-KEYWORD blockme,REJECT)."
+    },
+    {
+      "id": "domain-regex-direct",
+      "host": "rx42.test",
+      "port": 8080,
+      "expect": { "s1": "D", "s2": "D" },
+      "note": "Rule 4 (DOMAIN-REGEX ^rx[0-9]+\\.test$,DIRECT)."
+    },
+    {
+      "id": "domain-regex-no-match",
+      "host": "rxa.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "D" },
+      "note": "Fails rule 4's [0-9]+; no other rule matches, so route.final decides."
+    },
+    {
+      "id": "ip-cidr-proxy",
+      "host": "198.51.100.7",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "P" },
+      "note": "Literal IPv4, rule 5 (IP-CIDR 198.51.100.0/24,PROXY). The proxy marker never dials out, so the TEST-NET address needs no route."
+    },
+    {
+      "id": "ip-cidr-reject",
+      "host": "203.0.113.9",
+      "port": 8080,
+      "expect": { "s1": "R", "s2": "R" },
+      "note": "Literal IPv4, rule 6 (IP-CIDR 203.0.113.0/24,REJECT)."
+    },
+    {
+      "id": "ip-cidr-direct",
+      "host": "192.0.2.200",
+      "port": 8080,
+      "expect": { "s1": "D", "s2": "D" },
+      "note": "Literal IPv4, rule 7 (IP-CIDR 192.0.2.128/25,DIRECT); the direct marker listens on 192.0.2.200."
+    },
+    {
+      "id": "ip-cidr6-proxy",
+      "host": "2001:db8:1::1",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "P" },
+      "override": {
+        "android": {
+          "expect": { "s1": "R", "s2": "R" },
+          "note": "Android's SingboxConfigBuilder.buildRoute puts {ip_version: 6, action: reject} before every user rule whenever the config is built with enableIpv6Dns=false (the build() default and the app default), so captured IPv6 is refused instead of carried. Rule 8 is therefore unreachable on Android in both scenarios. iOS has no such rule, so rule 8 applies there."
+        }
+      },
+      "note": "Literal IPv6, rule 8 (IP-CIDR6 2001:db8:1::/48,PROXY). Sent to the inbound as SOCKS5 ATYP 4; no IPv6 connectivity is needed because the proxy marker never dials."
+    },
+    {
+      "id": "dst-port-direct",
+      "host": "port.test",
+      "port": 8443,
+      "expect": { "s1": "D", "s2": "D" },
+      "note": "Rule 9 (DST-PORT 8443,DIRECT): a port-only rule matches any destination on that port."
+    },
+    {
+      "id": "dst-port-other-port",
+      "host": "port.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "D" },
+      "note": "Same host on a port rule 9 does not cover; route.final decides."
+    },
+    {
+      "id": "geosite-openai-direct",
+      "host": "api.openai.com",
+      "port": 8080,
+      "expect": { "s1": "D", "s2": "D" },
+      "note": "Rule 10 (GEOSITE openai,DIRECT) through the bundled geosite-openai rule-set (domain_suffix openai.com)."
+    },
+    {
+      "id": "ruleset-telegram-reject",
+      "host": "telegram.org",
+      "port": 8080,
+      "expect": { "s1": "R", "s2": "R" },
+      "note": "Rule 11 (RULE-SET telegram,REJECT) through the bundled geosite-telegram rule-set."
+    },
+    {
+      "id": "sniffed-host-beats-ip-rule",
+      "host": "192.0.2.200",
+      "port": 8080,
+      "host_header": "www.example-proxy.test",
+      "expect": { "s1": "P", "s2": "P" },
+      "note": "Literal IP inside rule 7 (DIRECT), but the HTTP Host header is www.example-proxy.test. route.rules[0] is the sniff action, which records the sniffed host as the connection's domain before any matching rule runs; rule 1 (PROXY) then matches and, being earlier than rule 7, wins. A D here would mean sniffing did not feed domain rules."
+    },
+    {
+      "id": "unmatched-final",
+      "host": "unmatched.test",
+      "port": 8080,
+      "expect": { "s1": "P", "s2": "D" },
+      "note": "No rule matches: pure route.final. Control case proving final flips between the two scenario configs."
+    }
+  ]
+}

@@ -20,4 +20,6 @@ data class RoutingPolicySnapshot(
     val precedenceVersion: Int,
     /** Per-app rules (`package_name`); they outrank country and category rules. */
     val userAppRules: List<AppRoutingRule> = emptyList(),
+    /** Clash-style rules (DOMAIN, IP-CIDR, etc.); compiled after app rules, before country rules. */
+    val userClashRules: List<RoutingRule> = emptyList(),
 )

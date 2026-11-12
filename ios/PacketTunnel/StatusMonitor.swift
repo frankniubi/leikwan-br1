@@ -12,6 +12,10 @@ final class StatusMonitor {
     func start() {
         let options = LibboxCommandClientOptions()
         options.addCommand(LibboxCommandStatus)
+        // Group stream: the config's synthetic `probe` urltest group (see SingboxConfigBuilder)
+        // self-tests on its interval and every history change pushes group items, which is
+        // where the in-tunnel latency number comes from.
+        options.addCommand(LibboxCommandGroup)
         // No CommandLog subscription: at info level sing-box emits a line per connection, and
         // under load (a speed test) that is dozens of lines a second, each pushed through
         // TunnelLog into os_log plus an append to the shared log file — measurable NE CPU and
@@ -23,15 +27,32 @@ final class StatusMonitor {
         }
         do {
             try client.connect()
+            lock.lock()
             self.client = client
+            lock.unlock()
         } catch {
             TunnelLog.shared.write("status monitor connect failed: \(error.localizedDescription)", level: 2)
         }
     }
 
     func stop() {
-        try? client?.disconnect()
+        lock.lock()
+        let current = client
         client = nil
+        lock.unlock()
+        try? current?.disconnect()
+    }
+
+    /// Closes every open connection in sing-box (frees their buffers); used by MemoryGuard.
+    func closeConnections() {
+        do {
+            lock.lock()
+            let current = client
+            lock.unlock()
+            try current?.closeConnections()
+        } catch {
+            TunnelLog.shared.write("close connections failed: \(error.localizedDescription)", level: 2)
+        }
     }
 
     func snapshot() -> LibboxStatusSnapshot {
@@ -49,8 +70,15 @@ final class StatusMonitor {
             downlinkTotal: message.downlinkTotal,
             connectionsIn: message.connectionsIn,
             connectionsOut: message.connectionsOut,
-            memory: message.memory
+            memory: message.memory,
+            latencyMs: latest.latencyMs
         )
+        lock.unlock()
+    }
+
+    fileprivate func updateLatency(_ latencyMs: Int) {
+        lock.lock()
+        latest.latencyMs = Int64(latencyMs)
         lock.unlock()
     }
 
@@ -81,7 +109,18 @@ final class StatusMonitor {
             monitor?.update(message)
         }
 
-        func writeGroups(_: LibboxOutboundGroupIteratorProtocol?) {}
+        func writeGroups(_ groupList: LibboxOutboundGroupIteratorProtocol?) {
+            guard let groupList else { return }
+            while groupList.hasNext() {
+                guard let group = groupList.next(), group.tag == "probe", let items = group.getItems() else { continue }
+                while items.hasNext() {
+                    // The probe group holds the active exit and "direct"; the exit's
+                    // URL-test delay is the in-tunnel latency.
+                    guard let item = items.next(), item.tag != "direct", item.urlTestDelay > 0 else { continue }
+                    monitor?.updateLatency(Int(item.urlTestDelay))
+                }
+            }
+        }
 
         func initializeClashMode(_: LibboxStringIteratorProtocol?, currentMode _: String?) {}
 
@@ -99,4 +138,6 @@ struct LibboxStatusSnapshot {
     var connectionsIn: Int32 = 0
     var connectionsOut: Int32 = 0
     var memory: Int64 = 0
+    /// URL-test delay of the active exit (ms); 0 = not measured yet.
+    var latencyMs: Int64 = 0
 }

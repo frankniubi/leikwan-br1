@@ -137,7 +137,7 @@ public sealed class WindowsProxyConnectionServiceTests
         await service.SaveProfileAsync(new WindowsProxyProfile
         {
             Name = "saved node", Protocol = protocol, Server = "node.example.test", Port = 30526,
-            Method = method, Password = "saved-secret", Uuid = "b03f79e5-61df-4451-b75b-b52a5e19c61a",
+            Method = method, Password = method == "2022-blake3-aes-256-gcm" ? "c2F2ZWQtc2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTI=" : "saved-secret", Uuid = "b03f79e5-61df-4451-b75b-b52a5e19c61a",
             Tls = true, ServerName = "tls.example.test", Host = "ws.example.test", Transport = "ws",
         });
 
@@ -155,14 +155,14 @@ public sealed class WindowsProxyConnectionServiceTests
         }
         else
         {
-            Assert.Equal("saved-secret", outbound.GetProperty("password").GetString());
+            Assert.Equal(protocol == "ss2022" ? "c2F2ZWQtc2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTI=" : "saved-secret", outbound.GetProperty("password").GetString());
             Assert.Equal(method, outbound.GetProperty("method").GetString());
         }
         foreach (var saved in new[] { Assert.Single(service.Profiles), Assert.Single(await store.LoadAsync()) })
         {
             Assert.Equal("node.example.test", saved.Server);
             Assert.Equal(30526, saved.Port);
-            Assert.Equal("saved-secret", saved.Password);
+            Assert.Equal(protocol == "ss2022" ? "c2F2ZWQtc2VjcmV0LTAxMjM0NTY3ODlhYmNkZWYwMTI=" : "saved-secret", saved.Password);
             Assert.Equal("tls.example.test", saved.ServerName);
         }
         Assert.Empty(Directory.GetFiles(temp.Path, "proxy-*.json"));

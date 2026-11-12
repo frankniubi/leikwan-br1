@@ -67,6 +67,7 @@ type RuntimeStatus struct {
 	ErrorCode             string            `json:"error_code,omitempty"`
 	PolicyGeneration      string            `json:"policy_generation,omitempty"`
 	DetectedIngressZone   string            `json:"detected_ingress_zone,omitempty"`
+	UDPTransport          string            `json:"udp_transport,omitempty"`
 	LocationSource        string            `json:"location_source,omitempty"`
 	LatestTCP             *SelectionStatus  `json:"latest_tcp,omitempty"`
 	ActiveUDP             *SelectionStatus  `json:"active_udp,omitempty"`
@@ -98,10 +99,20 @@ type SelectionStatus struct {
 	SelectedAt       string `json:"selected_at"`
 }
 
+// HAEvent mirrors tools/ultra-client/ha_status.go. The runtime keeps a bounded
+// history of failures only (ordinary stream completion is never recorded).
 type HAEvent struct {
-	At     string `json:"at"`
-	Kind   string `json:"kind"`
-	Reason string `json:"reason"`
+	Protocol           string `json:"protocol"`
+	Reason             string `json:"reason"`
+	Generation         string `json:"generation"`
+	At                 string `json:"at"`
+	CandidateKeyHash   string `json:"candidate_key_hash,omitempty"`
+	LeaseHash          string `json:"lease_hash,omitempty"`
+	UpstreamBytes      *int64 `json:"upstream_bytes,omitempty"`
+	RemoteReadBytes    *int64 `json:"remote_read_bytes,omitempty"`
+	RemoteReadReason   string `json:"remote_read_reason,omitempty"`
+	RemoteStoppedFirst *bool  `json:"remote_stopped_first,omitempty"`
+	LocalPathAvoided   *bool  `json:"local_path_avoided,omitempty"`
 }
 
 type CandidateFeedbk struct {

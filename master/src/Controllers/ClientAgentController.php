@@ -8,6 +8,7 @@ use Leikwan\Master\Http\Response;
 use Leikwan\Master\Support\Auth;
 use Leikwan\Master\Support\AppSettings;
 use Leikwan\Master\Support\ApiException;
+use Leikwan\Master\Support\ApiRateLimiter;
 use Leikwan\Master\Support\AuthRateLimiter;
 use Leikwan\Master\Support\AndroidEnrollmentCodeService;
 use Leikwan\Master\Support\AccessPolicyService;
@@ -30,6 +31,7 @@ use Leikwan\Master\Support\UltraLeaseSealer;
 use Leikwan\Master\Support\UltraLeaseService;
 use Leikwan\Master\Support\UltraMode;
 use Leikwan\Master\Support\UltraMaterialService;
+use Leikwan\Master\Support\UserDeviceLimit;
 use Leikwan\Master\Support\TrustedClientIpResolver;
 
 final class ClientAgentController extends BaseController
@@ -553,10 +555,10 @@ final class ClientAgentController extends BaseController
                 // by the grant's own expires_at above.
                 $policy['offline_validity_seconds'] = $leaseValidityCap;
             }
-            // A line-material refresh moves the forward's generation while the
+            // A relay-path change moves the forward's generation while the
             // client still leases against the one it pulled before. The broker
-            // names that generation only when its own ticket proves the line
-            // material was the sole difference, so honour it for the grace
+            // names that generation only when its own ticket proves the relay
+            // paths were the sole difference, so honour it for the grace
             // window and never past the ticket's expiry (it caps expires_at).
             $graceGrant = is_array($grant['previous_generation_grace'] ?? null) ? $grant['previous_generation_grace'] : [];
             $presentedGeneration = strtolower(trim((string) ($item['policy_generation'] ?? '')));
@@ -1002,7 +1004,8 @@ final class ClientAgentController extends BaseController
                     'desired_wstunnel_version' => (string) ($wstunnelBinary['version'] ?? ''),
                     'desired_wstunnel_sha256' => (string) ($wstunnelBinary['sha256'] ?? ''),
                 ]),
-                'online_device_limit' => max(1, (int) ($client['online_device_limit'] ?? 1)),
+                'online_device_limit' => UserDeviceLimit::effectiveForClient($client, $this->db),
+                'online_device_limit_source' => UserDeviceLimit::sourceForClient($client, $this->db),
                 'active_online_devices' => $deviceSessionService->activeCountForClient((int) $client['id']),
                 'current_device_id' => $deviceId,
                 // Hosted user nodes change marker; devices fetch the nodes
@@ -1014,6 +1017,11 @@ final class ClientAgentController extends BaseController
         ];
         if (is_array($snapshot['native_outbound'] ?? null)) {
             $responsePayload['native_outbound'] = $snapshot['native_outbound'];
+        }
+        // Route Directions + Client Rules, only for devices that advertised support;
+        // others get no route-rule keys at all.
+        if (is_array($snapshot['route_rule_payload'] ?? null) && $snapshot['route_rule_payload'] !== []) {
+            $responsePayload = array_merge($responsePayload, $snapshot['route_rule_payload']);
         }
         // A minimum client version, only for the GUI clients that ship the update gate.
         // Linux and OpenWrt never get this key, so their payload is unchanged.
@@ -1079,6 +1087,7 @@ final class ClientAgentController extends BaseController
     ): array
     {
         $forwards = $this->provisioning->assignedForwardConfigsForClient($clientId, $deviceSession);
+        [$forwards, $routeRulePayload] = $this->routeRulePullParts($clientId, $client, $forwards);
         $clientAgentKey = 'client_agent_linux_' . $runtimeArchitecture;
         $clientAgent = $this->artifactMetadata($clientAgentKey);
         if ($clientAgent === []) {
@@ -1170,6 +1179,11 @@ final class ClientAgentController extends BaseController
             // Only clients that host nodes see a revision change from this.
             $revisionExtra['hosted_nodes'] = $hostedNodesRevision;
         }
+        if ($routeRulePayload !== []) {
+            // A Client Rule write (any device or the console) must end the long poll; only
+            // devices that advertised route-rule support carry this marker.
+            $revisionExtra['client_rules'] = hash('sha256', (string) json_encode($routeRulePayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
         if ($updateRequestToken !== '') {
             // A console update click must end the long poll, or the agent only sees it on its next full pull.
             $revisionExtra['update_request'] = $updateRequestToken;
@@ -1215,9 +1229,37 @@ final class ClientAgentController extends BaseController
             'forward_revision' => $forwardRevision,
             'config_revision' => $configRevision,
             'hosted_nodes_revision' => $hostedNodesRevision,
+            'route_rule_payload' => $routeRulePayload,
             'force_apply' => false,
             'next_poll_after_ms' => 30000,
         ];
+    }
+
+    /**
+     * Route-rule part of the pull: helper-only forwards are dropped for devices without
+     * route-rule support (marked non-selectable for those with it), and the Route
+     * Direction / Client Rule payload is built for capable devices only. Optional: a
+     * lookup failure (e.g. tables not migrated yet) keeps the feature invisible and
+     * never breaks the config pull.
+     *
+     * @param array<string, mixed> $client
+     * @param array<int, mixed> $forwards
+     * @return array{0: array<int, mixed>, 1: array<string, mixed>}
+     */
+    private function routeRulePullParts(int $clientId, array $client, array $forwards): array
+    {
+        try {
+            $capabilities = $this->provisioning->clientRouteRuleCapabilities($client);
+            $forwards = $this->provisioning->filterRouteRuleHelperForwardsForPull($forwards, $capabilities);
+        } catch (\Throwable) {
+            return [$forwards, []];
+        }
+        try {
+            $payload = $this->provisioning->routeDirectionConfigPullForClient($clientId, $capabilities, $forwards);
+        } catch (\Throwable) {
+            $payload = [];
+        }
+        return [$forwards, $payload];
     }
 
     /**
@@ -1622,6 +1664,100 @@ final class ClientAgentController extends BaseController
         return $forwards;
     }
 
+    /** Client Rule writes per client per minute (shared by create/update/delete). */
+    private const CLIENT_RULE_WRITE_LIMIT_PER_MINUTE = 30;
+
+    public function createClientRule(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'request');
+        return $this->clientRuleResponse($client, fn(): array => $this->provisioning->createClientRuleForAgent(
+            (int) $client['id'],
+            $request->body()
+        ), 201);
+    }
+
+    public function updateClientRule(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'request');
+        $ruleId = trim((string) ($params['id'] ?? ''));
+        return $this->clientRuleResponse($client, fn(): array => $this->provisioning->updateClientRuleForAgent(
+            (int) $client['id'],
+            $ruleId,
+            $request->body()
+        ));
+    }
+
+    public function deleteClientRule(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'request');
+        $ruleId = trim((string) ($params['id'] ?? ''));
+        return $this->clientRuleResponse($client, fn(): array => $this->provisioning->tombstoneClientRuleForAgent(
+            (int) $client['id'],
+            $ruleId
+        ));
+    }
+
+    /**
+     * Runs one Client Rule write and maps its outcome onto the stable error vocabulary
+     * the Android client keys its messages on ({ok, error, message, client_rule}).
+     *
+     * @param array<string, mixed> $client
+     */
+    private function clientRuleResponse(array $client, callable $write, int $successStatus = 200): Response
+    {
+        try {
+            ApiRateLimiter::fromConfig($this->config)->hit(
+                'client-rules:client:' . (int) $client['id'],
+                self::CLIENT_RULE_WRITE_LIMIT_PER_MINUTE
+            );
+            $rule = $write();
+            return $this->json(['ok' => true, 'client_rule' => $rule], $successStatus);
+        } catch (ApiException $exception) {
+            $code = $exception->getMessage();
+            $stable = [
+                'duplicate_destination' => 409,
+                'rule_quota_exceeded' => 422,
+                'direction_not_allowed' => 422,
+                'direction_unavailable' => 422,
+                'invalid_destination_ip' => 422,
+                'invalid_destination_port' => 422,
+                'unsupported_destination_address_family' => 422,
+                'destination_blocked_by_policy' => 422,
+                'service_not_active' => 422,
+                'rule_not_found' => 404,
+                'version_conflict' => 409,
+                'rate_limited' => 429,
+            ];
+            if (!array_key_exists($code, $stable)) {
+                $code = 'client_rule_write_failed';
+            }
+            return $this->json([
+                'ok' => false,
+                'error' => $code,
+                'message' => self::clientRuleUserMessage($code),
+            ], $stable[$code] ?? 500);
+        }
+    }
+
+    private static function clientRuleUserMessage(string $code): string
+    {
+        return match ($code) {
+            'duplicate_destination' => '该目标已存在规则',
+            'rule_quota_exceeded' => '规则数量已达到当前套餐上限',
+            'direction_not_allowed' => '当前套餐不支持该方向',
+            'direction_unavailable' => '当前方向暂不可用',
+            'invalid_destination_ip', 'invalid_destination_port', 'unsupported_destination_address_family', 'destination_blocked_by_policy' => '目标地址不可用',
+            'service_not_active' => '服务当前不可用',
+            'rule_not_found' => '规则不存在',
+            'version_conflict' => '规则已更新，请刷新后重试',
+            'rate_limited' => '操作过于频繁，请稍后再试',
+            default => '规则保存失败',
+        };
+    }
+
     public function heartbeat(Request $request, array $params): Response
     {
         $client = Auth::requireClientAgent($request, $this->db);
@@ -1678,6 +1814,8 @@ final class ClientAgentController extends BaseController
         }
         $runtimeState = $this->mergeRuntimeState($existingAgentConfig, [
             'supports_mptcp' => $request->input('supports_mptcp'),
+            'supports_route_direction_rules' => $request->input('supports_route_direction_rules'),
+            'supports_exact_destination_rules' => $request->input('supports_exact_destination_rules'),
             'agent_architecture' => $this->clientRuntimeArchitecture($request),
             'runtime_binary_mode' => $request->input('runtime_binary_mode'),
             'wireguard_public_key' => $request->input('wireguard_public_key'),
@@ -1804,6 +1942,29 @@ final class ClientAgentController extends BaseController
         );
 
         return $this->json(['ok' => true]);
+    }
+
+    private const CLIENT_DEBUG_START_LIMIT_PER_MINUTE = 6;
+
+    /**
+     * Opens a fresh debug-log collection window initiated by the client itself
+     * ("Upload diagnostic logs" in the app/CLI), returning a collection UUID
+     * whose first 8 hex chars double as a short support reference code.
+     */
+    public function startDebugCollection(Request $request, array $params): Response
+    {
+        $client = Auth::requireClientAgent($request, $this->db);
+        $this->enforceClientRequest($client, $request, 'pull');
+        ApiRateLimiter::fromConfig($this->config)->hit(
+            'debug-start:client:' . (int) $client['id'],
+            self::CLIENT_DEBUG_START_LIMIT_PER_MINUTE
+        );
+        $collection = (new DebugCollectionStore($this->db, $this->config))->create((int) $client['id']);
+        return $this->noStoreJson([
+            'ok' => true,
+            'debug_collection' => $collection,
+            'reference_code' => substr((string) ($collection['uuid'] ?? ''), 0, 8),
+        ]);
     }
 
     /**
@@ -1988,14 +2149,35 @@ final class ClientAgentController extends BaseController
     private function accessPolicyPlatform(Request $request): string
     {
         $platform = strtolower(trim((string) ($request->header('x-device-platform') ?? $request->input('platform', ''))));
-        // Routers join the location protocol through the same classifier the
-        // access policy applies, so openwrt/openwrt-* and the router form
-        // factor cannot drift between the two surfaces.
-        if (!in_array($platform, ['android', 'windows', 'macos', 'ios'], true)
-            && !AccessPolicyService::isRouterPlatform($platform)) {
+        if ($platform === '') {
+            $ua = strtolower((string) ($request->header('user-agent') ?? ''));
+            if (str_contains($ua, 'windows')) {
+                $platform = 'windows';
+            } elseif (str_contains($ua, 'mac')) {
+                $platform = 'macos';
+            } elseif (str_contains($ua, 'android')) {
+                $platform = 'android';
+            } elseif (str_contains($ua, 'ios')) {
+                $platform = 'ios';
+            }
+        }
+        // Desktop and mobile clients send suffixed identifiers such as
+        // 'windows-desktop', 'macos-desktop', or 'android-host'; normalize them
+        // the same way AccessPolicyService::normalizeLocationContext() does,
+        // and join routers through AccessPolicyService::isRouterPlatform().
+        $normalized = match (true) {
+            $platform === 'win' || str_starts_with($platform, 'windows') => 'windows',
+            $platform === 'mac' || $platform === 'osx' || str_starts_with($platform, 'macos') || str_starts_with($platform, 'darwin') => 'macos',
+            str_starts_with($platform, 'android') => 'android',
+            str_starts_with($platform, 'ios') => 'ios',
+            str_starts_with($platform, 'linux') => 'linux',
+            AccessPolicyService::isRouterPlatform($platform) => $platform,
+            default => '',
+        };
+        if ($normalized === '') {
             throw new ApiException('location_platform_invalid', 422);
         }
-        return $platform;
+        return $normalized;
     }
 
     private function accessPolicyDeviceUuid(Request $request): string
@@ -2307,7 +2489,7 @@ final class ClientAgentController extends BaseController
     private function mergeRuntimeState(array $existing, array $input): array
     {
         $merged = $existing;
-        foreach (['supports_mptcp'] as $boolKey) {
+        foreach (['supports_mptcp', 'supports_route_direction_rules', 'supports_exact_destination_rules'] as $boolKey) {
             if (array_key_exists($boolKey, $input) && $input[$boolKey] !== null && $input[$boolKey] !== '') {
                 $merged[$boolKey] = !in_array(strtolower(trim((string) $input[$boolKey])), ['0', 'false', 'no', 'off'], true);
             }

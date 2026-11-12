@@ -778,6 +778,29 @@ public sealed partial class MasterApiClient : IDisposable
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<DebugCollectionStartResult> StartDebugCollectionAsync(CancellationToken ct = default)
+    {
+        var url = $"{_masterUrl}/api/client/debug/start";
+        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        var response = await SendAsync(request, ct);
+        await EnsureSuccessOrThrowAsync(response, ct);
+        var raw = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(raw);
+        var root = doc.RootElement;
+        DebugCollectionMeta? collection = null;
+        if (root.TryGetProperty("debug_collection", out var collElement) && collElement.ValueKind == JsonValueKind.Object)
+        {
+            collection = JsonSerializer.Deserialize<DebugCollectionMeta>(collElement.GetRawText(), JsonOptions);
+        }
+        if (collection is null || string.IsNullOrWhiteSpace(collection.Uuid))
+            throw new MasterApiException((int)response.StatusCode, "debug_collection_invalid");
+        var referenceCode = root.TryGetProperty("reference_code", out var refElement) && refElement.ValueKind == JsonValueKind.String
+            ? refElement.GetString() ?? string.Empty
+            : collection.Uuid[..Math.Min(8, collection.Uuid.Length)];
+        return new DebugCollectionStartResult(collection, referenceCode);
+    }
+
     public async Task SubmitDebugLogChunkAsync(
         string collectionUuid,
         int sequence,
@@ -1192,3 +1215,5 @@ public sealed class DeviceLimitReachedException : MasterApiException
         return false;
     }
 }
+
+public sealed record DebugCollectionStartResult(DebugCollectionMeta Collection, string ReferenceCode);

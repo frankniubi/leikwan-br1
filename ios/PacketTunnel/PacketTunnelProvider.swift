@@ -10,6 +10,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var platform = TunnelPlatformInterface(self)
     private let runtimes = RuntimeHost()
     private let statusMonitor = StatusMonitor()
+    /// Sheds connections before jetsam kills the extension (~50 MB phys_footprint).
+    private lazy var memoryGuard = MemoryGuard { [weak self] in self?.statusMonitor.closeConnections() }
+    /// Ultra latency (the sing-box probe group is left out there): handshake time to the relay in use.
+    private lazy var relayProbe = RelayLatencyProbe { [weak self] in
+        guard let self else { return [:] }
+        var endpoints = self.ultraLeases?.activeEndpoints() ?? [:]
+        if let native = self.nativeLeases?.activeEndpoint() { endpoints[native.forwardID] = native.endpoint }
+        return endpoints
+    }
     private var launch: TunnelLaunchOptions?
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
@@ -24,6 +33,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var usageLedger = UltraUsageLedger(
         statusDirectory: AppGroup.runtimeDirectory,
         stateFile: AppGroup.sharedDirectory.appendingPathComponent("ultra-usage-state.json")
+    )
+    /// Runtime candidate feedback -> heartbeat; remembers which evidence the panel already has.
+    private lazy var feedbackLedger = UltraCandidateFeedbackLedger(
+        statusDirectory: AppGroup.runtimeDirectory,
+        stateFile: AppGroup.sharedDirectory.appendingPathComponent("ultra-feedback-state.json")
     )
 
     override func startTunnel(options: [String: NSObject]?) async throws {
@@ -103,9 +117,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
         statusMonitor.start()
+        memoryGuard.start()
+        relayProbe.start()
         startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
-            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
+            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
                 self?.handleTerminal(alert)
             }
             controlLoop = loop
@@ -122,6 +138,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         controlLoop = nil
         stopUltraLeases()
         stopNativeLeases()
+        memoryGuard.stop()
+        relayProbe.stop()
         statusMonitor.stop()
         stopService()
         if let server = commandServer {
@@ -150,6 +168,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             snapshot.connectionsIn = libbox.connectionsIn
             snapshot.connectionsOut = libbox.connectionsOut
             snapshot.memory = libbox.memory
+            snapshot.latencyMs = libbox.latencyMs > 0 ? libbox.latencyMs : relayProbe.latencyMs
             snapshot.runtimes = runtimes.statuses()
             snapshot.alert = controlLoop?.alert ?? ultraLeases?.alert ?? nativeLeases?.alert
             var byForward: [String: String] = [:]
@@ -312,7 +331,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             controlLoop?.stop()
             controlLoop = nil
             if let client = next.panel?.makeClient() {
-                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
+                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
                     self?.handleTerminal(alert)
                 }
                 controlLoop = loop

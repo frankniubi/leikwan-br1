@@ -54,7 +54,14 @@ internal static class Program
                 cliCts.Cancel();
             };
             return LeikwanBridge.Core.Services.HeadlessCli
-                .RunAsync(args[1..], controller, updater, Console.Out, Console.Error, cliCts.Token)
+                .RunAsync(
+                    args[1..],
+                    controller,
+                    updater,
+                    Console.Out,
+                    Console.Error,
+                    cliCts.Token,
+                    Services.MacHeadlessCli.LogUploader(cliPaths, controller))
                 .GetAwaiter().GetResult();
         }
         // The windowless client is a lifecycle variant of the same payload: it
