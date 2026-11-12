@@ -5880,6 +5880,11 @@ final class ProvisioningService
                 $targetHost,
                 !empty($forward['native_outbound_enabled'])
             );
+            if (empty($forward['native_outbound_enabled'])
+                && (int) ($forward['enabled'] ?? 0) === 1
+                && $listenPort !== (int) ($forward['listen_port'] ?? 0)) {
+                $this->assertClientListenPortFree((int) ($forward['line_client_id'] ?? 0), $forwardId, $listenPort, $transportMode);
+            }
 
             // Regression sentinel: ultra_target_change_reprovisions_lease_plane
             // An Ultra forward is provisioned by a short-lived LEASE, and the
@@ -6145,6 +6150,14 @@ final class ProvisioningService
             if ($enabled) {
                 if ($mutationPolicy !== null && (int) ($forward['enabled'] ?? 0) !== 1) {
                     $this->assertForwardMayStart($forward, $lockedService);
+                }
+                if ((int) ($forward['enabled'] ?? 0) !== 1 && empty($forward['native_outbound_enabled'])) {
+                    $this->assertClientListenPortFree(
+                        (int) ($forward['line_client_id'] ?? 0),
+                        $forwardId,
+                        (int) ($forward['listen_port'] ?? 0),
+                        (string) ($forward['transport_mode'] ?? 'tcp')
+                    );
                 }
                 $nativeDirectionKey = $this->reactivatedNativeDirectionKey($forward);
                 $this->db->execute(
@@ -7832,6 +7845,7 @@ final class ProvisioningService
         $portStrategy = (string) (($ingressGroup['ingress_port_strategy'] ?? '') ?: $this->config->get('EDGE_PORT_STRATEGY', 'shared_preferred_port'));
         if ($listenPort <= 0) {
             $listenPort = $autoPort > 0 ? $autoPort : ($targetPort > 0 ? $targetPort : $preferredPublicPort);
+            $listenPort = $this->freeClientListenPort($defaultClient, $forwardId, $listenPort);
         }
         if ($publicPort <= 0) {
             $publicPort = $this->pickPublicPort(
@@ -7854,6 +7868,13 @@ final class ProvisioningService
 
         if ($listenPort <= 0 || $publicPort <= 0 || $targetHost === '' || $targetPort <= 0) {
             throw new ApiException('invalid_forward_payload', 422, ['payload' => $payload]);
+        }
+
+        if (!$nativeOutboundRequested
+            && ($existingForward === null
+                || (int) ($existingForward['listen_port'] ?? 0) !== $listenPort
+                || (int) ($existingForward['line_client_id'] ?? 0) !== $lineClientId)) {
+            $this->assertClientListenPortFree($lineClientId, $forwardId, $listenPort, (string) $transportMode);
         }
 
         $sidecarFrontendRequested = $this->usesSingleRaceSidecarFrontend([
@@ -14011,6 +14032,95 @@ final class ProvisioningService
         }
 
         return $preferredPort > 0 ? $preferredPort : $start;
+    }
+
+    /**
+     * An automatically chosen listen port must not repeat one another live
+     * forward of the same client already listens on. A client without a port
+     * range gets the target port, and two services of one owner forwarding to
+     * the same target port then shared a listen port: a router runs every
+     * forward at once, so only one of them could bind and the rest looped on
+     * "address already in use". A port the caller named explicitly is kept.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    private function freeClientListenPort(?array $client, ?int $excludeForwardId, int $port): int
+    {
+        if (!is_array($client) || (int) ($client['id'] ?? 0) <= 0 || $port <= 0) {
+            return $port;
+        }
+
+        $sql = 'SELECT listen_port FROM forwards WHERE line_client_id = :client_id AND enabled = 1';
+        $params = ['client_id' => (int) $client['id']];
+        if (($excludeForwardId ?? 0) > 0) {
+            $sql .= ' AND id <> :exclude_id';
+            $params['exclude_id'] = $excludeForwardId;
+        }
+        $used = [];
+        foreach ($this->db->fetchAll($sql, $params) as $row) {
+            $used[(int) ($row['listen_port'] ?? 0)] = true;
+        }
+        if (!isset($used[$port])) {
+            return $port;
+        }
+
+        for ($candidate = $port + 1; $candidate <= 65535; $candidate++) {
+            if (!isset($used[$candidate])) {
+                return $candidate;
+            }
+        }
+        for ($candidate = $port - 1; $candidate >= 1024; $candidate--) {
+            if (!isset($used[$candidate])) {
+                return $candidate;
+            }
+        }
+
+        return $port;
+    }
+
+    /**
+     * A client device starts every forward of its client at once, so two live
+     * forwards cannot listen on the same port with the same protocol: only one
+     * binds and the other never comes up. Refuse the port instead and let the
+     * user pick another. Native outbound forwards bind no listen port.
+     */
+    private function assertClientListenPortFree(int $lineClientId, ?int $excludeForwardId, int $listenPort, string $transportMode): void
+    {
+        if ($lineClientId <= 0 || $listenPort <= 0) {
+            return;
+        }
+        // Serialise port claims of one client across its services.
+        $this->db->fetchOne('SELECT id FROM clients WHERE id = :id LIMIT 1 FOR UPDATE', ['id' => $lineClientId]);
+        $rows = $this->db->fetchAll(
+            'SELECT id, transport_mode FROM forwards
+             WHERE line_client_id = :client_id AND listen_port = :listen_port
+               AND enabled = 1 AND native_outbound_enabled = 0 AND id <> :exclude_id',
+            [
+                'client_id' => $lineClientId,
+                'listen_port' => $listenPort,
+                'exclude_id' => (int) ($excludeForwardId ?? 0),
+            ]
+        );
+        $protocols = self::listenProtocols($transportMode);
+        foreach ($rows as $row) {
+            if (array_intersect($protocols, self::listenProtocols((string) ($row['transport_mode'] ?? 'tcp'))) !== []) {
+                throw new ApiException('listen_port_conflict', 409, [
+                    'fields' => ['listen_port' => 'in_use'],
+                    'listen_port' => $listenPort,
+                    'conflicting_forward_id' => (int) ($row['id'] ?? 0),
+                ]);
+            }
+        }
+    }
+
+    /** @return list<string> */
+    private static function listenProtocols(string $transportMode): array
+    {
+        return match (strtolower(trim($transportMode))) {
+            'udp' => ['udp'],
+            'tcp' => ['tcp'],
+            default => ['tcp', 'udp'],
+        };
     }
 
     /**

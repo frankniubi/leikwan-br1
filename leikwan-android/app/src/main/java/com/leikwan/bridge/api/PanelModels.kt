@@ -42,6 +42,23 @@ data class HeartbeatResponse(
     val ok: Boolean,
     /** Absent on older panels: then `ok` acknowledges the usage batch (desktop contract). */
     @SerializedName("ultra_usage_acknowledged") val ultraUsageAcknowledged: Boolean? = null,
+    /** Panel commands for single forwards; absent on older panels. */
+    @SerializedName("ultra_actions") val ultraActions: List<UltraPolicyAction>? = null,
+) {
+    /**
+     * Forwards the panel wants leased again: a line refresh replaced the credential inside the
+     * installed lease without moving the policy generation, so nothing else would renew it.
+     */
+    fun ultraRefreshForwardIds(): Set<Long> = ultraActions.orEmpty()
+        .filter { it.action.equals("refresh", ignoreCase = true) && it.forwardId > 0 }
+        .take(32)
+        .mapTo(linkedSetOf()) { it.forwardId }
+}
+
+data class UltraPolicyAction(
+    @SerializedName("forward_id") val forwardId: Long = 0,
+    val action: String? = null,
+    val reason: String? = null,
 )
 
 data class UltraLeaseForwardRequest(
