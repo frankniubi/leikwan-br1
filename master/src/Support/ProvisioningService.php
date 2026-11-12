@@ -7832,6 +7832,7 @@ final class ProvisioningService
         $portStrategy = (string) (($ingressGroup['ingress_port_strategy'] ?? '') ?: $this->config->get('EDGE_PORT_STRATEGY', 'shared_preferred_port'));
         if ($listenPort <= 0) {
             $listenPort = $autoPort > 0 ? $autoPort : ($targetPort > 0 ? $targetPort : $preferredPublicPort);
+            $listenPort = $this->freeClientListenPort($defaultClient, $forwardId, $listenPort);
         }
         if ($publicPort <= 0) {
             $publicPort = $this->pickPublicPort(
@@ -14011,6 +14012,50 @@ final class ProvisioningService
         }
 
         return $preferredPort > 0 ? $preferredPort : $start;
+    }
+
+    /**
+     * An automatically chosen listen port must not repeat one another live
+     * forward of the same client already listens on. A client without a port
+     * range gets the target port, and two services of one owner forwarding to
+     * the same target port then shared a listen port: a router runs every
+     * forward at once, so only one of them could bind and the rest looped on
+     * "address already in use". A port the caller named explicitly is kept.
+     *
+     * @param array<string, mixed>|null $client
+     */
+    private function freeClientListenPort(?array $client, ?int $excludeForwardId, int $port): int
+    {
+        if (!is_array($client) || (int) ($client['id'] ?? 0) <= 0 || $port <= 0) {
+            return $port;
+        }
+
+        $sql = 'SELECT listen_port FROM forwards WHERE line_client_id = :client_id AND enabled = 1';
+        $params = ['client_id' => (int) $client['id']];
+        if (($excludeForwardId ?? 0) > 0) {
+            $sql .= ' AND id <> :exclude_id';
+            $params['exclude_id'] = $excludeForwardId;
+        }
+        $used = [];
+        foreach ($this->db->fetchAll($sql, $params) as $row) {
+            $used[(int) ($row['listen_port'] ?? 0)] = true;
+        }
+        if (!isset($used[$port])) {
+            return $port;
+        }
+
+        for ($candidate = $port + 1; $candidate <= 65535; $candidate++) {
+            if (!isset($used[$candidate])) {
+                return $candidate;
+            }
+        }
+        for ($candidate = $port - 1; $candidate >= 1024; $candidate--) {
+            if (!isset($used[$candidate])) {
+                return $candidate;
+            }
+        }
+
+        return $port;
     }
 
     /**
