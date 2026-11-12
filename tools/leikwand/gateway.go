@@ -79,6 +79,11 @@ type relaySlot struct {
 
 	// counters is guarded by gatewayManager.usageMu.
 	counters counterPair
+
+	// status is the relay's last parsed status document, read once per
+	// heartbeat for billing and reused for the Panel status report.
+	status   *RuntimeStatus
+	statusAt time.Time
 }
 
 type gatewayManager struct {
@@ -454,6 +459,8 @@ func (m *gatewayManager) stopSlot(slot *relaySlot, reason string) {
 	slot.leaseExpiry = time.Time{}
 	slot.renewNotBefore = time.Time{}
 	slot.candidates = 0
+	slot.status = nil
+	slot.statusAt = time.Time{}
 	if proc != nil {
 		slot.relayStoppedAt = time.Now()
 	}
@@ -488,6 +495,12 @@ func (m *gatewayManager) collectSlotUsage(slot *relaySlot) {
 	if err != nil {
 		return
 	}
+	m.mu.Lock()
+	if slot.relay == relay {
+		slot.status = status
+		slot.statusAt = time.Now()
+	}
+	m.mu.Unlock()
 	if status.PolicyGeneration != "" {
 		generation = status.PolicyGeneration
 	}
