@@ -50,6 +50,10 @@ final class UltraClientStatusService
         $this->candidateReviews = $candidateReviews ?? new UltraCandidateReviewService($db, $this->clock);
     }
 
+    // The leases of one batch are requested one after another.
+    private const LEASE_BATCH_SPAN_SECONDS = 15;
+    private const MATERIAL_UPLOAD_SKEW_SECONDS = 20;
+
     private UltraCandidateReputationService $candidateReputation;
 
     private UltraCandidateReviewService $candidateReviews;
@@ -286,6 +290,70 @@ final class UltraClientStatusService
             );
         }
         return $accepted;
+    }
+
+    /**
+     * Forwards whose installed lease batch carries a credential that has since
+     * been replaced. Acquiring a line invalidates the credential handed out for
+     * it before, but a refresh that keeps the relay endpoints leaves the policy
+     * generation alone, so a device went on dialling the dead credential until
+     * its lease ran out and reported every attempt as credential_rejected.
+     * The heartbeat hands these forwards back as "refresh" actions.
+     *
+     * Only the newest batch of a forward counts, and only while it can still be
+     * installed; the skew covers a lease issued between the source acquiring
+     * the line and its upload reaching the panel.
+     *
+     * @return array<int, int>
+     */
+    public function staleCredentialForwards(int $clientId, string $deviceId): array
+    {
+        $deviceId = trim($deviceId);
+        if ($clientId <= 0 || $deviceId === '') {
+            return [];
+        }
+        $now = $this->now();
+        try {
+            $rows = $this->db->fetchAll(
+                'SELECT l.forward_id, l.issued_at, ul.last_material_acquired_at AS acquired_at
+                 FROM ultra_client_leases l
+                 LEFT JOIN ultra_candidate_reputation_current r ON r.candidate_key_hash = l.candidate_key_hash
+                 LEFT JOIN ultra_lines ul ON ul.source_id = r.source_id AND ul.line_id = r.line_id
+                 WHERE l.client_id = :client_id
+                   AND l.device_hash = :device_hash
+                   AND l.issued_at >= :since
+                   AND l.consumed_at IS NOT NULL
+                   AND l.revoked_at IS NULL',
+                [
+                    'client_id' => $clientId,
+                    'device_hash' => hash('sha256', $deviceId),
+                    'since' => gmdate('Y-m-d H:i:s', $now - UltraMode::MAX_POLICY_TTL_SECONDS - self::LEASE_BATCH_SPAN_SECONDS),
+                ]
+            );
+        } catch (\Throwable) {
+            return [];
+        }
+        $newest = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            $newest[$forwardId] = max($newest[$forwardId] ?? 0, self::utcTimestamp($row['issued_at'] ?? ''));
+        }
+        $stale = [];
+        foreach ($rows as $row) {
+            $forwardId = (int) ($row['forward_id'] ?? 0);
+            $issuedAt = self::utcTimestamp($row['issued_at'] ?? '');
+            $acquiredAt = self::utcTimestamp($row['acquired_at'] ?? '');
+            if ($forwardId <= 0 || $issuedAt <= 0 || $acquiredAt <= 0
+                || $newest[$forwardId] <= $now - UltraMode::MAX_POLICY_TTL_SECONDS
+                || $issuedAt < $newest[$forwardId] - self::LEASE_BATCH_SPAN_SECONDS) {
+                continue;
+            }
+            if ($acquiredAt > $issuedAt - self::MATERIAL_UPLOAD_SKEW_SECONDS) {
+                $stale[$forwardId] = $forwardId;
+            }
+        }
+        ksort($stale, SORT_NUMERIC);
+        return array_values($stale);
     }
 
     /**
