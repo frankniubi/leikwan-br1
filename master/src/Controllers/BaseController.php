@@ -622,11 +622,23 @@ abstract class BaseController
         $clientId = (int) ($client['id'] ?? 0);
         $agentToken = (string) ($client['agent_token'] ?? '');
 
-        return '$z="$env:TEMP\lkb-headless.zip"; '
-            . 'iwr \'' . $zipUrl . '\' -OutFile $z; '
-            . 'Expand-Archive $z "$env:TEMP\lkb-headless" -Force; '
-            . 'cd "$env:TEMP\lkb-headless\leikwan-bridge-headless"; '
-            . '.\install-windows-headless.ps1 -Panel ' . $masterUrl
+        // The script is located after extraction instead of by a fixed folder
+        // name: the published zip's top folder is leikwan-bridge-headless-win-x64,
+        // and the old `cd ...\leikwan-bridge-headless` failed on every machine.
+        // Windows client editions default to the Restricted execution policy,
+        // which refuses any .ps1, so the policy is relaxed for this process
+        // only. The script is invoked with & rather than `powershell -File`:
+        // under -File, Windows PowerShell 5.1 leaves $PSScriptRoot empty in
+        // parameter defaults and the installer cannot find its payload.
+        // Without the progress bar, 5.1 downloads the 60 MB zip many times
+        // faster.
+        return '$ProgressPreference="SilentlyContinue"; $z="$env:TEMP\lkb-headless.zip"; $d="$env:TEMP\lkb-headless"; '
+            . 'iwr \'' . $zipUrl . '\' -OutFile $z -UseBasicParsing; '
+            . 'Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue; '
+            . 'Expand-Archive $z $d -Force; '
+            . '$s=(Get-ChildItem $d -Recurse -Filter install-windows-headless.ps1 | Select-Object -First 1).FullName; '
+            . 'Set-ExecutionPolicy Bypass -Scope Process -Force; '
+            . '& $s -Panel ' . $masterUrl
             . ' -ClientId ' . $clientId
             . ' -AgentToken \'' . $agentToken . '\'';
     }
