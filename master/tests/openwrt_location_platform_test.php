@@ -181,6 +181,11 @@ namespace {
         'windows' => 'windows',
         'macos' => 'macos',
         'ios' => 'ios',
+        // Suffixed identifiers sent by desktop/headless clients normalize the
+        // same way AccessPolicyService::normalizeLocationContext() does.
+        'windows-desktop' => 'windows',
+        'linux' => 'linux',
+        'linux-amd64' => 'linux',
     ] as $sent => $returned) {
         assertSame(
             $returned,
@@ -190,7 +195,7 @@ namespace {
     }
 
     // 2. Everything else still fails closed, before the policy is consulted.
-    foreach (['freebsd', 'routeros', 'linux', 'linux-amd64', 'windows-desktop', ''] as $rejected) {
+    foreach (['freebsd', 'routeros', 'solaris', ''] as $rejected) {
         expectApi(
             'location_platform_invalid',
             422,
