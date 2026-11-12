@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.10.1",
+  "version": "2026.11.12.1",
   "network_grace_seconds": 600,
   "offline_validity_seconds": 1800
 }
