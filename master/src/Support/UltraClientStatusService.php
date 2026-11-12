@@ -52,6 +52,8 @@ final class UltraClientStatusService
 
     // The leases of one batch are requested one after another.
     private const LEASE_BATCH_SPAN_SECONDS = 15;
+    // Only used when the panel's own upload time is unknown and the source's
+    // acquired_at has to stand in for it.
     private const MATERIAL_UPLOAD_SKEW_SECONDS = 20;
 
     private UltraCandidateReputationService $candidateReputation;
@@ -301,8 +303,11 @@ final class UltraClientStatusService
      * The heartbeat hands these forwards back as "refresh" actions.
      *
      * Only the newest batch of a forward counts, and only while it can still be
-     * installed; the skew covers a lease issued between the source acquiring
-     * the line and its upload reaching the panel.
+     * installed. A batch is stale when the line's material was stored on the
+     * panel at or after the batch was issued: both times are the panel's clock.
+     * The source's acquired_at was used before; it runs up to tens of seconds
+     * ahead of the upload (46 s seen on 2026-11-12), so a lease issued in that
+     * gap carried the dead credential and was never refreshed.
      *
      * @return array<int, int>
      */
@@ -328,7 +333,7 @@ final class UltraClientStatusService
                     'since' => gmdate('Y-m-d H:i:s', $now - UltraMode::MAX_POLICY_TTL_SECONDS - self::LEASE_BATCH_SPAN_SECONDS),
                 ]
             );
-            $acquiredByHash = $this->materialAcquiredAtByCandidate(array_column($rows, 'candidate_key_hash'));
+            $changedByHash = $this->materialChangedAtByCandidate(array_column($rows, 'candidate_key_hash'));
         } catch (\Throwable $throwable) {
             error_log('ultra_stale_credential_lookup_failed ' . $throwable::class);
             return [];
@@ -342,13 +347,15 @@ final class UltraClientStatusService
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
             $issuedAt = self::utcTimestamp($row['issued_at'] ?? '');
-            $acquiredAt = $acquiredByHash[strtolower(trim((string) ($row['candidate_key_hash'] ?? '')))] ?? 0;
-            if ($forwardId <= 0 || $issuedAt <= 0 || $acquiredAt <= 0
+            [$changedAt, $skew] = $changedByHash[strtolower(trim((string) ($row['candidate_key_hash'] ?? '')))] ?? [0, 0];
+            if ($forwardId <= 0 || $issuedAt <= 0 || $changedAt <= 0
                 || $newest[$forwardId] <= $now - UltraMode::MAX_POLICY_TTL_SECONDS
                 || $issuedAt < $newest[$forwardId] - self::LEASE_BATCH_SPAN_SECONDS) {
                 continue;
             }
-            if ($acquiredAt > $issuedAt - self::MATERIAL_UPLOAD_SKEW_SECONDS) {
+            // Equal seconds count as stale: the lease may have been minted from
+            // either material, and one extra re-lease is cheap.
+            if ($changedAt >= $issuedAt - $skew) {
                 $stale[$forwardId] = $forwardId;
             }
         }
@@ -357,14 +364,17 @@ final class UltraClientStatusService
     }
 
     /**
-     * When the line behind each opaque candidate hash last had its material
-     * acquired. Looked up table by table: the hash and source columns of the
-     * three tables do not share a collation, so they cannot be joined.
+     * When the material behind each opaque candidate hash last changed, with
+     * the skew to allow for. The panel's upload time needs none; when it is
+     * unknown (no material service) the source's acquired_at stands in with
+     * MATERIAL_UPLOAD_SKEW_SECONDS. Looked up table by table: the hash and
+     * source columns of the three tables do not share a collation, so they
+     * cannot be joined.
      *
      * @param array<int, mixed> $candidateHashes
-     * @return array<string, int>
+     * @return array<string, array{0:int,1:int}>
      */
-    private function materialAcquiredAtByCandidate(array $candidateHashes): array
+    private function materialChangedAtByCandidate(array $candidateHashes): array
     {
         $hashes = [];
         foreach ($candidateHashes as $hash) {
@@ -385,29 +395,38 @@ final class UltraClientStatusService
              WHERE candidate_key_hash IN (:' . implode(', :', array_keys($params)) . ')',
             $params
         );
-        $lineIds = [];
+        $lineRefs = [];
         foreach ($scopes as $scope) {
             $lineId = (int) ($scope['line_id'] ?? 0);
-            if ($lineId > 0) {
-                $lineIds[$lineId] = $lineId;
+            $sourceId = trim((string) ($scope['source_id'] ?? ''));
+            if ($lineId > 0 && $sourceId !== '') {
+                $lineRefs[$sourceId . ':' . $lineId] = ['source_id' => $sourceId, 'line_id' => $lineId];
             }
         }
-        if ($lineIds === []) {
+        if ($lineRefs === []) {
             return [];
         }
+        $uploaded = $this->materials?->materialUploadedAt(array_values($lineRefs)) ?? [];
         $acquired = [];
-        foreach ($this->db->fetchAll(
-            'SELECT source_id, line_id, last_material_acquired_at FROM ultra_lines
-             WHERE line_id IN (' . implode(', ', $lineIds) . ')'
-        ) as $line) {
-            $acquired[trim((string) ($line['source_id'] ?? '')) . ':' . (int) ($line['line_id'] ?? 0)]
-                = self::utcTimestamp($line['last_material_acquired_at'] ?? '');
+        $missing = array_diff_key($lineRefs, $uploaded);
+        if ($missing !== []) {
+            $lineIds = array_unique(array_map(static fn(array $ref): int => $ref['line_id'], $missing));
+            foreach ($this->db->fetchAll(
+                'SELECT source_id, line_id, last_material_acquired_at FROM ultra_lines
+                 WHERE line_id IN (' . implode(', ', $lineIds) . ')'
+            ) as $line) {
+                $acquired[trim((string) ($line['source_id'] ?? '')) . ':' . (int) ($line['line_id'] ?? 0)]
+                    = self::utcTimestamp($line['last_material_acquired_at'] ?? '');
+            }
         }
         $result = [];
         foreach ($scopes as $scope) {
             $key = trim((string) ($scope['source_id'] ?? '')) . ':' . (int) ($scope['line_id'] ?? 0);
-            if (($acquired[$key] ?? 0) > 0) {
-                $result[strtolower(trim((string) ($scope['candidate_key_hash'] ?? '')))] = $acquired[$key];
+            $hash = strtolower(trim((string) ($scope['candidate_key_hash'] ?? '')));
+            if (($uploaded[$key] ?? 0) > 0) {
+                $result[$hash] = [$uploaded[$key], 0];
+            } elseif (($acquired[$key] ?? 0) > 0) {
+                $result[$hash] = [$acquired[$key], self::MATERIAL_UPLOAD_SKEW_SECONDS];
             }
         }
         return $result;

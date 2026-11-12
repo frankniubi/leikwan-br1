@@ -380,6 +380,38 @@ public sealed class ConfigPollingService
         TriggerImmediateSync();
     }
 
+    /// <summary>
+    /// The machine woke from sleep. While it slept every timer froze, so the
+    /// backoff and renewal deadlines still describe the moment the lid closed:
+    /// a failure recorded just before sleep would hold the first pull back for up
+    /// to a minute, and leases that expired during sleep looked fresh. Forget the
+    /// backoff, make every Ultra lease due and run one full pull now, so each
+    /// forward gets a new lease delivered (or is restarted) right after wake.
+    /// </summary>
+    public void RecoverAfterWake()
+    {
+        if (_cts is null || _cts.IsCancellationRequested)
+            return;
+        _pullBackoff.RecordSuccess();
+        _leaseBackoff.RecordSuccess();
+        _deliveredLeaseRenewals.Clear();
+        foreach (var forward in _latestForwards)
+        {
+            if (string.Equals(forward.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase))
+                _targetedUltraRefreshes[forward.ForwardId] = 0;
+        }
+        QueueConfigRefreshSoon();
+        lock (_recoveryGate)
+            _lastRecoveryTriggerAtUtc = DateTimeOffset.UtcNow;
+        Log.Information("control-plane recovery after system wake (forwards={Count})", _latestForwards.Count);
+        if (Volatile.Read(ref _loopSleepingInBackoff) != 0)
+        {
+            try { _loopWake.Release(); }
+            catch (SemaphoreFullException) { }
+        }
+        TriggerImmediateSync();
+    }
+
     private void RequestUltraRecovery(int forwardId, string reason)
     {
         if (_cts?.IsCancellationRequested == true) return;

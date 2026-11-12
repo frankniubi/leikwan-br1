@@ -31,6 +31,9 @@ public interface IDesktopClientController : IAsyncDisposable
     Task SelectClientAsync(int clientId, CancellationToken ct = default);
     Task ConnectAsync(CancellationToken ct = default);
     Task RefreshAsync(CancellationToken ct = default);
+
+    /// <summary>Recover connections after the machine woke from sleep.</summary>
+    void RecoverAfterWake() { }
     Task DisconnectAsync(CancellationToken ct = default);
     Task StartForwardAsync(int forwardId, CancellationToken ct = default);
     Task EnsureForwardAsync(int forwardId, CancellationToken ct = default)
@@ -389,6 +392,13 @@ public sealed class DesktopClientController : IDesktopClientController
             SetBusy(false);
             _lifecycleGate.Release();
         }
+    }
+
+    public void RecoverAfterWake()
+    {
+        // No lifecycle gate: a wake must not wait behind a long connect, and the
+        // session only queues a throttled pull.
+        _runtimeSession?.RecoverAfterWake();
     }
 
     public Task StartForwardAsync(int forwardId, CancellationToken ct = default)

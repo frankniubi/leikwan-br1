@@ -22,6 +22,7 @@ public sealed partial class App : Application
     private bool _quitStarted;
     private ClientAppArtifact? _availableUpdate;
     private ConnectionRecoverySupervisor? _connectionRecovery;
+    private SleepWakeDetector? _wakeDetector;
 
     public static MacPlatformPaths PlatformPaths { get; set; } = null!;
     public static string UiFixtureState { get; set; } = string.Empty;
@@ -190,12 +191,76 @@ public sealed partial class App : Application
             saveThemeMode: (mode, ct) => uiPreferences.SaveThemeModeAsync(mode, ct));
         _window = new MainWindow { DataContext = viewModel };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
+        _window.Hidden += (_, _) => ApplyDockVisibility(windowVisible: false);
         desktop.MainWindow = _window;
 
+        // Cmd+Q, Quit in the Dock menu, logout and shutdown: run the full quit so
+        // every connection and runtime stops and the process actually exits. The
+        // shutdown is cancelled here and finished by QuitAsync.
+        desktop.ShutdownRequested += (_, e) =>
+        {
+            if (_quitStarted)
+                return;
+            e.Cancel = true;
+            _ = QuitAsync(desktop);
+        };
+        // A click on the Dock icon brings a hidden window back.
+        if (TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activatable)
+        {
+            activatable.Activated += (_, e) =>
+            {
+                if (e.Kind == ActivationKind.Reopen)
+                    Dispatcher.UIThread.Post(RestoreWindow);
+            };
+        }
+
         viewModel.TrayAvailable = TryCreateTray(desktop, viewModel);
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainWindowViewModel.CloseToTray) && _window is { IsVisible: false })
+                ApplyDockVisibility(windowVisible: false);
+        };
+        StartWakeRecovery(services);
         var background = desktop.Args?.Any(arg => string.Equals(arg, "--background", StringComparison.Ordinal)) == true;
         if (!background || !viewModel.TrayAvailable)
             _window.Show();
+        else
+            ApplyDockVisibility(windowVisible: false);
+    }
+
+    /// <summary>
+    /// After the Mac wakes, the lease and relay sockets the runtimes held are
+    /// usually dead and every timer resumes as if no time passed. Ask for a fresh
+    /// config and lease at once instead of waiting out the normal backoff.
+    /// </summary>
+    private void StartWakeRecovery(MacAppServices services)
+    {
+        _wakeDetector = new SleepWakeDetector(slept =>
+        {
+            if (_quitStarted)
+                return;
+            Log.Information("system_wake slept_seconds={SleptSeconds:0}", slept.TotalSeconds);
+            services.Controller.RecoverAfterWake();
+        });
+        _wakeDetector.Start();
+    }
+
+    /// <summary>
+    /// While the window is hidden the app keeps its Dock icon unless it lives in
+    /// the menu bar ("keep in menu bar" on and the menu-bar icon available).
+    /// </summary>
+    private void ApplyDockVisibility(bool windowVisible)
+    {
+        if (UpdateViewModel is not { } viewModel)
+            return;
+        var dock = windowVisible
+            || MacWindowClosePolicy.ShowInDockWhileHidden(viewModel.CloseToTray, viewModel.TrayAvailable);
+        if (TryGetFeature(typeof(IActivatableLifetime)) is not IActivatableLifetime activatable)
+            return;
+        if (dock)
+            activatable.TryLeaveBackground();
+        else
+            activatable.TryEnterBackground();
     }
 
     private static void ShowStartupError(IClassicDesktopStyleApplicationLifetime desktop)
@@ -247,8 +312,9 @@ public sealed partial class App : Application
 
     private void RestoreWindow()
     {
-        if (_window is null)
+        if (_window is null || _quitStarted)
             return;
+        ApplyDockVisibility(windowVisible: true);
         _window.ShowInTaskbar = true;
         _window.Show();
         if (_window.WindowState == WindowState.Minimized)
@@ -365,6 +431,8 @@ public sealed partial class App : Application
             _window.AllowClose = true;
         _trayIcon?.Dispose();
         _trayIcon = null;
+        if (_wakeDetector is not null)
+            await _wakeDetector.DisposeAsync();
         if (_services is not null)
         {
             if (_connectionRecovery is not null)

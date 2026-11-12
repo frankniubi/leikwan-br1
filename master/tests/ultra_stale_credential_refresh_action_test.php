@@ -79,10 +79,21 @@ namespace Leikwan\Master\Database {
 
 namespace {
     use Leikwan\Master\Database\Database;
+    use Leikwan\Master\Config;
     use Leikwan\Master\Support\UltraClientStatusService;
+    use Leikwan\Master\Support\UltraMaterialService;
 
-    require_once __DIR__ . '/../src/Support/UltraMode.php';
-    require_once __DIR__ . '/../src/Support/UltraClientStatusService.php';
+    spl_autoload_register(static function (string $class): void {
+        $prefix = 'Leikwan\\Master\\';
+        if (!str_starts_with($class, $prefix) || $class === 'Leikwan\\Master\\Database\\Database'
+            || $class === 'Leikwan\\Master\\Config') {
+            return;
+        }
+        $path = __DIR__ . '/../src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+        if (is_file($path)) {
+            require_once $path;
+        }
+    });
 
     function check(bool $condition, string $message): void
     {
@@ -98,7 +109,7 @@ namespace {
     $db = new Database();
     $reflection = new ReflectionClass(UltraClientStatusService::class);
     $service = $reflection->newInstanceWithoutConstructor();
-    foreach (['db' => $db, 'clock' => static fn(): int => $now] as $name => $value) {
+    foreach (['db' => $db, 'clock' => static fn(): int => $now, 'materials' => null] as $name => $value) {
         $property = $reflection->getProperty($name);
         $property->setAccessible(true);
         $property->setValue($service, $value);
@@ -129,6 +140,44 @@ namespace {
     check($db->lastParams['client_id'] === 68, 'scoped to the client');
     check($db->lastParams['device_hash'] === hash('sha256', 'openwrt-44df6593151a'), 'scoped to the device');
     check($service->staleCredentialForwards(0, 'x') === [] && $service->staleCredentialForwards(68, ' ') === [], 'no scope, no result');
+
+    // With the material service known, the panel's own upload time decides.
+    // Line 900: the source stamped acquired_at 50 s before the lease, but the
+    // upload only landed 20 s after it, so the lease carries the old credential.
+    // Line 901: acquired_at looks fresh, yet the material the lease carries was
+    // stored long before the lease.
+    $uploadClock = $now;
+    $materials = new UltraMaterialService(new Config(), null, null, static function () use (&$uploadClock): int {
+        return $uploadClock;
+    });
+    $materialsReflection = new ReflectionClass(UltraMaterialService::class);
+    $materialKey = $materialsReflection->getMethod('materialKey');
+    $materialKey->setAccessible(true);
+    $settingSet = $materialsReflection->getMethod('settingSet');
+    $settingSet->setAccessible(true);
+    foreach ([900 => -60, 901 => -200] as $lineId => $offset) {
+        $uploadClock = $now + $offset;
+        $settingSet->invoke($materials, $materialKey->invoke($materials, 'source-a', $lineId), 'sealed');
+    }
+    $materialsProperty = $reflection->getProperty('materials');
+    $materialsProperty->setAccessible(true);
+    $materialsProperty->setValue($service, $materials);
+    $db->lines = [900 => $at(-130), 901 => $at(-10), 818 => $at(-900)];
+    $db->rows = [
+        ['forward_id' => 408, 'issued_at' => $at(-80), 'line' => 900],
+        ['forward_id' => 409, 'issued_at' => $at(-100), 'line' => 901],
+        // No upload time for line 818: acquired_at still applies.
+        ['forward_id' => 428, 'issued_at' => $at(-100), 'line' => 818],
+    ];
+    $stale = $service->staleCredentialForwards(68, 'openwrt-44df6593151a');
+    check($stale === [408], 'the upload time, not acquired_at, decides when it is known: ' . json_encode($stale));
+    $uploaded = $materials->materialUploadedAt([
+        ['source_id' => 'source-a', 'line_id' => 900],
+        ['source_id' => 'source-a', 'line_id' => 902],
+        ['source_id' => '', 'line_id' => 901],
+    ]);
+    check($uploaded === ['source-a:900' => $now - 60], 'upload times are reported per stored line: ' . json_encode($uploaded));
+    $materialsProperty->setValue($service, null);
 
     $db->fail = true;
     check($service->staleCredentialForwards(68, 'openwrt-44df6593151a') === [], 'a failing lookup is not an error');
