@@ -552,6 +552,7 @@ final class ForwardLineApiController extends BaseController
             'native_outbound_requires_ultra_tcp_udp' => 422,
             'native_outbound_direction_missing' => 422,
             'native_direction_conflict' => 409,
+            'listen_port_conflict' => 409,
             'operation_failed' => 500,
         ];
         if (!array_key_exists($code, $statuses)) {
@@ -567,6 +568,7 @@ final class ForwardLineApiController extends BaseController
             'unknown_fields' => 'The forward request contains unknown fields.',
             'route_unavailable' => 'The selected route is currently unavailable.',
             'forward_target_not_allowed' => 'The selected route only accepts target IP addresses on its allowlist.',
+            'listen_port_conflict' => 'Another forward of this client already uses this listen port. Choose a different listen_port.',
             'insufficient_balance' => 'Top up your wallet before adding or starting forwards on this service.',
             'rate_limited' => 'Too many requests. Retry after the time in the Retry-After header.',
         ];

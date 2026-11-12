@@ -4023,6 +4023,7 @@ final class TenantController extends BaseController
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
                 'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
+                'listen_port_conflict' => 'Another forward on this account already uses this local listen port. Choose a different listen port.',
                 'forward_route_not_allowed' => 'This route is no longer included in your plan.',
                 'insufficient_balance' => 'Top up your wallet before starting this forward.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
