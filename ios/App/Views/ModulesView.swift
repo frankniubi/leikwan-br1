@@ -33,7 +33,7 @@ struct ModulesView: View {
                     }
                     .onDelete { offsets in
                         let ids = offsets.map { model.moduleLibrary.modules[$0].id }
-                        ids.forEach(model.deleteModule)
+                        for id in ids { model.deleteModule(id) }
                     }
                 } footer: {
                     Text(L("Module rules are matched before your custom rules, in the order shown here."))
@@ -552,7 +552,7 @@ struct ScriptsView: View {
         .pageBackground()
         .navigationTitle(L("Scripts"))
         .navigationBarTitleDisplayMode(.inline)
-        .refreshable { model.reloadScriptRuns() }
+        .refreshable { await MainActor.run { model.reloadScriptRuns() } }
         .onAppear { model.reloadScriptRuns() }
     }
 }

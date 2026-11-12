@@ -41,7 +41,7 @@ extension AppModel {
 
     /// The scripts as the tunnel's launch plan carries them.
     func scriptLaunches() -> [ScriptLaunch] {
-        moduleScripts.map(Self.launch)
+        moduleScripts.map { Self.launch($0) }
     }
 
     private static func launch(_ script: ResolvedScript) -> ScriptLaunch {

@@ -172,7 +172,7 @@ struct ScriptRuntimeError: LocalizedError {
 enum NetworkSnapshot {
     static func current() -> [String: Any] {
         let addresses = interfaceAddresses()
-        func primary(_ family: Int32) -> (name: String, address: String)? {
+        func primary(_ family: Int32) -> (name: String, family: Int32, address: String)? {
             let usable = addresses.filter { entry in
                 entry.family == family && !entry.address.hasPrefix("169.254.") && !entry.address.lowercased().hasPrefix("fe80")
             }
