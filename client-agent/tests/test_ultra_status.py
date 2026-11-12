@@ -127,13 +127,45 @@ class UltraStatusCollectionTests(unittest.TestCase):
         self.assertEqual(1, len(statuses[0]["candidate_feedback"]))
         self.assertEqual("b" * 64, statuses[0]["candidate_feedback"][0]["candidate_key_hash"])
         self.assertEqual("e" * 64, statuses[0]["candidate_feedback"][0]["lease_hash"])
-        collected = MODULE.collect_ultra_candidate_feedback(statuses)
+        observed = MODULE.parse_rfc3339("2030-01-01T00:00:03Z")
+        collected = MODULE.collect_ultra_candidate_feedback(statuses, now=observed + 10)
         self.assertEqual(3, collected[0]["forward_id"])
         expected = [dict(statuses[0]["candidate_feedback"][0], forward_id=3)]
         self.assertEqual(
             expected,
             collected,
         )
+
+    def test_candidate_feedback_drops_stale_and_already_acknowledged_entries(self):
+        now = MODULE.parse_rfc3339("2030-01-01T00:10:00Z")
+        status = {
+            "forward_id": 7,
+            "candidate_feedback": [
+                {
+                    "candidate_key_hash": "b" * 64,
+                    "lease_hash": "e" * 64,
+                    "protocol": "tcp",
+                    "outcome": "failure",
+                    "reason": "relay_connect_timeout",
+                    "evidence_id": "fresh-1",
+                    "observed_at": "2030-01-01T00:09:30.123456789Z",
+                },
+                {
+                    "candidate_key_hash": "c" * 64,
+                    "lease_hash": "e" * 64,
+                    "protocol": "tcp",
+                    "outcome": "failure",
+                    "reason": "relay_connect_timeout",
+                    "evidence_id": "stale-1",
+                    "observed_at": "2030-01-01T00:01:00Z",
+                },
+            ],
+        }
+        collected = MODULE.collect_ultra_candidate_feedback([status], now=now)
+        self.assertEqual(["fresh-1"], [item["evidence_id"] for item in collected])
+        acked = {MODULE.ultra_feedback_dedupe_key(collected[0])}
+        self.assertEqual("7:fresh-1", next(iter(acked)))
+        self.assertEqual([], MODULE.collect_ultra_candidate_feedback([status], acked, now=now))
 
     def test_collection_passes_measured_ceiling_and_build_attestation(self):
         with tempfile.TemporaryDirectory() as directory:

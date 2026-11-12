@@ -1915,7 +1915,47 @@ def collect_ultra_status(
     return statuses
 
 
-def collect_ultra_candidate_feedback(statuses: list[dict]) -> list[dict]:
+ULTRA_FEEDBACK_MAX_AGE_SECONDS = 300
+ULTRA_FEEDBACK_ACKED_KEYS_MAX = 512
+
+
+def ultra_feedback_dedupe_key(item: dict) -> str:
+    """Same identity leikwand and the desktop use: forward + evidence id, else
+    forward + candidate + reason + observed_at."""
+    forward_id = str(item.get("forward_id", "") or "")
+    evidence_id = str(item.get("evidence_id", "") or "").strip()
+    if evidence_id:
+        return f"{forward_id}:{evidence_id}"
+    candidate = str(item.get("candidate_key_hash", "") or "").strip()
+    observed_at = str(item.get("observed_at", "") or "").strip()
+    if not candidate and not observed_at:
+        return ""
+    return f"{forward_id}:{candidate}:{str(item.get('reason', '') or '').strip()}:{observed_at}"
+
+
+def ultra_feedback_is_fresh(observed_at: str, now: float) -> bool:
+    """The runtime rewrites its status file with the same rolling feedback on
+    every update; only observations from the last few minutes are news (the
+    Panel rejects older ones anyway)."""
+    text = str(observed_at or "").strip()
+    if text == "":
+        return True
+    # Go writes RFC3339Nano; older Pythons only parse up to microseconds.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    parsed = parse_rfc3339(text)
+    if parsed is None:
+        return False
+    return now - ULTRA_FEEDBACK_MAX_AGE_SECONDS <= parsed <= now + 60
+
+
+def collect_ultra_candidate_feedback(
+    statuses: list[dict],
+    acknowledged: set[str] | None = None,
+    now: float | None = None,
+) -> list[dict]:
+    """Fresh feedback not yet accepted by the Panel. Without this the last 8
+    entries of every status file were re-sent on every heartbeat."""
+    now = time.time() if now is None else now
     feedback: list[dict] = []
     for status in statuses[:32]:
         if not isinstance(status, dict):
@@ -1927,8 +1967,12 @@ def collect_ultra_candidate_feedback(statuses: list[dict]) -> list[dict]:
         if forward_id <= 0 or forward_id > 2147483647:
             continue
         for item in _normalize_ultra_feedback(status.get("candidate_feedback")):
+            if not ultra_feedback_is_fresh(item.get("observed_at", ""), now):
+                continue
             enriched = dict(item)
             enriched["forward_id"] = forward_id
+            if acknowledged is not None and ultra_feedback_dedupe_key(enriched) in acknowledged:
+                continue
             feedback.append(enriched)
             if len(feedback) >= 32:
                 return feedback
@@ -4136,6 +4180,10 @@ class ClientAgent:
         helper_hashes = self.helper_artifact_hashes()
         # Preserve the historical endpoint shape for source-contract checks: f"{master}/api/client/heartbeat"
         ultra_status = self.mark_ultra_apply_failures(collect_ultra_status(), desired_ids)
+        acked_feedback = getattr(self, "_ultra_feedback_acked", None)
+        if acked_feedback is None:
+            acked_feedback = self._ultra_feedback_acked = {}
+        candidate_feedback = collect_ultra_candidate_feedback(ultra_status, set(acked_feedback))
         heartbeat_response = self.control_plane_request(
             "POST",
             "/api/client/heartbeat",
@@ -4173,9 +4221,17 @@ class ClientAgent:
                     for entry in ultra_status
                     if isinstance(entry, dict) and entry.get("policy_state")
                 },
-                "ultra_candidate_feedback": collect_ultra_candidate_feedback(ultra_status),
+                "ultra_candidate_feedback": candidate_feedback,
             },
         )
+        # The heartbeat raised on failure, so these reached the Panel. A dict
+        # keeps insertion order for the bounded FIFO.
+        for item in candidate_feedback:
+            key = ultra_feedback_dedupe_key(item)
+            if key:
+                acked_feedback[key] = True
+        while len(acked_feedback) > ULTRA_FEEDBACK_ACKED_KEYS_MAX:
+            acked_feedback.pop(next(iter(acked_feedback)))
         self.apply_ultra_actions(heartbeat_response)
         self.commit_usage_state(usage_totals)
         now = time.time()
