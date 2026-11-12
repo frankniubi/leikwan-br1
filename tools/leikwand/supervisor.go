@@ -185,8 +185,31 @@ func waitForListenPort(ctx context.Context, port int, timeout time.Duration) err
 	}
 }
 
-func portIsListening(port int) bool {
+// procNetDir holds the kernel socket tables; tests point it at fixtures.
+var procNetDir = "/proc/net"
+
+// Socket states in /proc/net/{tcp,udp}{,6}: a listening TCP socket is 0A; a
+// bound UDP socket stays in 07 (TCP_CLOSE) whether or not it has a peer.
+const (
+	procStateTCPListen = "0A"
+	procStateUDPBound  = "07"
+)
+
+// portIsListening reports whether the forward's listen port is held. It reads
+// the kernel socket tables rather than connecting: an Ultra runtime accepts a
+// local connect like customer traffic and opens a relay stream for it, so a
+// connect probe every health interval cost one relay handshake per forward and
+// left a broken_pipe in ha_events and the log. A UDP-only forward never has a
+// TCP listener; its bound UDP socket is what proves it is up.
+func portIsListening(port int, transport string) bool {
 	if port <= 0 {
+		return false
+	}
+	if held, ok := kernelPortHeld(port, transport, ""); ok {
+		return held
+	}
+	// No readable socket table (not Linux): only a TCP listener can be probed.
+	if forwardIsUDPOnly(transport) {
 		return false
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", itoa(port)), 400*time.Millisecond)
@@ -197,10 +220,65 @@ func portIsListening(port int) bool {
 	return true
 }
 
+func forwardIsUDPOnly(transport string) bool {
+	return strings.EqualFold(strings.TrimSpace(transport), "udp")
+}
+
+// listenTables lists the socket tables and the state that means "listening"
+// for a forward's transport. tcp and tcp+udp runtimes always open the TCP
+// listener, so it is the signal for both.
+func listenTables(transport string) ([]string, string) {
+	if forwardIsUDPOnly(transport) {
+		return []string{"udp", "udp6"}, procStateUDPBound
+	}
+	return []string{"tcp", "tcp6"}, procStateTCPListen
+}
+
+// kernelPortHeld looks for a listening socket on port in the socket tables of
+// the transport, optionally only the socket with the given inode. ok is false
+// when none of the tables could be read.
+func kernelPortHeld(port int, transport, inode string) (held bool, ok bool) {
+	tables, state := listenTables(transport)
+	hexPort := fmt.Sprintf("%04X", port)
+	for _, table := range tables {
+		raw, err := os.ReadFile(filepath.Join(procNetDir, table))
+		if err != nil {
+			continue
+		}
+		ok = true
+		if socketTableHolds(string(raw), state, hexPort, inode) {
+			return true, true
+		}
+	}
+	return false, ok
+}
+
+// socketTableHolds scans one /proc/net socket table for a socket in state on
+// the local port hexPort, and with the given inode unless inode is empty.
+func socketTableHolds(table, state, hexPort, inode string) bool {
+	for index, line := range strings.Split(table, "\n") {
+		if index == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			continue
+		}
+		if fields[3] != state || (inode != "" && fields[9] != inode) {
+			continue
+		}
+		local := fields[1]
+		if idx := strings.LastIndex(local, ":"); idx >= 0 && strings.EqualFold(local[idx+1:], hexPort) {
+			return true
+		}
+	}
+	return false
+}
+
 // portOwnerKind classifies who holds a listen port. Only a stale runtime from
 // this agent is reclaimed; a foreign process is reported and never killed.
-func portOwnerKind(port int) string {
-	if !portIsListening(port) {
+func portOwnerKind(port int, transport string) string {
+	if !portIsListening(port, transport) {
 		return "free"
 	}
 	owners := runtimeExecutableNames()
@@ -224,7 +302,7 @@ func portOwnerKind(port int) string {
 		if !owners[base] {
 			continue
 		}
-		if processListensOn(pid, port) {
+		if processListensOn(pid, port, transport) {
 			return "managed"
 		}
 	}
@@ -240,13 +318,14 @@ func runtimeExecutableNames() map[string]bool {
 	}
 }
 
-func processListensOn(pid string, port int) bool {
+// processListensOn reports whether one of pid's sockets is the listener for
+// port in the transport's socket tables.
+func processListensOn(pid string, port int, transport string) bool {
 	fdDir := filepath.Join("/proc", pid, "fd")
 	entries, err := os.ReadDir(fdDir)
 	if err != nil {
 		return false
 	}
-	want := fmt.Sprintf("%04X", port)
 	for _, entry := range entries {
 		target, err := os.Readlink(filepath.Join(fdDir, entry.Name()))
 		if err != nil {
@@ -256,36 +335,8 @@ func processListensOn(pid string, port int) bool {
 			continue
 		}
 		inode := strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")
-		if socketInodeListensOn(inode, want) {
+		if held, _ := kernelPortHeld(port, transport, inode); held {
 			return true
-		}
-	}
-	return false
-}
-
-// socketInodeListensOn parses /proc/net/tcp{,6} looking for a LISTEN socket in
-// state 0A with the requested local port and the matching inode.
-func socketInodeListensOn(inode, hexPort string) bool {
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		raw, err := os.ReadFile(table)
-		if err != nil {
-			continue
-		}
-		for index, line := range strings.Split(string(raw), "\n") {
-			if index == 0 || strings.TrimSpace(line) == "" {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) < 10 {
-				continue
-			}
-			if fields[3] != "0A" || fields[9] != inode {
-				continue
-			}
-			local := fields[1]
-			if idx := strings.LastIndex(local, ":"); idx >= 0 && strings.EqualFold(local[idx+1:], hexPort) {
-				return true
-			}
 		}
 	}
 	return false
@@ -293,8 +344,8 @@ func socketInodeListensOn(inode, hexPort string) bool {
 
 // reclaimManagedPort kills a leftover runtime from a previous daemon instance
 // that is still holding the port. Foreign owners are never touched.
-func reclaimManagedPort(port int) error {
-	if portOwnerKind(port) != "managed" {
+func reclaimManagedPort(port int, transport string) error {
+	if portOwnerKind(port, transport) != "managed" {
 		return errors.New("port is not owned by a managed runtime")
 	}
 	entries, err := os.ReadDir("/proc")
@@ -310,7 +361,7 @@ func reclaimManagedPort(port int) error {
 		if err != nil || !runtimeExecutableNames()[filepath.Base(exe)] {
 			continue
 		}
-		if !processListensOn(pid, port) {
+		if !processListensOn(pid, port, transport) {
 			continue
 		}
 		if process, err := os.FindProcess(atoiDefault(pid, 0)); err == nil {

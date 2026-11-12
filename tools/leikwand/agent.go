@@ -592,20 +592,20 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 
 	// Never replace a healthy runtime before the replacement is validated:
 	// port ownership is checked first so we fail without breaking the old one.
-	if kind := portOwnerKind(forward.ListenPort); kind == "foreign" {
+	if kind := portOwnerKind(forward.ListenPort, forward.Transport); kind == "foreign" {
 		a.log.Error("runtime", "forward %d port %d is held by a foreign process; not starting", forward.ForwardID, forward.ListenPort)
 		a.markForwardError(forward.ForwardID, "port_in_use")
 		return
 	} else if kind == "managed" {
 		a.log.Warn("runtime", "forward %d reclaiming stale runtime on port %d", forward.ForwardID, forward.ListenPort)
-		if err := reclaimManagedPort(forward.ListenPort); err != nil {
+		if err := reclaimManagedPort(forward.ListenPort, forward.Transport); err != nil {
 			a.log.Warn("runtime", "forward %d could not reclaim port %d: %v", forward.ForwardID, forward.ListenPort, err)
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Validate the port before tearing down the incumbent.
-	if portOwnerKind(forward.ListenPort) == "foreign" {
+	if portOwnerKind(forward.ListenPort, forward.Transport) == "foreign" {
 		a.log.Error("runtime", "forward %d port %d still busy after reclaim; aborting restart", forward.ForwardID, forward.ListenPort)
 		a.markForwardError(forward.ForwardID, "port_in_use")
 		return
@@ -748,7 +748,7 @@ func (a *Agent) healthOnce(ctx context.Context) {
 			}
 			continue
 		}
-		if !portIsListening(state.forward.ListenPort) {
+		if !portIsListening(state.forward.ListenPort, state.forward.Transport) {
 			// The runtime binds within milliseconds of accepting a lease, so a
 			// short grace is enough to absorb scheduler jitter.
 			if time.Since(live) < listenReadyGrace {

@@ -376,10 +376,10 @@ func (m *gatewayManager) startRelay(ctx context.Context, slot *relaySlot, plan c
 	if err := writeRuntimeConfig(paths, runtime); err != nil {
 		return nil, err
 	}
-	if kind := portOwnerKind(slot.port); kind == "foreign" {
+	if kind := portOwnerKind(slot.port, "tcp"); kind == "foreign" {
 		return nil, fmt.Errorf("127.0.0.1:%d is held by another program; the %s native relay cannot start", slot.port, slot.role)
 	} else if kind == "managed" {
-		_ = reclaimManagedPort(slot.port)
+		_ = reclaimManagedPort(slot.port, "tcp")
 		time.Sleep(500 * time.Millisecond)
 	}
 	cmd := exec.Command(cfg.RuntimeBin, "--config", paths.configPath)
