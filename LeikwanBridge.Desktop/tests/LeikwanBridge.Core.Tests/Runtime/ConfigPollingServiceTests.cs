@@ -1172,6 +1172,54 @@ public sealed class ConfigPollingServiceTests
         Assert.Equal(renewalDue ? new[] { 42, 43 } : new[] { 42 }, runtimeManager.RefreshedForwardIds.Skip(refreshesBeforeTargetedPull).OrderBy(id => id));
     }
 
+    [Fact]
+    public async Task RecoverAfterWake_EndsABackoffFromBeforeSleepAndPullsAtOnce()
+    {
+        // A pull failed just before the lid closed. With a one-minute backoff the
+        // loop would otherwise sleep through the first minute after wake.
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson()) { PullFailuresRemaining = 1 };
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var slowBackoff = new ControlPlaneBackoff(initial: TimeSpan.FromSeconds(60), cap: TimeSpan.FromSeconds(60),
+            minimumDelay: TimeSpan.FromSeconds(60));
+        var service = new ConfigPollingService(api, runtime, state, null, TimeProvider.System, slowBackoff, leaseBackoff: null);
+        var failed = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.SyncError += _ => failed.TrySetResult(null);
+        service.ForwardsUpdated += _ => recovered.TrySetResult(null);
+
+        service.Start(intervalSeconds: 60);
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(service.IsControlPlaneBackingOff);
+
+        service.RecoverAfterWake();
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await service.StopAsync();
+
+        Assert.False(service.PullBackoff.IsBackingOff);
+        Assert.True(server.PullRequestCount >= 2);
+        Assert.NotEmpty(service.LatestForwards);
+    }
+
+    [Fact]
+    public void RecoverAfterWake_BeforeStartDoesNothing()
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new PullApiServer(BuildPullResponseJson());
+        var config = new AgentConfig { MasterUrl = server.BaseUrl, AgentToken = "token", ClientId = 1, StateDir = tempDir.Path };
+        var state = new StateManager(tempDir.Path);
+        var runtime = new RecordingForwardRuntimeManager(config, state, new TestProcessSupervisor());
+        using var api = new MasterApiClient(server.BaseUrl, "token");
+        var service = new ConfigPollingService(api, runtime, state);
+
+        service.RecoverAfterWake();
+
+        Assert.Equal(0, server.PullRequestCount);
+    }
+
     private static ControlPlaneBackoff FastBackoff()
         => new(initial: TimeSpan.FromMilliseconds(200), cap: TimeSpan.FromMilliseconds(400),
             minimumDelay: TimeSpan.FromMilliseconds(50));

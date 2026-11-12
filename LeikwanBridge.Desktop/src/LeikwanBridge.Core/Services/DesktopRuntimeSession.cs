@@ -30,6 +30,13 @@ public interface IDesktopRuntimeSession : IAsyncDisposable
     bool IsForwardRunning(int forwardId);
     Task StartAsync(CancellationToken ct);
     Task RefreshAsync(CancellationToken ct);
+
+    /// <summary>
+    /// The machine just woke from sleep: the held leases and relay sockets are
+    /// probably dead. Request a fresh config and lease for every Ultra forward
+    /// through the throttled recovery path, without waiting out any backoff.
+    /// </summary>
+    void RecoverAfterWake() { }
     Task StopAsync();
     Task StartForwardAsync(int forwardId, CancellationToken ct);
     Task EnsureForwardAsync(int forwardId, CancellationToken ct)
@@ -259,6 +266,13 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
             SetDeviceLimit(limit);
             throw;
         }
+    }
+
+    public void RecoverAfterWake()
+    {
+        if (_cts is null || _stopped)
+            return;
+        _polling.RecoverAfterWake();
     }
 
     public async Task StopAsync()
