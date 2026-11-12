@@ -315,22 +315,22 @@ final class UltraClientStatusService
         $now = $this->now();
         try {
             $rows = $this->db->fetchAll(
-                'SELECT l.forward_id, l.issued_at, ul.last_material_acquired_at AS acquired_at
-                 FROM ultra_client_leases l
-                 LEFT JOIN ultra_candidate_reputation_current r ON r.candidate_key_hash = l.candidate_key_hash
-                 LEFT JOIN ultra_lines ul ON ul.source_id = r.source_id AND ul.line_id = r.line_id
-                 WHERE l.client_id = :client_id
-                   AND l.device_hash = :device_hash
-                   AND l.issued_at >= :since
-                   AND l.consumed_at IS NOT NULL
-                   AND l.revoked_at IS NULL',
+                'SELECT forward_id, issued_at, candidate_key_hash
+                 FROM ultra_client_leases
+                 WHERE client_id = :client_id
+                   AND device_hash = :device_hash
+                   AND issued_at >= :since
+                   AND consumed_at IS NOT NULL
+                   AND revoked_at IS NULL',
                 [
                     'client_id' => $clientId,
                     'device_hash' => hash('sha256', $deviceId),
                     'since' => gmdate('Y-m-d H:i:s', $now - UltraMode::MAX_POLICY_TTL_SECONDS - self::LEASE_BATCH_SPAN_SECONDS),
                 ]
             );
-        } catch (\Throwable) {
+            $acquiredByHash = $this->materialAcquiredAtByCandidate(array_column($rows, 'candidate_key_hash'));
+        } catch (\Throwable $throwable) {
+            error_log('ultra_stale_credential_lookup_failed ' . $throwable::class);
             return [];
         }
         $newest = [];
@@ -342,7 +342,7 @@ final class UltraClientStatusService
         foreach ($rows as $row) {
             $forwardId = (int) ($row['forward_id'] ?? 0);
             $issuedAt = self::utcTimestamp($row['issued_at'] ?? '');
-            $acquiredAt = self::utcTimestamp($row['acquired_at'] ?? '');
+            $acquiredAt = $acquiredByHash[strtolower(trim((string) ($row['candidate_key_hash'] ?? '')))] ?? 0;
             if ($forwardId <= 0 || $issuedAt <= 0 || $acquiredAt <= 0
                 || $newest[$forwardId] <= $now - UltraMode::MAX_POLICY_TTL_SECONDS
                 || $issuedAt < $newest[$forwardId] - self::LEASE_BATCH_SPAN_SECONDS) {
@@ -354,6 +354,63 @@ final class UltraClientStatusService
         }
         ksort($stale, SORT_NUMERIC);
         return array_values($stale);
+    }
+
+    /**
+     * When the line behind each opaque candidate hash last had its material
+     * acquired. Looked up table by table: the hash and source columns of the
+     * three tables do not share a collation, so they cannot be joined.
+     *
+     * @param array<int, mixed> $candidateHashes
+     * @return array<string, int>
+     */
+    private function materialAcquiredAtByCandidate(array $candidateHashes): array
+    {
+        $hashes = [];
+        foreach ($candidateHashes as $hash) {
+            $hash = strtolower(trim((string) $hash));
+            if (preg_match('/^[a-f0-9]{64}$/', $hash) === 1) {
+                $hashes[$hash] = $hash;
+            }
+        }
+        if ($hashes === []) {
+            return [];
+        }
+        $params = [];
+        foreach (array_values($hashes) as $index => $hash) {
+            $params['h' . $index] = $hash;
+        }
+        $scopes = $this->db->fetchAll(
+            'SELECT candidate_key_hash, source_id, line_id FROM ultra_candidate_reputation_current
+             WHERE candidate_key_hash IN (:' . implode(', :', array_keys($params)) . ')',
+            $params
+        );
+        $lineIds = [];
+        foreach ($scopes as $scope) {
+            $lineId = (int) ($scope['line_id'] ?? 0);
+            if ($lineId > 0) {
+                $lineIds[$lineId] = $lineId;
+            }
+        }
+        if ($lineIds === []) {
+            return [];
+        }
+        $acquired = [];
+        foreach ($this->db->fetchAll(
+            'SELECT source_id, line_id, last_material_acquired_at FROM ultra_lines
+             WHERE line_id IN (' . implode(', ', $lineIds) . ')'
+        ) as $line) {
+            $acquired[trim((string) ($line['source_id'] ?? '')) . ':' . (int) ($line['line_id'] ?? 0)]
+                = self::utcTimestamp($line['last_material_acquired_at'] ?? '');
+        }
+        $result = [];
+        foreach ($scopes as $scope) {
+            $key = trim((string) ($scope['source_id'] ?? '')) . ':' . (int) ($scope['line_id'] ?? 0);
+            if (($acquired[$key] ?? 0) > 0) {
+                $result[strtolower(trim((string) ($scope['candidate_key_hash'] ?? '')))] = $acquired[$key];
+            }
+        }
+        return $result;
     }
 
     /**

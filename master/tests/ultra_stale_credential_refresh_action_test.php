@@ -21,6 +21,8 @@ namespace Leikwan\Master\Database {
     {
         /** @var list<array<string, mixed>> */
         public array $rows = [];
+        /** @var array<int, string> */
+        public array $lines = [];
         /** @var array<string, mixed> */
         public array $lastParams = [];
         public bool $fail = false;
@@ -31,11 +33,46 @@ namespace Leikwan\Master\Database {
             if ($this->fail) {
                 throw new \RuntimeException('db down');
             }
-            if (!str_contains($sql, 'FROM ultra_client_leases l') || !str_contains($sql, 'last_material_acquired_at')) {
-                throw new \RuntimeException('unexpected query: ' . $sql);
+            // The three tables use different collations in production; a query
+            // that joins them fails there, so none may.
+            if (stripos($sql, ' JOIN ') !== false) {
+                throw new \RuntimeException('cross-table join: ' . $sql);
             }
-            $this->lastParams = $params;
-            return $this->rows;
+            if (str_contains($sql, 'FROM ultra_client_leases')) {
+                $this->lastParams = $params;
+                return array_map(static fn(array $row): array => [
+                    'forward_id' => $row['forward_id'],
+                    'issued_at' => $row['issued_at'],
+                    'candidate_key_hash' => $row['line'] === null ? str_repeat('f', 64) : hash('sha256', 'line-' . $row['line']),
+                ], $this->rows);
+            }
+            if (str_contains($sql, 'FROM ultra_candidate_reputation_current')) {
+                $known = [];
+                foreach ($this->rows as $row) {
+                    if ($row['line'] !== null) {
+                        $known[hash('sha256', 'line-' . $row['line'])] = (int) $row['line'];
+                    }
+                }
+                $out = [];
+                foreach ($params as $name => $hash) {
+                    if (!str_contains($sql, ':' . $name)) {
+                        throw new \RuntimeException('unbound placeholder ' . $name);
+                    }
+                    if (isset($known[$hash])) {
+                        $out[] = ['candidate_key_hash' => $hash, 'source_id' => 'source-a', 'line_id' => $known[$hash]];
+                    }
+                }
+                return $out;
+            }
+            if (str_contains($sql, 'FROM ultra_lines')) {
+                // Another source's row for the same line id must not count.
+                $out = [['source_id' => 'source-retired', 'line_id' => 689, 'last_material_acquired_at' => gmdate('Y-m-d H:i:s', 1_794_493_000)]];
+                foreach ($this->lines as $lineId => $acquiredAt) {
+                    $out[] = ['source_id' => 'source-a', 'line_id' => $lineId, 'last_material_acquired_at' => $acquiredAt];
+                }
+                return $out;
+            }
+            throw new \RuntimeException('unexpected query: ' . $sql);
         }
     }
 }
@@ -67,22 +104,24 @@ namespace {
         $property->setValue($service, $value);
     }
 
+    // line => when its material was last acquired
+    $db->lines = [818 => $at(-900), 819 => $at(-141), 689 => $at(-600), 574 => $at(-260), 325 => $at(-120), 37 => $at(-105), 653 => $at(-30)];
     $db->rows = [
-        // 408: line refreshed 98 s after the batch was issued -> stale.
-        ['forward_id' => 408, 'issued_at' => $at(-240), 'acquired_at' => $at(-900)],
-        ['forward_id' => 408, 'issued_at' => $at(-239), 'acquired_at' => $at(-141)],
+        // 408: line 819 was refreshed 98 s after the batch was issued -> stale.
+        ['forward_id' => 408, 'issued_at' => $at(-240), 'line' => 818],
+        ['forward_id' => 408, 'issued_at' => $at(-239), 'line' => 819],
         // 409: every line was acquired well before the batch -> current.
-        ['forward_id' => 409, 'issued_at' => $at(-200), 'acquired_at' => $at(-600)],
-        ['forward_id' => 409, 'issued_at' => $at(-199), 'acquired_at' => $at(-260)],
+        ['forward_id' => 409, 'issued_at' => $at(-200), 'line' => 689],
+        ['forward_id' => 409, 'issued_at' => $at(-199), 'line' => 574],
         // 428: an older batch saw a refresh, the newest batch is current.
-        ['forward_id' => 428, 'issued_at' => $at(-280), 'acquired_at' => $at(-120)],
-        ['forward_id' => 428, 'issued_at' => $at(-60), 'acquired_at' => $at(-120)],
+        ['forward_id' => 428, 'issued_at' => $at(-280), 'line' => 325],
+        ['forward_id' => 428, 'issued_at' => $at(-60), 'line' => 325],
         // 450: issued 5 s after the source acquired the line, before the upload.
-        ['forward_id' => 450, 'issued_at' => $at(-100), 'acquired_at' => $at(-105)],
+        ['forward_id' => 450, 'issued_at' => $at(-100), 'line' => 37],
         // 451: candidate hash no longer resolves to a line.
-        ['forward_id' => 451, 'issued_at' => $at(-100), 'acquired_at' => null],
+        ['forward_id' => 451, 'issued_at' => $at(-100), 'line' => null],
         // 456: the newest batch is too old to still be installed.
-        ['forward_id' => 456, 'issued_at' => $at(-310), 'acquired_at' => $at(-30)],
+        ['forward_id' => 456, 'issued_at' => $at(-310), 'line' => 653],
     ];
 
     $stale = $service->staleCredentialForwards(68, 'openwrt-44df6593151a');
