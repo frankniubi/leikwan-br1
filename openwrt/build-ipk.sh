@@ -4,9 +4,9 @@
 # Usage: ./build-ipk.sh [amd64|arm64] [sdk-dir]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-VERSION="${LEIKWAND_VERSION:-1.2.10}"
+VERSION="${LEIKWAND_VERSION:-1.2.11}"
 export VERSION
 export LEIKWAND_VERSION="$VERSION"
-# leikwand and leikwan-runtime ship together again from 1.2.10 (new Ultra runtime).
-export LEIKWAN_RUNTIME_VERSION="${LEIKWAN_RUNTIME_VERSION:-$VERSION}"
+# The runtime is unchanged since 1.2.10; keep its package version (and attested binary) as is.
+export LEIKWAN_RUNTIME_VERSION="${LEIKWAN_RUNTIME_VERSION:-1.2.10}"
 exec "$HERE/build.sh" "${1:-amd64}" "${2:-}"

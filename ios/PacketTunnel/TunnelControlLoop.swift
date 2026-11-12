@@ -17,15 +17,19 @@ final class TunnelControlLoop {
     /// Runtime candidate outcomes ride the heartbeat too; delivered evidence is never resent.
     private let feedbackLedger: UltraCandidateFeedbackLedger?
     private let wakeup = LoopWakeup()
+    /// Forwards the panel asked to lease again; the lease manager owns the renewal.
+    private let onUltraRefresh: (([Int64]) -> Void)?
 
     init(
         client: PanelClient,
         usageLedger: UltraUsageLedger? = nil,
         feedbackLedger: UltraCandidateFeedbackLedger? = nil,
+        onUltraRefresh: (([Int64]) -> Void)? = nil,
         onTerminal: @escaping (String) -> Void
     ) {
         self.usageLedger = usageLedger
         self.feedbackLedger = feedbackLedger
+        self.onUltraRefresh = onUltraRefresh
         self.client = client
         self.onTerminal = onTerminal
     }
@@ -79,6 +83,9 @@ final class TunnelControlLoop {
                 }
                 if !feedback.isEmpty && response.ok {
                     feedbackLedger?.acknowledge(feedback)
+                }
+                if response.ok && !response.ultraRefreshForwardIDs.isEmpty {
+                    onUltraRefresh?(response.ultraRefreshForwardIDs)
                 }
                 outcome = .success
             } catch {
