@@ -148,7 +148,7 @@ final class AppModel: ObservableObject {
         let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
         let result = try await candidate.pullCatalog(
             selectedForwardId: sameAccount ? selectedForwardID : nil,
-            heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
+            heartbeat: HeartbeatRequest(osRelease: Self.osRelease, ultraStatus: Self.currentUltraStatus())
         )
         applyClientUpdate(result.response)
         var list = profiles
@@ -238,7 +238,7 @@ final class AppModel: ObservableObject {
         do {
             let result = try await client.pullCatalog(
                 selectedForwardId: selectedForwardID,
-                heartbeat: HeartbeatRequest(osRelease: Self.osRelease)
+                heartbeat: HeartbeatRequest(osRelease: Self.osRelease, ultraStatus: Self.currentUltraStatus())
             )
             applyClientUpdate(result.response)
             apply(result.catalog)
@@ -555,6 +555,13 @@ final class AppModel: ObservableObject {
 
     static var osRelease: String {
         "iOS \(UIDevice.current.systemVersion)"
+    }
+
+    /// The tunnel's Ultra runtimes write their status documents into the shared app group, so the
+    /// app's own heartbeats (sent with every catalog pull) carry the same `ultra_status` as the
+    /// tunnel's instead of clearing the panel's view of this device. Small bounded files.
+    static func currentUltraStatus() -> [UltraStatusReport] {
+        UltraStatusCollector.collect(statusDirectory: AppGroup.runtimeDirectory)
     }
 
     static var deviceName: String {

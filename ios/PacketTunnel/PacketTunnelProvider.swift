@@ -34,6 +34,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         statusDirectory: AppGroup.runtimeDirectory,
         stateFile: AppGroup.sharedDirectory.appendingPathComponent("ultra-usage-state.json")
     )
+    /// Runtime candidate feedback -> heartbeat; remembers which evidence the panel already has.
+    private lazy var feedbackLedger = UltraCandidateFeedbackLedger(
+        statusDirectory: AppGroup.runtimeDirectory,
+        stateFile: AppGroup.sharedDirectory.appendingPathComponent("ultra-feedback-state.json")
+    )
 
     override func startTunnel(options: [String: NSObject]?) async throws {
         do {
@@ -116,7 +121,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         relayProbe.start()
         startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
-            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
+            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
                 self?.handleTerminal(alert)
             }
             controlLoop = loop
@@ -326,7 +331,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             controlLoop?.stop()
             controlLoop = nil
             if let client = next.panel?.makeClient() {
-                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger) { [weak self] alert in
+                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
                     self?.handleTerminal(alert)
                 }
                 controlLoop = loop

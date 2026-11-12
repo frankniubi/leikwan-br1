@@ -4,6 +4,8 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.annotations.SerializedName
 import com.leikwan.bridge.runtime.NativeOutboundCapabilityDto
+import com.leikwan.bridge.runtime.UltraCandidateFeedbackReport
+import com.leikwan.bridge.runtime.UltraStatusReport
 import com.leikwan.bridge.runtime.UltraUsageRow
 
 data class PullConfigsResponse(
@@ -27,6 +29,13 @@ data class HeartbeatRequest(
     @SerializedName("supports_exact_destination_rules") val supportsExactDestinationRules: Boolean = true,
     /** Per-forward Ultra usage deltas; null (omitted) when there is nothing to report. */
     @SerializedName("ultra_usage") val ultraUsage: List<UltraUsageRow>? = null,
+    /**
+     * Per-forward Ultra runtime health; a list (possibly empty) on every heartbeat that can see
+     * the runtime directory. The panel stores it as the device's `ultra_status_json`.
+     */
+    @SerializedName("ultra_status") val ultraStatus: List<UltraStatusReport>? = null,
+    /** Fresh, not yet delivered candidate outcomes from the runtimes; null (omitted) when none. */
+    @SerializedName("ultra_candidate_feedback") val ultraCandidateFeedback: List<UltraCandidateFeedbackReport>? = null,
 )
 
 data class HeartbeatResponse(

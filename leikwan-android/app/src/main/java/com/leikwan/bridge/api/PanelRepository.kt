@@ -26,8 +26,11 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.nativeDirectionsMatch
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.runtime.UltraCandidateFeedbackLedger
 import com.leikwan.bridge.runtime.UltraLease
 import com.leikwan.bridge.runtime.UltraPolicy
+import com.leikwan.bridge.runtime.UltraStatusCollector
+import com.leikwan.bridge.runtime.UltraStatusReport
 import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.net.AppDns
 import com.leikwan.bridge.net.MirrorNoSni
@@ -87,6 +90,12 @@ class PanelRepository(
     private val panelEndpointOverride: PanelEndpoint? = null,
     private val ultraLeaseKeyProvider: () -> UltraLeaseKey? = { AndroidUltraLeaseKeyStore.getOrNull(context) },
     private val ultraUsageLedgerProvider: () -> UltraUsageLedger? = { UltraUsageLedger.forFilesDir(context.filesDir) },
+    private val ultraStatusCollectorProvider: () -> UltraStatusCollector? = {
+        UltraStatusCollector.forFilesDir(context.filesDir)
+    },
+    private val ultraFeedbackLedgerProvider: () -> UltraCandidateFeedbackLedger? = {
+        UltraCandidateFeedbackLedger.forFilesDir(context.filesDir)
+    },
     private val hostedNodeApiOverride: HostedNodeApi? = null,
     hostedNodeSyncOverride: HostedNodeSync? = null,
     /** Fetches the update manifest once a pull says this build is below the panel minimum. */
@@ -426,7 +435,7 @@ class PanelRepository(
     private suspend fun pullCatalogOnce(selectedForwardId: Long): ForwardCatalog {
         requireActiveSession()
         try {
-            api.heartbeat(authHeader(), HeartbeatRequest())
+            api.heartbeat(authHeader(), HeartbeatRequest(ultraStatus = currentUltraStatus()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: PanelControlException) {
@@ -510,13 +519,25 @@ class PanelRepository(
         // Ultra usage rides the heartbeat: unacknowledged rows stay pending and are resent.
         val ledger = runCatching { ultraUsageLedgerProvider() }.getOrNull()
         val usage = ledger?.let { runCatching { it.collect() }.getOrNull() }.orEmpty()
+        // Candidate outcomes are read even when no bytes moved; delivered evidence is remembered.
+        val feedbackLedger = runCatching { ultraFeedbackLedgerProvider() }.getOrNull()
+        val feedback = feedbackLedger?.let {
+            runCatching { it.collect(Instant.ofEpochMilli(nowMs())) }.getOrNull()
+        }.orEmpty()
         try {
             val response = api.heartbeat(
                 authHeader(),
-                HeartbeatRequest(ultraUsage = usage.takeIf { it.isNotEmpty() }),
+                HeartbeatRequest(
+                    ultraUsage = usage.takeIf { it.isNotEmpty() },
+                    ultraStatus = currentUltraStatus(),
+                    ultraCandidateFeedback = feedback.takeIf { it.isNotEmpty() },
+                ),
             )
             if (usage.isNotEmpty()) {
                 runCatching { ledger?.acknowledge(usage, response.ultraUsageAcknowledged ?: response.ok) }
+            }
+            if (feedback.isNotEmpty() && response.ok) {
+                runCatching { feedbackLedger?.acknowledge(feedback) }
             }
             response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {
@@ -529,6 +550,15 @@ class PanelRepository(
             false
         }
     }
+
+    /**
+     * The runtimes' current health for `ultra_status`. Always a list: the panel replaces the
+     * device's stored status with whatever a heartbeat carries, so an empty list (no runtime)
+     * is as meaningful as a full one.
+     */
+    private fun currentUltraStatus(): List<UltraStatusReport> = runCatching {
+        ultraStatusCollectorProvider()?.collect(Instant.ofEpochMilli(nowMs()))
+    }.getOrNull().orEmpty()
 
     /** Publishes a device-limit refusal (from the session renewal or the call itself) to the UI. */
     private suspend fun <T> reportingDeviceLimit(block: suspend () -> T): T = try {

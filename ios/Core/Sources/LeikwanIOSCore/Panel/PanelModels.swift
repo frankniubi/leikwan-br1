@@ -33,10 +33,22 @@ public struct HeartbeatRequest: Equatable {
 
     public var osRelease: String
     public var ultraUsage: [UltraUsageRow]?
+    /// Per-forward Ultra runtime health (`UltraStatusCollector`). Sent whenever non-nil, an empty
+    /// list included: the panel replaces the device's stored status with what a heartbeat carries.
+    public var ultraStatus: [UltraStatusReport]?
+    /// Fresh, not yet delivered candidate outcomes (`UltraCandidateFeedbackLedger`); omitted when empty.
+    public var ultraCandidateFeedback: [UltraCandidateFeedbackReport]?
 
-    public init(osRelease: String, ultraUsage: [UltraUsageRow]? = nil) {
+    public init(
+        osRelease: String,
+        ultraUsage: [UltraUsageRow]? = nil,
+        ultraStatus: [UltraStatusReport]? = nil,
+        ultraCandidateFeedback: [UltraCandidateFeedbackReport]? = nil
+    ) {
         self.osRelease = osRelease
         self.ultraUsage = ultraUsage
+        self.ultraStatus = ultraStatus
+        self.ultraCandidateFeedback = ultraCandidateFeedback
     }
 
     public func jsonObject() -> [String: Any] {
@@ -48,6 +60,12 @@ public struct HeartbeatRequest: Equatable {
         ]
         if let usage = ultraUsage, !usage.isEmpty {
             obj["ultra_usage"] = usage.map { $0.jsonObject() }
+        }
+        if let status = ultraStatus {
+            obj["ultra_status"] = status.map { $0.jsonObject() }
+        }
+        if let feedback = ultraCandidateFeedback, !feedback.isEmpty {
+            obj["ultra_candidate_feedback"] = feedback.map { $0.jsonObject() }
         }
         return obj
     }
