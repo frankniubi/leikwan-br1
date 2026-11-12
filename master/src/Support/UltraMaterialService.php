@@ -29,6 +29,9 @@ final class UltraMaterialService
     /** @var array<string, string> */
     private array $memorySettings = [];
 
+    /** @var array<string, int> */
+    private array $memorySettingsUpdatedAt = [];
+
     private UltraCandidateReputationService $candidateReputation;
 
     public function __construct(
@@ -424,6 +427,45 @@ final class UltraMaterialService
         }
         sort($keys, SORT_STRING);
         return $keys;
+    }
+
+    /**
+     * When the panel stored each line's current material, on the panel clock.
+     * A lease issued before this moment still carries the credential that the
+     * upload replaced. acquired_at cannot tell that: it is the source host's
+     * clock, and the upload lands up to tens of seconds after it.
+     *
+     * @param array<int, array{source_id:string,line_id:int}> $lineRefs
+     * @return array<string, int> keyed "source_id:line_id"
+     */
+    public function materialUploadedAt(array $lineRefs): array
+    {
+        $current = [];
+        $legacy = [];
+        $primarySourceId = $this->primarySourceId();
+        foreach ($lineRefs as $lineRef) {
+            $sourceId = trim((string) ($lineRef['source_id'] ?? ''));
+            $lineId = (int) ($lineRef['line_id'] ?? 0);
+            if ($sourceId === '' || $lineId <= 0 || $lineId > 45535) {
+                continue;
+            }
+            $current[$this->materialKey($sourceId, $lineId)] = $sourceId . ':' . $lineId;
+            // loadMaterial() falls back to the legacy key for the primary source.
+            if ($primarySourceId !== '' && hash_equals($primarySourceId, $sourceId)) {
+                $legacy[self::LEGACY_MATERIAL_PREFIX . $lineId] = $sourceId . ':' . $lineId;
+            }
+        }
+        if ($current === []) {
+            return [];
+        }
+        $written = $this->settingsUpdatedAt(array_merge(array_keys($current), array_keys($legacy)));
+        $result = [];
+        foreach ($current + $legacy as $key => $lineKey) {
+            if (!isset($result[$lineKey]) && isset($written[$key])) {
+                $result[$lineKey] = $written[$key];
+            }
+        }
+        return $result;
     }
 
     /**
@@ -1328,6 +1370,19 @@ final class UltraMaterialService
             return;
         }
         $this->memorySettings[$key] = $value;
+        $this->memorySettingsUpdatedAt[$key] = $this->now();
+    }
+
+    /**
+     * @param array<int, string> $keys
+     * @return array<string, int>
+     */
+    private function settingsUpdatedAt(array $keys): array
+    {
+        if ($this->settings !== null) {
+            return $this->settings->updatedAt($keys);
+        }
+        return array_intersect_key($this->memorySettingsUpdatedAt, array_flip($keys));
     }
 
     /** @param array<string, mixed> $payload */
