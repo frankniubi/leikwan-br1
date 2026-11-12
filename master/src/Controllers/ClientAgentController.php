@@ -555,10 +555,10 @@ final class ClientAgentController extends BaseController
                 // by the grant's own expires_at above.
                 $policy['offline_validity_seconds'] = $leaseValidityCap;
             }
-            // A line-material refresh moves the forward's generation while the
+            // A relay-path change moves the forward's generation while the
             // client still leases against the one it pulled before. The broker
-            // names that generation only when its own ticket proves the line
-            // material was the sole difference, so honour it for the grace
+            // names that generation only when its own ticket proves the relay
+            // paths were the sole difference, so honour it for the grace
             // window and never past the ticket's expiry (it caps expires_at).
             $graceGrant = is_array($grant['previous_generation_grace'] ?? null) ? $grant['previous_generation_grace'] : [];
             $presentedGeneration = strtolower(trim((string) ($item['policy_generation'] ?? '')));

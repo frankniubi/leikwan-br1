@@ -2,12 +2,14 @@
 declare(strict_types=1);
 
 /**
- * A line-material refresh moves a forward's policy_generation while the client
- * still leases against the generation it pulled before the refresh, which the
+ * A change of a forward's relay paths (a line re-acquired with different relay
+ * endpoints, or a line whose material lapsed) moves its policy_generation while
+ * the client still leases against the generation it pulled before, which the
  * lease plane answered with policy_generation_invalid (409) until the next pull.
- * The broker now names the pre-refresh generation as leasable for a short window,
- * but only when the client's own ticket proves the line material was the only
- * thing that changed. Driven through the real broker and material service.
+ * The broker now names the previous generation as leasable for a short window,
+ * but only when the client's own ticket proves the relay paths were the only
+ * thing that changed. A refresh that only rotates the credential does not move
+ * the generation at all. Driven through the real broker and material service.
  */
 
 namespace Leikwan\Master\Database {
@@ -95,7 +97,11 @@ namespace {
     $materials = new UltraMaterialService($config, new Database(), null, $now);
     $broker = new LeigodTokenBroker($config, null, $materials, $now);
 
-    $upload = static function (string $generation, string $credential) use ($materials, &$clock): void {
+    $upload = static function (
+        string $generation,
+        string $credential,
+        array $relays = [['ip' => '203.0.113.20', 'port' => 5438]],
+    ) use ($materials, &$clock): void {
         $ticket = $materials->issueUploadTicket('source-a', [453]);
         $accepted = $materials->acceptSourceUpload('source-a', $ticket, [[
             'line_id' => 453,
@@ -104,7 +110,7 @@ namespace {
             'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 1200),
             'user' => 'line-user',
             'credential' => $credential,
-            'relays' => [['ip' => '203.0.113.20', 'port' => 5438]],
+            'relays' => $relays,
             'probe' => ['ok' => true],
         ]]);
         assertGrace($accepted === [453], 'material ' . $generation . ' was not accepted');
@@ -154,15 +160,27 @@ namespace {
     $oldExpiry = strtotime((string) $before['expires_at']);
     assertGrace(!isset($before['previous_generation_grace']), 'a plain pull must not carry a grace');
 
-    // The source refreshes the line a minute later: the forward's generation moves.
+    // 0. A refresh 30 seconds later that only rotates the credential (same
+    //    relays) keeps the generation: no grace is needed and none is named.
+    $clock = $start + 30;
+    $upload('material-generation-1b', '1111222233334444');
+    $rotated = $grantFor($presenting($forward, $before));
+    assertGrace($rotated['policy_generation'] === $oldGeneration, 'a credential-only refresh moved the generation');
+    assertGrace(!isset($rotated['previous_generation_grace']), 'a credential-only refresh must not need a grace');
+
+    // The source refreshes the line a minute later with a different relay
+    // endpoint: the forward's paths changed, so its generation moves.
     $clock = $start + 60;
-    $upload('material-generation-2', '6543210987654321');
+    $upload('material-generation-2', '6543210987654321', [
+        ['ip' => '203.0.113.20', 'port' => 5438],
+        ['ip' => '203.0.113.30', 'port' => 5440],
+    ]);
 
     // 1. Inside the window, the pre-refresh generation is named as leasable.
     $after = $grantFor($presenting($forward, $before));
     assertGrace($after['policy_generation'] !== $oldGeneration, 'the refresh did not move the generation');
     $grace = $after['previous_generation_grace'] ?? null;
-    assertGrace(is_array($grace), 'a material-only refresh inside the window must grant the previous generation');
+    assertGrace(is_array($grace), 'a path-only change inside the window must grant the previous generation');
     assertGrace($grace['policy_generation'] === $oldGeneration, 'the grace must name the presented generation');
     $graceUntil = strtotime((string) $grace['expires_at']);
     assertGrace($graceUntil !== false && $graceUntil <= $oldExpiry, 'the grace must not outlive the presented ticket');

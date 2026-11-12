@@ -47,7 +47,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
      * ignores the header.
      *
      * policy_generation is deliberately the same for both paths: it describes
-     * the scope (target, transport, rate, remaining quota, material), not the
+     * the scope (target, transport, rate, remaining quota, relay paths), not the
      * lifetime. A runtime refuses a generation it has seen before once it has
      * moved on (ErrPolicyRollback), so a client that alternates between a long
      * and a short grant must never see the generation flip back and forth.
@@ -109,10 +109,15 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             $serviceExpiresAt = $this->parseServiceExpiry((string) ($request['service_expire_at'] ?? ''));
             $currentRate = max(0, min(100000, (int) ($request['speed_limit_mbps'] ?? 0)));
             $grantRate = max(0, (int) ($grant['rate_limit_mbps'] ?? 0));
+            $generationParts = $this->policyGenerationParts($request, (string) $snapshot['path_fingerprint'], $quotaBytes);
+            $generationSerial = $this->materials->policyGenerationSerial(
+                (int) $forwardId,
+                $this->policyGenerationContent($generationParts)
+            );
             $policyGeneration = $this->policyGeneration(
-                $request,
-                (string) $snapshot['fingerprint'],
-                $quotaBytes,
+                (int) $forwardId,
+                $generationParts,
+                $generationSerial,
                 [
                     'epoch' => (int) ($revocations['epochs'][(int) $forwardId] ?? 0),
                     'revoked' => $revocations['revoked'],
@@ -194,6 +199,8 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
                 'allowed_ingress_zones' => $request['allowed_ingress_zones'],
                 'fallback_policy' => $request['fallback_policy'],
                 'material_fingerprint' => $snapshot['fingerprint'],
+                'path_fingerprint' => $snapshot['path_fingerprint'],
+                'generation_serial' => $generationSerial,
                 'policy_generation' => $policyGeneration,
                 'revocation_epoch' => (int) ($revocations['epochs'][(int) $request['forward_id']] ?? 0),
                 'target_digest' => hash('sha256', (string) $request['target']),
@@ -703,15 +710,41 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
     }
 
     /**
+     * policy_generation: what a runtime must treat as a new policy. Every change
+     * of it makes the runtime discard its candidate set and probe and select
+     * again, so it covers only what a same-generation refresh cannot absorb:
+     *
+     *   - target, transport, rate, quota bucket and service expiry;
+     *   - the forward's paths: which lines (in preference order, with their
+     *     zones and carrier states) and which relay endpoints each line offers
+     *     (UltraMaterialService::lineSnapshot() path_fingerprint). A runtime
+     *     only accepts a same-generation refresh that still contains its
+     *     selected path, so a path that disappears must move the generation;
+     *   - candidate eligibility (quarantined or not), when dynamic quarantine
+     *     is enforced;
+     *   - the forward's revocation state (below).
+     *
+     * It deliberately does NOT cover the line credential. The source
+     * re-acquires every line every ~20-30 minutes and each acquisition carries
+     * a new credential, so hashing the per-acquisition material fingerprint
+     * rotated a forward's generation every time any one of its lines was
+     * refreshed (every few minutes for a multi-line forward, at a different
+     * moment for every forward) and each rotation re-probed the whole set. The
+     * lease plane resolves the credential from current material on every
+     * lease, and the selection reference is stable across refreshes, so a
+     * same-generation refresh delivers the new credential in place.
+     *
+     * Because it covers only that state, the same content can come back (a
+     * candidate leaves quarantine, a lapsed line is re-acquired with the relays
+     * it had). A runtime refuses a generation it has already left, so the
+     * forward's generation serial (UltraMaterialService::policyGenerationSerial)
+     * is folded in: it moves forward on every content change, never back.
+     *
      * @param array<string, mixed> $request
-     * @param array{epoch?: int, revoked?: array<string, true>} $revocation
+     * @return array<int, string>
      */
-    private function policyGeneration(
-        array $request,
-        string $materialFingerprint,
-        int $quotaBytes,
-        array $revocation = []
-    ): string {
+    private function policyGenerationParts(array $request, string $pathFingerprint, int $quotaBytes): array
+    {
         $parts = [
             (string) ($request['forward_id'] ?? 0),
             'active',
@@ -720,7 +753,8 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             (string) ($request['speed_limit_mbps'] ?? 0),
             $this->quotaGenerationBucket($quotaBytes),
             (string) ($request['service_expire_at'] ?? ''),
-            $materialFingerprint,
+            'paths-v1:' . $pathFingerprint,
+            'lines-v1:' . $this->lineScopeDigest(is_array($request['lines'] ?? null) ? $request['lines'] : []),
         ];
         $reputationFingerprint = $this->materials->candidateReputationFingerprint(
             is_array($request['lines'] ?? null) ? $request['lines'] : [],
@@ -729,7 +763,26 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         if ($reputationFingerprint !== '') {
             $parts[] = $reputationFingerprint;
         }
+        return $parts;
+    }
 
+    /** @param array<int, string> $parts policyGenerationParts() */
+    private function policyGenerationContent(array $parts): string
+    {
+        return hash('sha256', implode("\n", $parts));
+    }
+
+    /**
+     * @param array<int, string> $parts policyGenerationParts()
+     * @param array{epoch?: int, revoked?: array<string, true>} $revocation
+     */
+    private function policyGeneration(
+        int $forwardId,
+        array $parts,
+        int $serial,
+        array $revocation = []
+    ): string {
+        $parts[] = 'generation-serial:' . $serial;
         $generation = hash('sha256', implode("\n", $parts));
         $epoch = (int) ($revocation['epoch'] ?? 0);
         $revoked = $revocation['revoked'] ?? [];
@@ -746,9 +799,8 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         // client always receives a generation the lease plane will honour. The
         // epoch is the highest revoked row id, so every further revocation
         // raises it again and can never reproduce an earlier value.
-        $forwardKey = (int) ($request['forward_id'] ?? 0);
         for ($attempt = 0; $attempt < 3; $attempt++) {
-            if (!isset($revoked[$forwardKey . ':' . strtolower($generation)])) {
+            if (!isset($revoked[$forwardId . ':' . strtolower($generation)])) {
                 break;
             }
             $generation = hash('sha256', implode("\n", [...$parts, 'revocation-epoch:' . $epoch . ':' . $attempt]));
@@ -758,18 +810,46 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
     }
 
     /**
-     * A refresh of a line's material moves the forward's material fingerprint,
-     * and with it policy_generation, while a client keeps leasing against the
-     * generation of the grant it pulled before the refresh. Everything else a
-     * generation stands for (target, transport, rate, quota bucket, service
-     * expiry, reputation state, revocation state) can be recomputed here, so the
-     * client's own session ticket proves whether the line material was the only
-     * thing that changed. If it was, and the refresh is recent, the generation
-     * stays leasable until the ticket expires. Anything else returns null and
-     * the lease is refused as before.
+     * The forward's lines in preference order with the fields that decide how
+     * their candidates are scoped (zones feed candidate_key_hash) and whether
+     * they are offered at all (carrier states). Stable between acquisitions.
+     *
+     * @param array<int, mixed> $lines
+     */
+    private function lineScopeDigest(array $lines): string
+    {
+        $parts = [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+            $parts[] = implode(':', [
+                trim((string) ($line['source_id'] ?? '')),
+                (string) ((int) ($line['line_id'] ?? 0)),
+                (string) ($line['ingress_zone'] ?? 'unknown'),
+                (string) ($line['destination_zone'] ?? 'unknown'),
+                (string) ($line['access_class'] ?? 'unknown'),
+                (string) ($line['native_udp_state'] ?? 'unknown'),
+                (string) ($line['native_socks5_state'] ?? 'unknown'),
+            ]);
+        }
+        return hash('sha256', implode('|', $parts));
+    }
+
+    /**
+     * A change of the forward's relay paths (a line's re-acquisition that
+     * brought different relay endpoints, or a line whose material lapsed) moves
+     * the path fingerprint, and with it policy_generation, while a client keeps
+     * leasing against the generation of the grant it pulled before. Everything
+     * else a generation stands for (target, transport, rate, quota bucket,
+     * service expiry, line scope, reputation state, revocation state) can be
+     * recomputed here, so the client's own session ticket proves whether the
+     * paths were the only thing that changed. If they were, and the change is
+     * recent, the generation stays leasable until the ticket expires. Anything
+     * else returns null and the lease is refused as before.
      *
      * @param array<string,mixed> $request one eligibleForwards() entry that carries 'presented'
-     * @param array{fingerprint:string,changed_at:int} $snapshot
+     * @param array{fingerprint:string,path_fingerprint:string,changed_at:int} $snapshot
      * @param array{epochs:array<int,int>,revoked:array<string,true>} $revocations
      * @return array{policy_generation:string,ticket_expires_at:int}|null
      */
@@ -796,7 +876,7 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
         );
         if ($scope === []
             || !hash_equals($scope['policy_generation'], $presentedGeneration)
-            || hash_equals($scope['material_fingerprint'], (string) $snapshot['fingerprint'])
+            || hash_equals($scope['path_fingerprint'], (string) $snapshot['path_fingerprint'])
             || $scope['expires_at'] <= $now) {
             return null;
         }
@@ -810,9 +890,9 @@ final class LeigodTokenBroker implements UltraOfflineValidityTokenProvider
             return null;
         }
         $recomputed = $this->policyGeneration(
-            $request,
-            $scope['material_fingerprint'],
-            $quotaBytes,
+            $forwardId,
+            $this->policyGenerationParts($request, $scope['path_fingerprint'], $quotaBytes),
+            $scope['generation_serial'],
             ['epoch' => $epoch, 'revoked' => $revocations['revoked']]
         );
         if (!hash_equals($recomputed, $presentedGeneration)) {
