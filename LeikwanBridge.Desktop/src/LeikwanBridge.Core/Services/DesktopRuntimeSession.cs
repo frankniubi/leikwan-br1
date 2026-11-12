@@ -510,6 +510,13 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
     {
         foreach (var action in actions.Take(32))
         {
+            if (IsUltraRefreshAction(action, Forwards))
+            {
+                // A line refresh replaced the credential inside the installed
+                // lease; the generation did not move, so nothing else renews it.
+                _runtime.RequestUltraLeaseRefresh(action.ForwardId, "panel_refresh");
+                continue;
+            }
             if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
                 || action.ForwardId <= 0)
                 continue;
@@ -523,6 +530,17 @@ public sealed class DesktopRuntimeSession : IDesktopRuntimeSession
         }
         PublishCurrentForwards();
     }
+
+    /// <summary>
+    /// True for a panel "refresh" action on an Ultra forward this client runs.
+    /// Unlike "stop" it carries no generation: it only asks for a new lease.
+    /// </summary>
+    public static bool IsUltraRefreshAction(UltraPolicyAction action, IEnumerable<ForwardConfig> forwards)
+        => string.Equals(action.Action, "refresh", StringComparison.OrdinalIgnoreCase)
+            && action.ForwardId > 0
+            && forwards.Any(item => item.ForwardId == action.ForwardId
+                && item.UltraAccess is not null
+                && string.Equals(item.BackendMode, "ultra", StringComparison.OrdinalIgnoreCase));
 
     private void PublishCurrentForwards()
     {

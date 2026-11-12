@@ -4270,13 +4270,21 @@ class ClientAgent:
             and str(forward.get("backend_mode", "") or "").strip().lower() == "ultra"
         }
         for raw_action in actions[:32]:
-            if not isinstance(raw_action, dict) or str(raw_action.get("action", "")) != "stop":
+            if not isinstance(raw_action, dict) or str(raw_action.get("action", "")) not in ("stop", "refresh"):
                 continue
             try:
                 forward_id = int(raw_action.get("forward_id", 0) or 0)
             except (TypeError, ValueError):
                 continue
             if forward_id <= 0 or forward_id not in policies:
+                continue
+            if str(raw_action.get("action", "")) == "refresh":
+                # A line refresh replaced the credential inside the installed
+                # lease without moving the generation: renew on the next cycle.
+                schedule = getattr(self, "_ultra_renew_schedule", None)
+                if schedule is None:
+                    schedule = self._ultra_renew_schedule = {}
+                schedule[forward_id] = 0.0
                 continue
             generation = str(raw_action.get("policy_generation", "") or "").strip().lower()
             access = policies[forward_id].get("ultra_access")

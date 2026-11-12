@@ -115,6 +115,11 @@ internal sealed class WindowsClientStack : IHeadlessClientStack
     {
         foreach (var action in actions.Take(32))
         {
+            if (DesktopRuntimeSession.IsUltraRefreshAction(action, polling.LatestForwards))
+            {
+                runtime.RequestUltraLeaseRefresh(action.ForwardId, "panel_refresh");
+                continue;
+            }
             if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
                 || action.ForwardId <= 0
                 || !System.Text.RegularExpressions.Regex.IsMatch(action.PolicyGeneration ?? "", "^[a-f0-9]{64}$"))

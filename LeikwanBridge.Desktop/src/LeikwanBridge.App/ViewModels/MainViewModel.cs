@@ -2557,6 +2557,12 @@ public partial class MainViewModel : ObservableObject
 
         foreach (var action in actions.Take(32))
         {
+            if (_pollingService is not null
+                && DesktopRuntimeSession.IsUltraRefreshAction(action, _pollingService.LatestForwards))
+            {
+                _runtimeManager?.RequestUltraLeaseRefresh(action.ForwardId, "panel_refresh");
+                continue;
+            }
             if (!string.Equals(action.Action, "stop", StringComparison.OrdinalIgnoreCase)
                 || action.ForwardId <= 0
                 || !System.Text.RegularExpressions.Regex.IsMatch(action.PolicyGeneration ?? "", "^[a-f0-9]{64}$"))
