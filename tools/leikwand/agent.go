@@ -548,10 +548,16 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	}
 	a.mu.Unlock()
 
-	// 1. Start or refresh everything the Panel wants running.
-	for id, forward := range desired {
-		a.reconcileForward(ctx, forward, reason)
-		_ = id
+	// 1. Start or refresh everything the Panel wants running. Forward order is
+	// fixed so that, when two forwards claim one port, the same one wins on
+	// every pass instead of whichever map iteration happened to reach first.
+	ids := make([]int, 0, len(desired))
+	for id := range desired {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		a.reconcileForward(ctx, desired[id], reason)
 	}
 
 	// 2. Stop anything the Panel no longer lists.
@@ -588,6 +594,26 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 		if state.contract != contract {
 			a.log.Info("runtime", "forward %d contract changed (%s); restarting", forward.ForwardID, reason)
 		}
+	}
+
+	// A port held by another forward this agent runs is never reclaimed by
+	// killing that runtime: with two forwards configured on one port, each
+	// reconcile would take it from the other and the forward that was carrying
+	// traffic would drop. The port changes hands only when its holder is moving
+	// off it or has been withdrawn.
+	if holder := a.portHolder(forward.ForwardID, forward.ListenPort, forward.Transport); holder != nil {
+		if a.desiredClaims(holder.forward.ForwardID, forward.ListenPort, forward.Transport) {
+			a.log.Error("runtime", "forward %d port %d is used by forward %d; not starting", forward.ForwardID, forward.ListenPort, holder.forward.ForwardID)
+			a.markForwardError(forward.ForwardID, "port_in_use")
+			return
+		}
+		a.log.Info("runtime", "forward %d takes port %d over from forward %d, which no longer uses it", forward.ForwardID, forward.ListenPort, holder.forward.ForwardID)
+		a.stopRuntime(holder.proc, "port_handover")
+	}
+	if forward.ListenPort == gatewaySocksPort && a.gatewayRelayRunning() {
+		a.log.Error("runtime", "forward %d port %d is the native gateway's SOCKS port; not starting", forward.ForwardID, forward.ListenPort)
+		a.markForwardError(forward.ForwardID, "port_in_use")
+		return
 	}
 
 	// Never replace a healthy runtime before the replacement is validated:
@@ -662,6 +688,75 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 
 func (a *Agent) markForwardError(forwardID int, code string) {
 	a.log.Warn("runtime", "forward %d unhealthy: %s", forwardID, code)
+}
+
+// portHolder returns the live runtime of another forward that listens on port
+// with a transport overlapping transport, or nil.
+func (a *Agent) portHolder(forwardID, port int, transport string) *runtimeState {
+	a.mu.Lock()
+	states := make([]*runtimeState, 0, len(a.runtimes))
+	for _, state := range a.runtimes {
+		states = append(states, state)
+	}
+	a.mu.Unlock()
+	for _, state := range states {
+		if state.forward.ForwardID == forwardID || state.forward.ListenPort != port {
+			continue
+		}
+		if transportsOverlap(state.forward.Transport, transport) && state.proc.alive() {
+			return state
+		}
+	}
+	return nil
+}
+
+// desiredClaims reports whether the Panel still wants forward forwardID on
+// port with an overlapping transport, so its runtime keeps that port.
+func (a *Agent) desiredClaims(forwardID, port int, transport string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	forward, listed := a.forwards[forwardID]
+	if !listed {
+		return false
+	}
+	if generation, stopped := a.panelStopped[forwardID]; stopped && generation == policyGenerationOf(forward) {
+		return false
+	}
+	return forward.ListenPort == port && transportsOverlap(forward.Transport, transport)
+}
+
+func (a *Agent) gatewayRelayRunning() bool {
+	a.mu.Lock()
+	manager := a.gateway
+	a.mu.Unlock()
+	if manager == nil {
+		return false
+	}
+	manager.mu.Lock()
+	relay := manager.primary.relay
+	manager.mu.Unlock()
+	return relay != nil && relay.alive()
+}
+
+// transportUses maps a forward transport to the socket kinds its runtime binds
+// on the listen port; an empty transport is the tcp+udp default.
+func transportUses(transport string) (tcp, udp bool) {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "tcp":
+		return true, false
+	case "udp":
+		return false, true
+	default:
+		return true, true
+	}
+}
+
+// transportsOverlap reports whether two forwards on one port would bind the
+// same socket kind: a tcp-only and a udp-only forward can share a port.
+func transportsOverlap(first, second string) bool {
+	firstTCP, firstUDP := transportUses(first)
+	secondTCP, secondUDP := transportUses(second)
+	return (firstTCP && secondTCP) || (firstUDP && secondUDP)
 }
 
 // contractSignature captures exactly the inputs that require a runtime
