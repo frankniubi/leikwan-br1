@@ -150,6 +150,27 @@ class UltraUsageHeartbeatTest {
     }
 
     @Test
+    fun `heartbeat hands a panel refresh action out once`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"ok":true,"ultra_actions":[
+                   {"forward_id":408,"policy_generation":"","action":"refresh","reason":"credential_refreshed"},
+                   {"forward_id":409,"policy_generation":"$generation","action":"stop","reason":"traffic_limit"},
+                   {"forward_id":0,"action":"refresh"},
+                   {"forward_id":457,"action":"REFRESH"}]}""",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("""{"ok":true}"""))
+
+        assertTrue(repository.heartbeat())
+        assertEquals(setOf(408L, 457L), repository.takeUltraRefreshRequests())
+        assertEquals(emptySet<Long>(), repository.takeUltraRefreshRequests())
+        // A panel that sends no actions (older panels) asks for nothing.
+        assertTrue(repository.heartbeat())
+        assertEquals(emptySet<Long>(), repository.takeUltraRefreshRequests())
+    }
+
+    @Test
     fun `heartbeat carries the redacted runtime status of every live forward`() = runBlocking {
         File(statusDir, "forward-170-cccccccccccc.status.json").writeText(
             """{"forward_id":170,"policy_generation":"$generation","state":"degraded","updated_at":"2029-12-31T23:59:30Z",

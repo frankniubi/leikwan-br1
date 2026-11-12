@@ -121,7 +121,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         relayProbe.start()
         startRuntimeWatchdog()
         if let client = launch.panel?.makeClient() {
-            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
+            let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger, onUltraRefresh: { [weak self] forwardIDs in self?.ultraLeases?.requestRefresh(forwardIDs) }) { [weak self] alert in
                 self?.handleTerminal(alert)
             }
             controlLoop = loop
@@ -331,7 +331,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             controlLoop?.stop()
             controlLoop = nil
             if let client = next.panel?.makeClient() {
-                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger) { [weak self] alert in
+                let loop = TunnelControlLoop(client: client, usageLedger: usageLedger, feedbackLedger: feedbackLedger, onUltraRefresh: { [weak self] forwardIDs in self?.ultraLeases?.requestRefresh(forwardIDs) }) { [weak self] alert in
                     self?.handleTerminal(alert)
                 }
                 controlLoop = loop

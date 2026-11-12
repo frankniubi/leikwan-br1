@@ -510,6 +510,16 @@ class PanelRepository(
 
     fun getCachedNativeOutbound(): NativeOutboundCapability? = cachedNativeOutbound
 
+    private val pendingUltraRefreshForwards: MutableSet<Long> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Forwards the last heartbeats asked to lease again; each is handed out once. */
+    fun takeUltraRefreshRequests(): Set<Long> {
+        val taken = pendingUltraRefreshForwards.toSet()
+        pendingUltraRefreshForwards.removeAll(taken)
+        return taken
+    }
+
     /**
      * Returns false for a transient failure. A terminal control or a full online device limit is
      * thrown instead, so the caller can tell "panel unreachable" from "panel refused this device".
@@ -538,6 +548,9 @@ class PanelRepository(
             }
             if (feedback.isNotEmpty() && response.ok) {
                 runCatching { feedbackLedger?.acknowledge(feedback) }
+            }
+            if (response.ok) {
+                pendingUltraRefreshForwards.addAll(response.ultraRefreshForwardIds())
             }
             response.ok.also { ok -> if (ok) DeviceLimitGate.clear() }
         } catch (e: CancellationException) {

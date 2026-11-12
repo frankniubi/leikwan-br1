@@ -225,6 +225,10 @@ class TunnelOrchestrator internal constructor(
 
     /** Forward whose runtime reported a credential-suspect failure; 0 when none is pending. */
     private val ultraFailureRenewalForward = AtomicLong(0L)
+
+    /** Forwards the panel asked to lease again (heartbeat `refresh` action). */
+    private val ultraPanelRefreshForwards: MutableSet<Long> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val controlScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val controlLoop by lazy {
         ClientControlLoop(
@@ -239,6 +243,7 @@ class TunnelOrchestrator internal constructor(
                     refused = limit
                     false
                 }
+                ultraPanelRefreshForwards.addAll(panelRepo.takeUltraRefreshRequests())
                 try {
                     refreshUltraIfDue()
                     refreshNativeIfDue()
@@ -1024,6 +1029,7 @@ class TunnelOrchestrator internal constructor(
         if (pending != 0L && pending != main.forwardId && pending !in extras) {
             ultraFailureRenewalForward.compareAndSet(pending, 0L)
         }
+        ultraPanelRefreshForwards.retainAll(extras.keys + main.forwardId)
         // Every runtime gets its turn: one line failing to renew must not starve the others.
         var failure: Exception? = null
         for (active in listOf(main) + extras.values.map { it.active }) {
@@ -1057,7 +1063,10 @@ class TunnelOrchestrator internal constructor(
         mainForwardId: Long,
         now: Instant,
     ): Boolean {
-        val failureDriven = ultraFailureRenewalForward.compareAndSet(active.forwardId, 0L)
+        // A panel refresh is the same event seen from the other side: the credential in the
+        // installed lease was replaced. It takes the failure-driven path.
+        val panelRequested = ultraPanelRefreshForwards.remove(active.forwardId)
+        val failureDriven = ultraFailureRenewalForward.compareAndSet(active.forwardId, 0L) || panelRequested
         val renewalDue = !now.isBefore(active.policy.renewAfter.minusSeconds(ULTRA_RENEW_MARGIN_SECONDS))
         val lostPolicy = runtimeLostPolicy(active)
         if (!renewalDue && !failureDriven && !active.runtimeRestartPending && !lostPolicy) return false

@@ -46,6 +46,8 @@ final class UltraLeaseManager {
     private var alerts: [Int64: String] = [:]
     /// Forward id → (lease hash → "ip:port") of the last delivered candidates.
     private var candidateEndpoints: [Int64: [String: String]] = [:]
+    /// Forward id -> when the panel last asked for it to be leased again.
+    private var refreshRequests: [Int64: Date] = [:]
 
     init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, restartBootstrap: @escaping (UltraForwardLaunch, ExternalUotGrant?) throws -> Void, onUnusable: @escaping UnusableHandler) {
         self.client = client
@@ -91,6 +93,26 @@ final class UltraLeaseManager {
         wakeup.fire()
     }
 
+    /// The panel reports that a line refresh replaced the credential inside these forwards'
+    /// installed leases. Their loops lease again now instead of at the next renewal.
+    func requestRefresh(_ forwardIDs: [Int64]) {
+        let mine = Set(forwards.map { $0.forwardID })
+        let now = Date()
+        lock.lock()
+        for forwardID in forwardIDs where mine.contains(forwardID) { refreshRequests[forwardID] = now }
+        lock.unlock()
+        wakeup.fire()
+    }
+
+    /// True once per request, and only for a request newer than the delivered lease: one that
+    /// was already answered by a renewal in between is dropped.
+    private func takeRefreshRequest(_ forwardID: Int64, leaseSentAt: Date) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let requestedAt = refreshRequests.removeValue(forKey: forwardID) else { return false }
+        return requestedAt > leaseSentAt
+    }
+
     /// Captures the final usage counters of these runtimes, then deletes their status files
     /// (Android `UltraUsageLedger.captureBeforeDelete`). Call while the runtimes are stopped:
     /// before starting them and after stopping them. Control sockets are removed by the runtime.
@@ -128,12 +150,16 @@ final class UltraLeaseManager {
                 let status = UltraRuntimeStatus.read(path: forward.statusPath)
                 let lost = sinceSent >= 5 && UltraLeaseSchedule.runtimeLostPolicy(status, leaseSentAt: current.sentAt)
                 let scheduleDue = UltraLeaseSchedule.renewalDue(current.policy)
-                if !lost && !(scheduleDue && sinceSent >= interval) {
+                let requested = takeRefreshRequest(forward.forwardID, leaseSentAt: current.sentAt)
+                if !lost && !requested && !(scheduleDue && sinceSent >= interval) {
                     let wait = scheduleDue
                         ? max(1, interval - sinceSent)
                         : UltraLeaseSchedule.nextCheckDelay(current.policy)
                     await pause(seconds: wait)
                     continue
+                }
+                if requested {
+                    TunnelLog.shared.write("ultra forward \(forward.forwardID): panel replaced a line credential, delivering a fresh lease")
                 }
                 if lost {
                     TunnelLog.shared.write("ultra forward \(forward.forwardID): runtime reports \(status?.policyState.rawValue ?? "?"), delivering a fresh lease")

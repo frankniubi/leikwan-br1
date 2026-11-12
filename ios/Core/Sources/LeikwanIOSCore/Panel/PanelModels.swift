@@ -75,10 +75,15 @@ public struct HeartbeatResponse: Equatable {
     public let ok: Bool
     /// Absent on older panels: then `ok` acknowledges the usage batch.
     public let ultraUsageAcknowledged: Bool?
+    /// Forwards the panel wants leased again (`ultra_actions` with action `refresh`): a line
+    /// refresh replaced the credential inside the installed lease without moving the policy
+    /// generation, so nothing else would renew it. Empty on older panels.
+    public let ultraRefreshForwardIDs: [Int64]
 
-    public init(ok: Bool, ultraUsageAcknowledged: Bool?) {
+    public init(ok: Bool, ultraUsageAcknowledged: Bool?, ultraRefreshForwardIDs: [Int64] = []) {
         self.ok = ok
         self.ultraUsageAcknowledged = ultraUsageAcknowledged
+        self.ultraRefreshForwardIDs = ultraRefreshForwardIDs
     }
 
     public var usageAcknowledged: Bool { return ultraUsageAcknowledged ?? ok }
@@ -87,8 +92,22 @@ public struct HeartbeatResponse: Equatable {
         guard let obj = JSONLenient.parseObject(data) else { return nil }
         return HeartbeatResponse(
             ok: JSONLenient.bool(obj["ok"]) ?? false,
-            ultraUsageAcknowledged: JSONLenient.bool(obj["ultra_usage_acknowledged"])
+            ultraUsageAcknowledged: JSONLenient.bool(obj["ultra_usage_acknowledged"]),
+            ultraRefreshForwardIDs: refreshForwardIDs(obj["ultra_actions"])
         )
+    }
+
+    private static func refreshForwardIDs(_ value: Any?) -> [Int64] {
+        var ids: [Int64] = []
+        for item in JSONLenient.array(value).prefix(32) {
+            guard let action = JSONLenient.object(item),
+                  JSONLenient.string(action["action"])?.lowercased() == "refresh",
+                  let forwardID = JSONLenient.int64(action["forward_id"]), forwardID > 0,
+                  !ids.contains(forwardID)
+            else { continue }
+            ids.append(forwardID)
+        }
+        return ids
     }
 }
 
