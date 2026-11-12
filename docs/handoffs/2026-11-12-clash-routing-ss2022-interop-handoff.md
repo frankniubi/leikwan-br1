@@ -113,3 +113,25 @@ php -d extension=openssl -d extension=pdo_sqlite master/tests/hosted_node_spec_t
 - 生产冻结令（用户 2026-11-11 下达）在本 handoff 写就时仍有效——不要 SSH 面板/171/任何线上机器
 - CI 走 GitHub Actions（sanitized snapshot 流程推 `codex/macos-client`；本机代理端口可能变动——检查 `netstat -ano | grep LISTENING | grep sing-box` 对应端口）
 - 本机代理曾从 2080 变 2082（sing-box 重启），git/curl 的 `http.proxy` 参数要跟着改
+
+## Addendum (2026-11-12 afternoon): client 47 Taiwan outages, failover/reporting fixes
+
+Trigger: OpenWrt router client 47 (GL-MT3600BE, user 74) had ~26 min of 1-5 min outages overnight while leases were valid; errors were relay handshake timeouts (`stream handshake failed after greeting fallback ... context deadline exceeded`).
+
+| Commit | What |
+|---|---|
+| 851e14db | leikwand 1.2.9: tmpfs trace of leikwand+runtime logd lines (2x1.5 MiB), debug bundle carries trace + runtime status.json |
+| c40ed2c1 | manifest: arm64 leikwand ipk/apk -> 1.2.9 (**published on prod 05:19Z**, backup+ROLLBACK.sh in /root/codex-backups/openwrt-leikwand-1.2.9-20261112-0519/) |
+| 37a40cb3 | ultra-client: staggered candidate dial (each attempt up to 3 s), skip fake greeting fallback, port-forward candidate_feedback, per-relay health key (candidate_key_hash is per line, up to 3 sibling relays) |
+| d7da8420 | leikwand: ultra_status in heartbeat (panel contract) |
+| 805520c0 | panel: interleave lease candidates line-first; policy generation no longer hashes per-download material (root cause of 4-8 min generation churn); per-forward generation serial |
+| 8b2fa341 | Linux client-agent: candidate feedback freshness (5 min) + dedupe |
+| b69fea10 | Android + iOS: ultra_status + ultra_candidate_feedback in heartbeats |
+| 47329e53 | test alignment for 1b6989fd platform normalization |
+
+CI: snapshot e09bff54 / 4368dad6 on codex/macos-client, ci/ios-rule-lists, ci/openwrt-router-edition (31be82df) — all workflows green.
+
+Not done / needs the owner's go-ahead:
+- Panel deploy of 805520c0 (rotates every Ultra generation once -> every runtime re-probes; deploy at a quiet hour).
+- Runtime release for all OSes (ultra-client changed -> attested runtime rollover per runtime-release-attestation memory), plus Android/iOS/desktop/Linux/OpenWrt client releases. Optional updates only.
+- Client 47 router never self-updates (auto_update likely 0); customer must run the manual opkg install of leikwand 1.2.9; then open a debug collection after the next outage.
