@@ -285,6 +285,24 @@ final class PanelTests: XCTestCase {
         XCTAssertNil(empty["ultra_usage"])
     }
 
+    func testHeartbeatResponseNamesForwardsToLeaseAgain() throws {
+        let body = """
+        {"ok":true,"ultra_usage_acknowledged":true,"ultra_actions":[
+         {"forward_id":408,"policy_generation":"","action":"refresh","reason":"credential_refreshed"},
+         {"forward_id":409,"policy_generation":"abc","action":"stop","reason":"traffic_limit"},
+         {"forward_id":0,"action":"refresh"},
+         {"forward_id":408,"action":"refresh"},
+         {"forward_id":"457","action":"REFRESH"},
+         "junk"]}
+        """
+        let response = try XCTUnwrap(HeartbeatResponse.parse(Data(body.utf8)))
+        XCTAssertEqual(response.ultraRefreshForwardIDs, [408, 457])
+        XCTAssertTrue(response.usageAcknowledged)
+        // Older panels send no actions.
+        let plain = try XCTUnwrap(HeartbeatResponse.parse(Data("{\"ok\":true}".utf8)))
+        XCTAssertEqual(plain.ultraRefreshForwardIDs, [])
+    }
+
     func testUltraLeaseRequestThroughClient() async throws {
         let leaseBody = try CanonicalJSON.string(["ok": true, "leases": [Fixtures.leaseJSON()]] as [String: Any])
         let transport = MockPanelTransport([.respond(200, leaseBody)])

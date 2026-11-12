@@ -371,6 +371,7 @@ final class ServiceController extends BaseController
             'forward_route_not_allowed' => 422,
             'forward_route_has_no_enabled_combination' => 422,
             'forward_target_not_allowed' => 422,
+            'listen_port_conflict' => 409,
             'feature_denied_manage_forwards' => 403,
             'feature_denied_delete_forwards' => 403,
             'feature_denied_rotate_client_token' => 403,

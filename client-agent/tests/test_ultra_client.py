@@ -129,6 +129,24 @@ class UltraClientLeaseTests(unittest.TestCase):
             })
         stop.assert_not_called()
 
+    def test_panel_refresh_action_makes_the_forward_due_for_renewal(self):
+        agent = MODULE.ClientAgent.__new__(MODULE.ClientAgent)
+        agent.latest_forwards = [{
+            "forward_id": 42,
+            "backend_mode": "ultra",
+            "ultra_access": {"policy_generation": "a" * 64},
+        }]
+        agent._ultra_renew_schedule = {42: 9_999_999_999.0, 43: 9_999_999_999.0}
+        with mock.patch.object(agent, "stop_forward") as stop:
+            agent.apply_ultra_actions({
+                "ultra_actions": [
+                    {"forward_id": 42, "policy_generation": "", "action": "refresh", "reason": "credential_refreshed"},
+                    {"forward_id": 77, "policy_generation": "", "action": "refresh"},
+                ]
+            })
+        stop.assert_not_called()
+        self.assertEqual({42: 0.0, 43: 9_999_999_999.0}, agent._ultra_renew_schedule)
+
     def test_resolve_is_one_authenticated_batch_after_config_pull(self):
         forwards = [
             {

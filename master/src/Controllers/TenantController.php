@@ -1661,7 +1661,7 @@ final class TenantController extends BaseController
     /**
      * OpenWrt card for the app center.
      *
-     * The router edition (leikwand 1.2.10) onboards exactly like the headless
+     * The router edition (leikwand 1.2.11) onboards exactly like the headless
      * clients: paste the panel-issued client id and agent token into LuCI (or
      * run `leikwand ctl register` over SSH). The card renders the install
      * command for the router's architecture, firmware generation and a
@@ -1690,11 +1690,11 @@ final class TenantController extends BaseController
         if ($hasClient) {
             $register = ' && leikwand ctl register client_id=' . $clientId . ' agent_token=' . $this->shellQuote($agentToken);
             $amd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.10-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.11-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.10-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             $arm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.10-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.10-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/luci-app-leikwan_1.1.1-r1_all.ipk') . $register;
             // OpenWrt 25.12 replaced opkg with apk, and apk cannot consume
@@ -1706,7 +1706,7 @@ final class TenantController extends BaseController
             // local paths. The panel's download is hash-pinned and served
             // over HTTPS; --allow-untrusted only skips feed-index signing,
             // which a local file install does not have anyway.
-            $amd64ApkFiles = ['leikwand-1.2.10-r1.apk', 'leikwan-runtime-1.2.10-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
+            $amd64ApkFiles = ['leikwand-1.2.11-r1.apk', 'leikwan-runtime-1.2.10-r1.apk', 'luci-app-leikwan-1.1.1-r1.apk'];
             $arm64ApkFiles = $amd64ApkFiles;
             $amd64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/amd64', $amd64ApkFiles) . $register;
             $arm64ApkCommand = $this->apkInstallCommand($ipkBase . '/apk/arm64', $arm64ApkFiles) . $register;
@@ -1715,10 +1715,10 @@ final class TenantController extends BaseController
             // backend). Old devices get the core packages only — the SSH
             // command-line journey (register/forwards/logs) works everywhere.
             $legacyAmd64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.10-r1_x86_64.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/amd64/leikwand_1.2.11-r1_x86_64.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/amd64/leikwan-runtime_1.2.10-r1_x86_64.ipk') . $register;
             $legacyArm64Command = 'opkg update && opkg install '
-                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.10-r1_aarch64_generic.ipk') . ' '
+                . $this->shellQuote($ipkBase . '/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk') . ' '
                 . $this->shellQuote($ipkBase . '/arm64/leikwan-runtime_1.2.10-r1_aarch64_generic.ipk') . $register;
         } else {
             $amd64Command = $ipkBase . '/amd64/';
@@ -1753,7 +1753,7 @@ final class TenantController extends BaseController
 
         return '<section class="tenant-client-install__platform" data-openwrt-install>'
             . '<strong>' . $this->platformIcon('openwrt')
-            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.10)', 'openwrt_leikwand')) . '</strong>'
+            . $this->escape($this->clientAppReleaseLabel('OpenWrt 路由器 (leikwand 1.2.11)', 'openwrt_leikwand')) . '</strong>'
             // Collapsed like the other platforms: the title stays visible, every
             // command opens on demand.
             . '<details style="margin-top:10px;"><summary>一键安装命令 · 复制即用</summary>'
@@ -4023,6 +4023,7 @@ final class TenantController extends BaseController
                 'service_inactive' => 'This service is inactive.',
                 'forward_version_conflict' => 'This forward changed in another request. Reload it and try again.',
                 'forward_target_not_allowed' => 'This route only accepts target IP addresses on its allowlist.',
+                'listen_port_conflict' => 'Another forward on this account already uses this local listen port. Choose a different listen port.',
                 'forward_route_not_allowed' => 'This route is no longer included in your plan.',
                 'insufficient_balance' => 'Top up your wallet before starting this forward.',
                 'user_auth_failed' => 'Your session is no longer active. Sign in again.',
