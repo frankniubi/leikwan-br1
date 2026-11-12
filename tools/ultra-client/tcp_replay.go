@@ -141,7 +141,7 @@ func copyOutboundWithPrelude(destination net.Conn, source net.Conn, limiter *Pol
 // dialReplayCandidate opens host:port on the first authorized, healthy TCP
 // candidate whose path is not excludedPathKey. A dial failure happens before
 // any byte is written, so it moves on to the next candidate as setup does.
-func dialReplayCandidate(ctx context.Context, s *PolicyStore, excludedPathKey, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
+func dialReplayCandidate(ctx context.Context, s *PolicyStore, excludedPathKey, host string, port int, total time.Duration, dial candidateStreamDial, onFailure candidateFailureHook) (net.Conn, RuntimeSnapshot, error) {
 	if s == nil || dial == nil || excludedPathKey == "" {
 		return nil, RuntimeSnapshot{}, errHACandidatesUnavailable
 	}
@@ -187,7 +187,10 @@ func dialReplayCandidate(ctx context.Context, s *PolicyStore, excludedPathKey, h
 			connection.Close()
 		}
 		s.FailCandidate("tcp", ss.Lease)
-		log.Printf("tcp replay candidate failed forward_id=%d selection_ref=%s reason=%s candidate_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, haErrorClass(err), ss.Lease.CandidateKeyHash)
+		log.Printf("tcp replay candidate failed forward_id=%d selection_ref=%s reason=%s error=%q candidate_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, haErrorClass(err), boundedStatusText(fmt.Sprint(err), 160), ss.Lease.CandidateKeyHash)
+		if onFailure != nil {
+			onFailure(ss, err)
+		}
 		last = err
 	}
 	if last != nil {
@@ -218,7 +221,7 @@ func tcpReplayDialerFor(config Config, store *PolicyStore, status *StatusWriter,
 	timeout := time.Duration(config.ConnectTimeoutSecs) * time.Second
 	return func(ctx context.Context, excludedPathKey string) (net.Conn, relayIdentity, func(), error) {
 		started := time.Now()
-		remote, snapshot, err := dialReplayCandidate(ctx, store, excludedPathKey, host, port, timeout, dial)
+		remote, snapshot, err := dialReplayCandidate(ctx, store, excludedPathKey, host, port, timeout, dial, fixedTargetFailureFeedback(status, "tcp"))
 		if err != nil {
 			return nil, relayIdentity{}, nil, err
 		}

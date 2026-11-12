@@ -2,12 +2,14 @@
 declare(strict_types=1);
 
 /**
- * A line-material refresh moves a forward's policy_generation while the client
- * still leases against the generation it pulled before the refresh, which the
+ * A change of a forward's relay paths (a line re-acquired with different relay
+ * endpoints, or a line whose material lapsed) moves its policy_generation while
+ * the client still leases against the generation it pulled before, which the
  * lease plane answered with policy_generation_invalid (409) until the next pull.
- * The broker now names the pre-refresh generation as leasable for a short window,
- * but only when the client's own ticket proves the line material was the only
- * thing that changed. Driven through the real broker and material service.
+ * The broker now names the previous generation as leasable for a short window,
+ * but only when the client's own ticket proves the relay paths were the only
+ * thing that changed. A refresh that only rotates the credential does not move
+ * the generation at all. Driven through the real broker and material service.
  */
 
 namespace Leikwan\Master\Database {
@@ -95,7 +97,11 @@ namespace {
     $materials = new UltraMaterialService($config, new Database(), null, $now);
     $broker = new LeigodTokenBroker($config, null, $materials, $now);
 
-    $upload = static function (string $generation, string $credential) use ($materials, &$clock): void {
+    $upload = static function (
+        string $generation,
+        string $credential,
+        array $relays = [['ip' => '203.0.113.20', 'port' => 5438]],
+    ) use ($materials, &$clock): void {
         $ticket = $materials->issueUploadTicket('source-a', [453]);
         $accepted = $materials->acceptSourceUpload('source-a', $ticket, [[
             'line_id' => 453,
@@ -104,7 +110,7 @@ namespace {
             'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 1200),
             'user' => 'line-user',
             'credential' => $credential,
-            'relays' => [['ip' => '203.0.113.20', 'port' => 5438]],
+            'relays' => $relays,
             'probe' => ['ok' => true],
         ]]);
         assertGrace($accepted === [453], 'material ' . $generation . ' was not accepted');
@@ -154,15 +160,27 @@ namespace {
     $oldExpiry = strtotime((string) $before['expires_at']);
     assertGrace(!isset($before['previous_generation_grace']), 'a plain pull must not carry a grace');
 
-    // The source refreshes the line a minute later: the forward's generation moves.
+    // 0. A refresh 30 seconds later that only rotates the credential (same
+    //    relays) keeps the generation: no grace is needed and none is named.
+    $clock = $start + 30;
+    $upload('material-generation-1b', '1111222233334444');
+    $rotated = $grantFor($presenting($forward, $before));
+    assertGrace($rotated['policy_generation'] === $oldGeneration, 'a credential-only refresh moved the generation');
+    assertGrace(!isset($rotated['previous_generation_grace']), 'a credential-only refresh must not need a grace');
+
+    // The source refreshes the line a minute later with a different relay
+    // endpoint: the forward's paths changed, so its generation moves.
     $clock = $start + 60;
-    $upload('material-generation-2', '6543210987654321');
+    $upload('material-generation-2', '6543210987654321', [
+        ['ip' => '203.0.113.20', 'port' => 5438],
+        ['ip' => '203.0.113.30', 'port' => 5440],
+    ]);
 
     // 1. Inside the window, the pre-refresh generation is named as leasable.
     $after = $grantFor($presenting($forward, $before));
     assertGrace($after['policy_generation'] !== $oldGeneration, 'the refresh did not move the generation');
     $grace = $after['previous_generation_grace'] ?? null;
-    assertGrace(is_array($grace), 'a material-only refresh inside the window must grant the previous generation');
+    assertGrace(is_array($grace), 'a path-only change inside the window must grant the previous generation');
     assertGrace($grace['policy_generation'] === $oldGeneration, 'the grace must name the presented generation');
     $graceUntil = strtotime((string) $grace['expires_at']);
     assertGrace($graceUntil !== false && $graceUntil <= $oldExpiry, 'the grace must not outlive the presented ticket');
@@ -208,10 +226,57 @@ namespace {
     assertGrace(!isset($revoked['previous_generation_grace']), 'a revoked generation must never be granted a grace');
     Database::$revokedRows = [];
 
-    // 9. After the window: refused.
+    // 9. After the window (past both changed_at and ticket issued_at): refused.
     $clock = $start + 60 + UltraMode::PREVIOUS_GENERATION_GRACE_SECONDS + 1;
     $late = $grantFor($presenting($forward, $before));
     assertGrace(!isset($late['previous_generation_grace']), 'the grace must end with its window');
+
+    // 10. Expiring-line dropout: when a combo has two lines and one line's
+    // material expires without any new upload (so changed_at stays far in the
+    // past), a ticket minted just before the dropout still earns grace up to
+    // PREVIOUS_GENERATION_GRACE_SECONDS from its own issued_at.
+    $clock = $start + 2000;
+    $ticketA = $materials->issueUploadTicket('source-a', [453, 916]);
+    $materials->acceptSourceUpload('source-a', $ticketA, [
+        [
+            'line_id' => 453,
+            'generation' => 'stable-453',
+            'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock - 500),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 1200),
+            'user' => 'u453',
+            'credential' => '1234567890123456',
+            'relays' => [['ip' => '203.0.113.20', 'port' => 5438]],
+        ],
+        [
+            'line_id' => 916,
+            'generation' => 'expiring-916',
+            'acquired_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock - 500),
+            'expires_at' => gmdate('Y-m-d\\TH:i:s\\Z', $clock + 40),
+            'user' => 'u916',
+            'credential' => '1234567890123456',
+            'relays' => [['ip' => '203.0.113.21', 'port' => 5438]],
+        ],
+    ]);
+    $twoLineForward = $forward;
+    $twoLineForward['_ultra_line_ids'] = [453, 916];
+    $twoLineForward['_ultra_lines'][] = [
+        'ultra_line_id' => 11,
+        'line_id' => 916,
+        'source_id' => 'source-a',
+        'ingress_zone' => 'shanghai',
+        'destination_zone' => 'tokyo',
+        'sort_order' => 20,
+    ];
+    $preDropout = $grantFor($twoLineForward);
+    // Advance 50s: line 916 has expired (dropped out of snapshot), while line 453
+    // was acquired 550s ago (> 300s). Ticket was issued 50s ago, so grace applies.
+    $clock += 50;
+    $postDropout = $grantFor($presenting($twoLineForward, $preDropout));
+    assertGrace(
+        isset($postDropout['previous_generation_grace'])
+            && $postDropout['previous_generation_grace']['policy_generation'] === $preDropout['policy_generation'],
+        'expiring-line dropout must still honour a recently issued ticket within the grace window'
+    );
 
     fwrite(STDOUT, 'ok' . PHP_EOL);
     exit(0);

@@ -695,11 +695,24 @@ func (s *PolicyStore) HasValid() bool {
 
 // MarkCandidateFailure records a classified local data-plane failure. The
 // second consecutive failure isolates that candidate for new streams while
-// preserving the existing connection that already holds its snapshot.
-func (s *PolicyStore) MarkCandidateFailure(candidateKeyHash string) bool {
+// preserving the existing connection that already holds its snapshot. The
+// reference must name one relay (see findCandidateIdentityLocked); callers that
+// hold the failed lease use MarkCandidateLeaseFailure.
+func (s *PolicyStore) MarkCandidateFailure(reference string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.findCandidateIdentityLocked(candidateKeyHash)
+	return s.markCandidateFailureLocked(s.findCandidateIdentityLocked(reference))
+}
+
+// MarkCandidateLeaseFailure is MarkCandidateFailure for the exact relay a
+// failed lease snapshot points at.
+func (s *PolicyStore) MarkCandidateLeaseFailure(lease ProviderLease) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.markCandidateFailureLocked(s.findCandidateIdentityLocked(providerLeaseIdentity(lease)))
+}
+
+func (s *PolicyStore) markCandidateFailureLocked(key string) bool {
 	if key == "" {
 		return false
 	}
@@ -726,10 +739,22 @@ func (s *PolicyStore) MarkCandidateFailure(candidateKeyHash string) bool {
 
 // MarkCandidateSuccess clears local isolation after a successful canary or
 // data-plane setup and makes that candidate preferred for new streams.
-func (s *PolicyStore) MarkCandidateSuccess(candidateKeyHash string) {
+func (s *PolicyStore) MarkCandidateSuccess(reference string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.findCandidateIdentityLocked(candidateKeyHash)
+	s.markCandidateSuccessLocked(s.findCandidateIdentityLocked(reference))
+}
+
+// MarkCandidateLeaseSuccess is MarkCandidateSuccess for the exact relay a
+// lease snapshot points at, so a success on one sibling relay neither clears
+// nor prefers another relay of the same line.
+func (s *PolicyStore) MarkCandidateLeaseSuccess(lease ProviderLease) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.markCandidateSuccessLocked(s.findCandidateIdentityLocked(providerLeaseIdentity(lease)))
+}
+
+func (s *PolicyStore) markCandidateSuccessLocked(key string) {
 	if key == "" {
 		return
 	}
@@ -772,25 +797,58 @@ func cloneProviderLease(lease ProviderLease) *ProviderLease {
 	return &copy
 }
 
+// providerLeaseIdentity names one candidate as one relay of one line: the relay
+// path (endpoint plus user, haPathKey) qualified by the line's
+// candidate_key_hash. The hash alone names a Panel LINE, and one line
+// contributes up to three relays (speed, test and spare IP) that share its
+// user, credential and hash. Keyed by the hash, a failure on the spare relay
+// isolated the line's other relays with it, and the attempted set of a stream
+// skipped every sibling of a failed relay. The hash still qualifies the path
+// because two lines may share a relay and username. Both parts survive a lease
+// refresh, unlike the selection ref. Panel feedback keeps reporting the
+// line-level hash; only local health and selection are per relay.
 func providerLeaseIdentity(lease ProviderLease) string {
+	identity := "path:" + haPathKey(lease)
 	if hash := normalizedLeaseHash(lease.CandidateKeyHash); hash != "" {
-		return "hash:" + hash
+		identity += "/line:" + hash
 	}
-	if reference := strings.TrimSpace(lease.SelectionRef); reference != "" {
-		return "ref:" + reference
-	}
-	return "endpoint:" + strings.ToLower(net.JoinHostPort(strings.TrimSpace(lease.IP), fmt.Sprint(lease.Port))) + "\x00" + strings.TrimSpace(string(lease.User))
+	return identity
 }
 
+// findCandidateIdentityLocked resolves a caller's reference to one relay
+// path. An exact path identity always resolves. A selection ref or a
+// candidate_key_hash resolves only when exactly one relay carries it: a line
+// hash shared by sibling relays is ambiguous, and guessing the first stored
+// sibling is what isolated a healthy relay instead of the failing one.
 func (s *PolicyStore) findCandidateIdentityLocked(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	byRef, byHash := "", ""
+	refs, hashes := 0, 0
 	for _, candidate := range s.candidates {
 		if candidate == nil {
 			continue
 		}
-		if value != "" && (strings.EqualFold(candidate.CandidateKeyHash, value) || strings.EqualFold(candidate.SelectionRef, value)) {
-			return providerLeaseIdentity(*candidate)
+		identity := providerLeaseIdentity(*candidate)
+		if value == identity {
+			return identity
 		}
+		if strings.EqualFold(candidate.SelectionRef, value) && byRef != identity {
+			byRef = identity
+			refs++
+		}
+		if strings.EqualFold(candidate.CandidateKeyHash, value) && byHash != identity {
+			byHash = identity
+			hashes++
+		}
+	}
+	if refs == 1 {
+		return byRef
+	}
+	if refs == 0 && hashes == 1 {
+		return byHash
 	}
 	return ""
 }

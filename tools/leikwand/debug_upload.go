@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
 
 const (
 	debugLogChunkBytes = 256 * 1024
-	debugLogByteLimit  = 4 * 1024 * 1024 // Router-side budget (well inside panel's 100 MiB cap).
+	debugLogByteLimit  = 8 * 1024 * 1024 // Router-side budget (well inside panel's 100 MiB cap).
 )
 
 var (
@@ -55,10 +56,23 @@ func (a *Agent) buildDebugLogBundle() []byte {
 		b.Write(diagJSON)
 		b.WriteByte('\n')
 	}
+	statuses := a.runtimeStatusFiles()
+	names := make([]string, 0, len(statuses))
+	for name := range statuses {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(&b, "=== runtime status %s ===\n%s\n", name, strings.TrimSpace(statuses[name]))
+	}
 	b.WriteString("=== in-memory events ===\n")
 	for _, ev := range a.log.Events(256) {
 		fmt.Fprintf(&b, "%s [%s] %s: %s\n",
 			ev.At.Format(time.RFC3339), strings.ToUpper(ev.Level), ev.Scope, ev.Message)
+	}
+	if trace := a.readTrace(); trace != "" {
+		b.WriteString("=== trace (leikwand + runtime lines kept in tmpfs) ===\n")
+		b.WriteString(trace)
 	}
 	if sysOut, err := runCommandFunc(2*time.Second, "logread", "-e", "leikwan"); err == nil && strings.TrimSpace(sysOut) != "" {
 		lines := strings.Split(sysOut, "\n")

@@ -88,7 +88,29 @@ $scope = [
 ];
 $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'generation-1');
 $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-a', 'generation-2');
-$reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'generation-3');
+$probation = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-b', 'generation-3');
+assertUltraPolicyGeneration(($probation['state'] ?? '') === 'probation', 'two observers must put the candidate on probation');
+// Probation serves exactly like healthy: rotating the generation for it only
+// made every runtime re-probe its candidates.
+$probationGrant = $broker->grantsForClientForwards(7, 'device-a', $forward, true)['42'] ?? [];
+assertUltraPolicyGeneration(
+    hash_equals($firstGeneration, (string) ($probationGrant['policy_generation'] ?? '')),
+    'probation rotated policy generation although no candidate left rotation'
+);
+// Canary successes move counters and timestamps on every probe; none of that
+// is eligibility.
+$reputation->observeSuccess($scope, 'observer-c', 'canary-1');
+$reputation->observeSuccess($scope, 'observer-d', 'canary-2');
+$now += 60;
+$canaryGrant = $broker->grantsForClientForwards(7, 'device-a', $forward, true)['42'] ?? [];
+assertUltraPolicyGeneration(
+    hash_equals($firstGeneration, (string) ($canaryGrant['policy_generation'] ?? '')),
+    'canary successes rotated policy generation'
+);
+$quarantined = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-e', 'generation-4');
+$quarantined = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-f', 'generation-5');
+$quarantined = $reputation->observeFailure($scope, 'relay_connect_timeout', 'observer-g', 'generation-6');
+assertUltraPolicyGeneration(($quarantined['state'] ?? '') === 'quarantined', 'independent failures must quarantine the candidate');
 $secondGrant = $broker->grantsForClientForwards(7, 'device-a', $forward, true)['42'] ?? [];
 $secondGeneration = (string) ($secondGrant['policy_generation'] ?? '');
 assertUltraPolicyGeneration($secondGeneration !== '' && !hash_equals($firstGeneration, $secondGeneration), 'quarantine did not rotate policy generation');

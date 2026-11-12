@@ -175,10 +175,18 @@ final class UltraCandidateReputationService
     }
 
     /**
-     * Return a deterministic fingerprint of the dynamic states that can
-     * change candidate eligibility. Failure counters alone are intentionally
-     * excluded; generation rotation occurs when a candidate enters/leaves
-     * probation or quarantine, not for every telemetry sample.
+     * Return a deterministic fingerprint of candidate ELIGIBILITY: whether each
+     * candidate is quarantined right now, which is the only dynamic state
+     * filterCandidates() acts on. The broker folds this value into
+     * policy_generation, and every generation change makes a runtime throw its
+     * candidate set away and probe again, so nothing else may move it.
+     *
+     * Healthy and probation serve identically, and the counters, streaks,
+     * observer counts, timestamps and backoff rung change on every telemetry
+     * sample (canary successes alone move consecutive_successes every probe).
+     * Hashing state, quarantine_until and backoff_level rotated the generation
+     * whenever a candidate stepped between healthy and probation or a failure
+     * decayed its rung, with no candidate ever entering or leaving rotation.
      *
      * @param array<int, array<string, mixed>> $scopes
      */
@@ -194,13 +202,7 @@ final class UltraCandidateReputationService
                 continue;
             }
             $candidateHash = self::candidateKeyHash($normalized);
-            $row = $this->stateFor($normalized);
-            $parts[$candidateHash] = implode(':', [
-                $candidateHash,
-                (string) ($row['state'] ?? self::STATE_HEALTHY),
-                (string) ((int) ($row['quarantine_until'] ?? 0)),
-                (string) ((int) ($row['backoff_level'] ?? 0)),
-            ]);
+            $parts[$candidateHash] = $candidateHash . ':' . ($this->isQuarantined($normalized) ? 'excluded' : 'eligible');
         }
         ksort($parts, SORT_STRING);
         return hash('sha256', $parts === [] ? 'empty' : implode('|', array_values($parts)));

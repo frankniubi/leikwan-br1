@@ -243,6 +243,7 @@ func (a *Agent) sendHeartbeat(ctx context.Context) error {
 		SupportsMPTCP: false,
 		UltraUsage:    usage.PendingUltra,
 		UltraFeedback: sentFeedback,
+		UltraStatus:   a.collectUltraStatus(time.Now()),
 	}
 	response, err := a.panel.Heartbeat(ctx, payload)
 	if err != nil {

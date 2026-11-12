@@ -21,6 +21,7 @@ final class UltraMaterialService
     private const TICKET_NONCE_PREFIX = 'ultra.source.tickets.v1.';
     private const CREDENTIAL_REJECTED_PREFIX = 'ultra.material.rejected.v1.';
     private const CREDENTIAL_REJECTED_EVIDENCE_PREFIX = 'ultra.material.rejected.evidence.v1.';
+    private const POLICY_GENERATION_SERIAL_PREFIX = 'ultra.policy.generation.serial.v1.forward.';
 
     /** @var callable(): int */
     private $clock;
@@ -335,15 +336,22 @@ final class UltraMaterialService
 
     /**
      * @param array<int, array{source_id:string,line_id:int}|int> $lineRefs
-     * @return array{line_ips:array<int,string>,fingerprint:string,expires_at:int,changed_at:int}|null
+     * @return array{line_ips:array<int,string>,fingerprint:string,path_fingerprint:string,expires_at:int,changed_at:int}|null
      *         changed_at is the newest acquisition time among the lines: the
      *         moment the fingerprint last moved because material was refreshed.
+     *
+     *         fingerprint moves with every acquisition (the source's material
+     *         generation hashes the credential), which is right for the v1
+     *         capability grant: it carries the material itself. path_fingerprint
+     *         only names the relay endpoints each line offers, in order, and is
+     *         what policy v2 folds into policy_generation (see LeigodTokenBroker).
      */
     public function lineSnapshot(array $lineRefs): ?array
     {
         $normalized = $this->normalizeLineRefs($lineRefs);
         $ips = [];
         $generations = [];
+        $paths = [];
         $expiryOfLines = [];
         $changedAt = 0;
         foreach ($normalized as $lineRef) {
@@ -356,6 +364,7 @@ final class UltraMaterialService
             $generations[] = $sourceId . ':' . $lineId . ':' . (string) ($material['generation'] ?? '');
             $expiryOfLines[] = $this->parseTimestamp((string) ($material['expires_at'] ?? '')) ?? 0;
             $changedAt = max($changedAt, $this->parseTimestamp((string) ($material['acquired_at'] ?? '')) ?? 0);
+            $endpoints = [];
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -363,8 +372,13 @@ final class UltraMaterialService
                 $ip = trim((string) ($relay['ip'] ?? ''));
                 if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false) {
                     $ips[$ip] = true;
+                    $port = (int) ($relay['port'] ?? 0);
+                    if ($port > 0 && $port <= 65535) {
+                        $endpoints[] = strtolower($ip) . '/' . $port;
+                    }
                 }
             }
+            $paths[] = $sourceId . ':' . $lineId . '=' . implode(',', $endpoints);
         }
         if ($ips === [] || $generations === [] || $expiryOfLines === []) {
             return null;
@@ -389,6 +403,7 @@ final class UltraMaterialService
         return [
             'line_ips' => array_slice(array_keys($ips), 0, 8),
             'fingerprint' => hash('sha256', implode('|', $generations)),
+            'path_fingerprint' => hash('sha256', "ultra-paths-v1\n" . implode('|', $paths)),
             'expires_at' => $expiresAt,
             'changed_at' => $changedAt,
         ];
@@ -414,12 +429,13 @@ final class UltraMaterialService
     /**
      * What a client's own session ticket says it was minted for, once the ticket
      * is proven to belong to this client, device and forward and to still be
-     * valid. Used to recognise a grant that was current until the line material
-     * was refreshed (see LeigodTokenBroker). Returns [] for anything else,
-     * including tickets minted before the revocation epoch was recorded in them:
-     * those can never be given the benefit of the doubt.
+     * valid. Used to recognise a grant that was current until the forward's
+     * relay paths changed (see LeigodTokenBroker). Returns [] for anything else,
+     * including tickets minted before the revocation epoch, the path
+     * fingerprint or the generation serial was recorded in them: those can
+     * never be given the benefit of the doubt.
      *
-     * @return array{policy_generation:string,material_fingerprint:string,revocation_epoch:int,expires_at:int,line_keys:array<int,string>}|array{}
+     * @return array{policy_generation:string,material_fingerprint:string,path_fingerprint:string,generation_serial:int,revocation_epoch:int,issued_at:int,expires_at:int,line_keys:array<int,string>}|array{}
      */
     public function presentedTicketScope(string $token, int $clientId, string $deviceId, int $forwardId): array
     {
@@ -433,6 +449,7 @@ final class UltraMaterialService
         $now = $this->now();
         $generation = strtolower(trim((string) ($payload['policy_generation'] ?? '')));
         $fingerprint = strtolower(trim((string) ($payload['material_fingerprint'] ?? '')));
+        $pathFingerprint = strtolower(trim((string) ($payload['path_fingerprint'] ?? '')));
         if (($payload['kind'] ?? '') !== 'client-access'
             || (int) ($payload['client_id'] ?? 0) !== $clientId
             || (int) ($payload['forward_id'] ?? 0) !== $forwardId
@@ -440,13 +457,19 @@ final class UltraMaterialService
             || (int) ($payload['expires_at'] ?? 0) <= $now
             || !array_key_exists('revocation_epoch', $payload)
             || preg_match('/^[a-f0-9]{64}$/', $generation) !== 1
-            || preg_match('/^[a-f0-9]{64}$/', $fingerprint) !== 1) {
+            || preg_match('/^[a-f0-9]{64}$/', $fingerprint) !== 1
+            || preg_match('/^[a-f0-9]{64}$/', $pathFingerprint) !== 1
+            || !is_int($payload['generation_serial'] ?? null)
+            || $payload['generation_serial'] < 0) {
             return [];
         }
         return [
             'policy_generation' => $generation,
             'material_fingerprint' => $fingerprint,
+            'path_fingerprint' => $pathFingerprint,
+            'generation_serial' => (int) $payload['generation_serial'],
             'revocation_epoch' => (int) $payload['revocation_epoch'],
+            'issued_at' => (int) ($payload['issued_at'] ?? 0),
             'expires_at' => (int) $payload['expires_at'],
             'line_keys' => $this->lineKeys(is_array($payload['lines'] ?? null) ? $payload['lines'] : []),
         ];
@@ -591,8 +614,8 @@ final class UltraMaterialService
             $transport = 'tcp+udp';
         }
         $candidateProtocol = $nativePurpose ? 'native_socks5' : $transport;
-        $candidates = [];
-        $fallbackRejectedCandidates = [];
+        $lineCandidates = [];
+        $fallbackRejectedLineCandidates = [];
         $seenCandidates = [];
         foreach ($this->normalizeClientScopeLines($payload) as $scopeLine) {
             $sourceId = (string) $scopeLine['source_id'];
@@ -604,6 +627,7 @@ final class UltraMaterialService
             }
             $material = $this->loadMaterial($sourceId, $lineId, true);
             $lineRejected = $this->credentialRejectedForMaterial($sourceId, $lineId, $material);
+            $relayCandidates = [];
             foreach ((array) ($material['relays'] ?? []) as $relay) {
                 if (!is_array($relay)) {
                     continue;
@@ -616,7 +640,16 @@ final class UltraMaterialService
                     || $port <= 0 || $port > 65535 || $user === '' || $credential === '') {
                     continue;
                 }
-                $selectionRef = $this->entryReference($token, [
+                // Not bound to the session ticket: a ticket is re-minted on
+                // every grant renewal, and a runtime proves a same-generation
+                // refresh is still its selected path by this reference (plus
+                // ip:port). Bound to the ticket it changed on every renewal and
+                // the runtime had to fall back to matching the material's user,
+                // which a credential refresh may rotate; the policy generation
+                // then had to move with every acquisition to keep refreshes
+                // acceptable, and every move re-probed the whole candidate set.
+                // Still scoped to this client, device, forward, line and relay.
+                $selectionRef = $this->selectionReference([
                     (string) $clientId,
                     (string) ($payload['device_hash'] ?? ''),
                     (string) $forwardId,
@@ -666,19 +699,26 @@ final class UltraMaterialService
                 if ($nativePurpose) {
                     $candidate['native_socks5_state'] = 'verified';
                 }
-                if ($lineRejected) {
-                    // A line whose current material is already awaiting a
-                    // credential_rejected refresh is placed behind healthy
-                    // lines so leases Issued during the source replacement
-                    // window do not keep handing out the dead relay/credential
-                    // first; single-line combos still keep it as fallback.
-                    $fallbackRejectedCandidates[] = $candidate;
-                } else {
-                    $candidates[] = $candidate;
-                }
+                $relayCandidates[] = $candidate;
+            }
+            if ($relayCandidates === []) {
+                continue;
+            }
+            if ($lineRejected) {
+                // A line whose current material is already awaiting a
+                // credential_rejected refresh is placed behind healthy
+                // lines so leases Issued during the source replacement
+                // window do not keep handing out the dead relay/credential
+                // first; single-line combos still keep it as fallback.
+                $fallbackRejectedLineCandidates[] = $relayCandidates;
+            } else {
+                $lineCandidates[] = $relayCandidates;
             }
         }
-        $candidates = array_merge($candidates, $fallbackRejectedCandidates);
+        $candidates = array_merge(
+            self::interleaveLineCandidates($lineCandidates),
+            self::interleaveLineCandidates($fallbackRejectedLineCandidates)
+        );
         if ($this->candidateDynamicQuarantineEnabled()) {
             $candidates = $this->candidateReputation->filterCandidates($candidates, 1);
         }
@@ -720,6 +760,42 @@ final class UltraMaterialService
             }
         }
         return $this->candidateReputation->snapshotFingerprint($scopes);
+    }
+
+    /**
+     * A per-forward serial that moves forward every time the content of the
+     * forward's policy generation changes, so a generation can never repeat.
+     *
+     * A runtime refuses a generation it has already left (ErrPolicyRollback,
+     * tools/ultra-client policy.go seenGens) for as long as it runs. While the
+     * generation hashed the per-acquisition credential it never came back, but
+     * a generation that covers only meaningful state does return to earlier
+     * values: a candidate leaves quarantine, a lapsed line is re-acquired with
+     * the relays it had. Folding this serial in makes every such change a new
+     * generation and leaves an unchanged forward on the one it has.
+     *
+     * Best effort: a failed write only means the next pull derives the same
+     * serial again from the stored state.
+     */
+    public function policyGenerationSerial(int $forwardId, string $contentHash): int
+    {
+        if ($forwardId <= 0 || $contentHash === '') {
+            return 0;
+        }
+        $key = self::POLICY_GENERATION_SERIAL_PREFIX . $forwardId;
+        $decoded = json_decode($this->settingGet($key, ''), true);
+        $stored = is_array($decoded) ? $decoded : [];
+        $serial = max(0, (int) ($stored['serial'] ?? 0));
+        if (hash_equals((string) ($stored['content'] ?? ''), $contentHash)) {
+            return $serial;
+        }
+        $serial++;
+        try {
+            $this->settingSet($key, json_encode(['content' => $contentHash, 'serial' => $serial], JSON_UNESCAPED_SLASHES) ?: '');
+        } catch (Throwable) {
+            // See above: the serial is re-derived from the stored state.
+        }
+        return $serial;
     }
 
     /**
@@ -958,6 +1034,56 @@ final class UltraMaterialService
             }
         }
         return array_values($result);
+    }
+
+    /**
+     * Order candidates line-first-relay-first: every line's primary relay, then
+     * every line's second relay, and so on, keeping the line order (preferred
+     * line first) and each line's own relay order.
+     *
+     * A lease batch is the first max_candidates (at most 4) entries of this
+     * list. Listed line by line, one line with three relays (speed_ip,
+     * test_speed_ip and a fail-over IP of the same LeiGod line, sharing one
+     * credential and one candidate_key_hash) took three of the four slots, so
+     * the runtime's four-way failover covered two lines and most retries went
+     * back to the line that had just failed. Offset 0 is unchanged.
+     *
+     * @param array<int, array<int, array<string, mixed>>> $lineCandidates
+     * @return array<int, array<string, mixed>>
+     */
+    private static function interleaveLineCandidates(array $lineCandidates): array
+    {
+        $result = [];
+        for ($rank = 0; ; $rank++) {
+            $added = false;
+            foreach ($lineCandidates as $relayCandidates) {
+                if (isset($relayCandidates[$rank])) {
+                    $result[] = $relayCandidates[$rank];
+                    $added = true;
+                }
+            }
+            if (!$added) {
+                return $result;
+            }
+        }
+    }
+
+    /**
+     * Opaque, stable reference to one relay of one line for one client device
+     * and forward. Unlike entryReference() it does not change with the session
+     * ticket or the line's material, so a runtime can recognise its selected
+     * path across grant renewals and credential refreshes.
+     *
+     * @param array<int, string> $scope
+     */
+    private function selectionReference(array $scope): string
+    {
+        $key = $this->keyMaterial();
+        if ($key === null) {
+            return '';
+        }
+        $derived = hash_hmac('sha256', "ultra-selection-ref-v2\n", $key, true);
+        return $this->base64UrlEncode(hash_hmac('sha256', implode("\n", $scope), $derived, true));
     }
 
     /** @param array<int, string> $scope */

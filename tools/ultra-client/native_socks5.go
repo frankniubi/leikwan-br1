@@ -331,6 +331,7 @@ type nativeSocks5UDPAssociation struct {
 	closed           bool
 	setupStarted     bool
 	candidateKeyHash string
+	pathIdentity     string
 	leaseHash        string
 	selectionRef     string
 	selectionTier    string
@@ -355,6 +356,7 @@ func (association *nativeSocks5UDPAssociation) markReady(session *DatagramSessio
 	}
 	association.session = session
 	association.candidateKeyHash = lease.CandidateKeyHash
+	association.pathIdentity = providerLeaseIdentity(lease)
 	association.leaseHash = lease.LeaseHash
 	association.selectionRef = lease.SelectionRef
 	association.selectionTier = lease.SelectionTier
@@ -442,7 +444,9 @@ func (association *nativeSocks5UDPAssociation) recordCandidateFailure(
 		if strings.TrimSpace(key) == "" {
 			key = association.selectionRef
 		}
-		runtime.store.MarkCandidateFailure(key)
+		// Isolate the relay this association used; the Panel feedback below
+		// keeps the line-level candidate_key_hash.
+		runtime.store.MarkCandidateFailure(association.pathIdentity)
 		if runtime.status != nil {
 			runtime.status.RecordCandidateFailure(key, protocol, reason, association.leaseHash)
 			runtime.status.RecordHAEvent(protocol, haErrorClass(err), association.policyGeneration)
@@ -700,7 +704,7 @@ func (runtime *nativeSocks5Runtime) handleTCPConnect(ctx context.Context, connec
 	}
 	defer lease.wipe()
 	defer remote.Close()
-	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
+	runtime.store.MarkCandidateLeaseSuccess(lease)
 	if err := writeNativeSocks5Reply(connection, nativeSocks5ReplySucceeded); err != nil {
 		return
 	}
@@ -976,7 +980,7 @@ func armNativeAssociationCandidates(
 		if strings.TrimSpace(key) == "" {
 			key = snapshot.Lease.SelectionRef
 		}
-		store.MarkCandidateFailure(key)
+		store.MarkCandidateLeaseFailure(snapshot.Lease)
 		if status != nil {
 			status.RecordCandidateFailure(key, "udp", udpArmFailureReason(err), snapshot.Lease.LeaseHash)
 			status.RecordHAEvent("udp", haErrorClass(err), snapshot.Policy.PolicyGeneration)
@@ -1023,7 +1027,7 @@ func (runtime *nativeSocks5Runtime) setupUDPAssociation(ctx context.Context, ass
 		runtime.status.UpdateUDPPayloadCeiling(normalizeRelayPayloadCeiling(lease.RelayPayloadCeiling), payloadCeilingSourceDeclared)
 		runtime.status.RecordCandidateSuccess(lease.CandidateKeyHash, "udp", lease.LeaseHash)
 	}
-	runtime.store.MarkCandidateSuccess(lease.CandidateKeyHash)
+	runtime.store.MarkCandidateLeaseSuccess(lease)
 	lease.wipe()
 	runtime.startNativeAssociationKeepalive(ctx, association)
 	for _, request := range association.takePending() {

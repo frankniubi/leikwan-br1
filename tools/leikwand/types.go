@@ -41,15 +41,15 @@ type ClientMeta struct {
 	DiagStatus         string               `json:"diag_status"`
 	DebugCollection    *DebugCollectionMeta `json:"debug_collection"`
 	AgentConfigJSON    json.RawMessage      `json:"agent_config_json"`
-	UpdateRequestToken string          `json:"agent_update_request_token"`
-	DesiredAgentVer    string          `json:"desired_agent_version"`
-	DesiredAgentSHA    string          `json:"desired_agent_sha256"`
-	DesiredAgentURL    string          `json:"desired_agent_url"`
-	DesiredUltraVer    string          `json:"desired_ultra_runtime_version"`
-	DesiredUltraSHA    string          `json:"desired_ultra_runtime_sha256"`
-	OnlineDeviceLimit  int             `json:"online_device_limit"`
-	ActiveOnlineDevice int             `json:"active_online_devices"`
-	CurrentDeviceID    string          `json:"current_device_id"`
+	UpdateRequestToken string               `json:"agent_update_request_token"`
+	DesiredAgentVer    string               `json:"desired_agent_version"`
+	DesiredAgentSHA    string               `json:"desired_agent_sha256"`
+	DesiredAgentURL    string               `json:"desired_agent_url"`
+	DesiredUltraVer    string               `json:"desired_ultra_runtime_version"`
+	DesiredUltraSHA    string               `json:"desired_ultra_runtime_sha256"`
+	OnlineDeviceLimit  int                  `json:"online_device_limit"`
+	ActiveOnlineDevice int                  `json:"active_online_devices"`
+	CurrentDeviceID    string               `json:"current_device_id"`
 }
 
 type ForwardConfig struct {
@@ -221,6 +221,42 @@ type HeartbeatPayload struct {
 	WireguardFallbackTCP int                      `json:"wireguard_fallback_tcp_port"`
 	UltraUsage           []UltraUsageSnapshot     `json:"ultra_usage"`
 	UltraFeedback        []UltraCandidateFeedback `json:"ultra_candidate_feedback"`
+	// UltraStatus is the per-forward runtime health the Panel stores in
+	// client_device_sessions.ultra_status_json (UltraClientStatusService::
+	// ingest). Always a list: an empty one clears a stale row, as on desktop.
+	UltraStatus []UltraStatusReport `json:"ultra_status"`
+}
+
+// UltraStatusReport carries exactly the fields the Panel normalizes from a
+// runtime status document. Credentials, endpoints, selection tiers, lease
+// hashes of the selections and the runtime attestation are never included.
+type UltraStatusReport struct {
+	ForwardID           int                   `json:"forward_id"`
+	State               string                `json:"state"`
+	UDPTransport        string                `json:"udp_transport,omitempty"`
+	DetectedIngressZone string                `json:"detected_ingress_zone"`
+	LatestTCP           *UltraSelectionReport `json:"latest_tcp,omitempty"`
+	ActiveUDP           *UltraSelectionReport `json:"active_udp,omitempty"`
+	HAFailures          int64                 `json:"ha_failures"`
+	UDPQueueDrops       int64                 `json:"udp_queue_drops"`
+	UDPSetupFailures    int64                 `json:"udp_setup_failures"`
+	BytesIn             int64                 `json:"bytes_in"`
+	BytesOut            int64                 `json:"bytes_out"`
+	HAEvents            []HAEvent             `json:"ha_events"`
+	UpdatedAt           string                `json:"updated_at"`
+	ErrorCode           string                `json:"error_code"`
+}
+
+type UltraSelectionReport struct {
+	SelectionRef     string `json:"selection_ref"`
+	RTTMillis        int64  `json:"rtt_ms"`
+	SelectedAt       string `json:"selected_at"`
+	CandidateKeyHash string `json:"candidate_key_hash,omitempty"`
+	P95RTTMillis     int64  `json:"p95_rtt_ms,omitempty"`
+	JitterMillis     int64  `json:"jitter_ms,omitempty"`
+	LossPercent      int64  `json:"loss_percent,omitempty"`
+	ProbeSent        int    `json:"probe_sent,omitempty"`
+	ProbeReceived    int    `json:"probe_received,omitempty"`
 }
 
 type UltraUsageSnapshot struct {

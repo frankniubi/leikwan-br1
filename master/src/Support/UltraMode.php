@@ -92,12 +92,15 @@ final class UltraMode
      */
     public const MATERIAL_EXPIRING_MARGIN_SECONDS = 120;
     /**
-     * A refresh of a line's material changes the forward's material fingerprint
-     * and so its policy_generation. For this long afterwards the lease plane
-     * still honours the generation a client got before the refresh, provided
-     * nothing but the line material differs (see LeigodTokenBroker).
+     * A change of a forward's relay paths (a line re-acquired with different
+     * relay endpoints, or a line whose material lapsed) changes its
+     * policy_generation. For this long afterwards the lease plane still
+     * honours the generation a client got before the change, provided nothing
+     * but the paths differ (see LeigodTokenBroker). Sized to
+     * cover the short-grant renewal interval (up to 300 s when a client keeps
+     * receiving 304 on long-polled config pulls until renew_after).
      */
-    public const PREVIOUS_GENERATION_GRACE_SECONDS = 180;
+    public const PREVIOUS_GENERATION_GRACE_SECONDS = 300;
 
     /**
      * Strict parse of OFFLINE_VALIDITY_HEADER: a plain decimal integer in

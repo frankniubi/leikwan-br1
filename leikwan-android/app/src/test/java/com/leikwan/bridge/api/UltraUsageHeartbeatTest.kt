@@ -5,6 +5,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.google.gson.JsonParser
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
+import com.leikwan.bridge.runtime.UltraCandidateFeedbackLedger
+import com.leikwan.bridge.runtime.UltraStatusCollector
 import com.leikwan.bridge.runtime.UltraUsageLedger
 import com.leikwan.bridge.security.DeviceSecurityResult
 import kotlinx.coroutines.runBlocking
@@ -73,6 +75,8 @@ class UltraUsageHeartbeatTest {
             nowMs = { now.toEpochMilli() },
             ultraLeaseKeyProvider = { null },
             ultraUsageLedgerProvider = { UltraUsageLedger.forFilesDir(filesDir) },
+            ultraStatusCollectorProvider = { UltraStatusCollector.forFilesDir(filesDir) },
+            ultraFeedbackLedgerProvider = { UltraCandidateFeedbackLedger.forFilesDir(filesDir) },
         )
     }
 
@@ -129,6 +133,8 @@ class UltraUsageHeartbeatTest {
         val empty = JsonParser.parseString(server.takeRequest().body.readUtf8()).asJsonObject
         assertFalse(empty.has("ultra_usage"))
         assertFalse(empty.has("usage_bytes_in"))
+        // Status is a liveness signal: an empty list (no runtime) is still sent.
+        assertEquals(0, empty.getAsJsonArray("ultra_status").size())
 
         writeStatus(100, 0)
         server.enqueue(MockResponse().setResponseCode(500).setBody("""{"ok":false}"""))
@@ -141,5 +147,71 @@ class UltraUsageHeartbeatTest {
         assertEquals(failed, usageOf(server.takeRequest().body.readUtf8()))
         assertTrue(repository.heartbeat())
         assertFalse(JsonParser.parseString(server.takeRequest().body.readUtf8()).asJsonObject.has("ultra_usage"))
+    }
+
+    @Test
+    fun `heartbeat carries the redacted runtime status of every live forward`() = runBlocking {
+        File(statusDir, "forward-170-cccccccccccc.status.json").writeText(
+            """{"forward_id":170,"policy_generation":"$generation","state":"degraded","updated_at":"2029-12-31T23:59:30Z",
+               "error_code":"relay_handshake_timeout","udp_transport":"native_udp","detected_ingress_zone":"cn-gd",
+               "latest_tcp":{"selection_ref":"sel_ABCDEFGHIJKLMNOP","selection_tier":"primary","lease_hash":"${"b".repeat(64)}",
+                             "rtt_ms":42,"selected_at":"2029-12-31T23:58:00Z"},
+               "runtime_attestation":{"sha256":"${"a".repeat(64)}"},
+               "ha_events":[{"protocol":"tcp","reason":"relay_handshake_timeout","generation":"g","at":"2029-12-31T23:59:00Z"}],
+               "bytes_in":10,"bytes_out":20}""",
+        )
+        // A runtime that has not rewritten its document for five minutes is gone.
+        File(statusDir, "forward-171-cccccccccccc.status.json").writeText(
+            """{"forward_id":171,"state":"ready","updated_at":"2029-12-31T23:54:00Z"}""",
+        )
+        server.enqueue(MockResponse().setBody("""{"ok":true,"ultra_status_accepted":1}"""))
+
+        assertTrue(repository.heartbeat())
+        val body = server.takeRequest().body.readUtf8()
+        val status = JsonParser.parseString(body).asJsonObject.getAsJsonArray("ultra_status")
+        assertEquals(1, status.size())
+        val entry = status[0].asJsonObject
+        assertEquals(170L, entry.get("forward_id").asLong)
+        assertEquals("degraded", entry.get("state").asString)
+        assertEquals("relay_handshake_timeout", entry.get("error_code").asString)
+        assertEquals("native_udp", entry.get("udp_transport").asString)
+        assertEquals("sel_ABCDEFGHIJKLMNOP", entry.getAsJsonObject("latest_tcp").get("selection_ref").asString)
+        assertEquals("relay_handshake_timeout", entry.getAsJsonArray("ha_events")[0].asJsonObject.get("reason").asString)
+        assertFalse(body.contains("runtime_attestation"))
+        assertFalse(body.contains("lease_hash"))
+        assertFalse(body.contains("selection_tier"))
+    }
+
+    @Test
+    fun `candidate feedback rides the heartbeat until a heartbeat carrying it succeeds`() = runBlocking {
+        File(statusDir, "forward-170-cccccccccccc.status.json").writeText(
+            """{"forward_id":170,"state":"error","updated_at":"2029-12-31T23:59:30Z","error_code":"relay_connect_timeout",
+               "candidate_feedback":[{"candidate_key_hash":"${"a".repeat(64)}","lease_hash":"${"b".repeat(64)}",
+                 "protocol":"tcp","outcome":"failure","reason":"relay_connect_timeout","evidence_id":"ev-1",
+                 "observed_at":"2029-12-31T23:59:00Z"}]}""",
+        )
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"ok":false}"""))
+        server.enqueue(MockResponse().setBody("""{"ok":true}"""))
+        server.enqueue(MockResponse().setBody("""{"ok":true}"""))
+
+        fun feedbackOf(body: String) =
+            JsonParser.parseString(body).asJsonObject.getAsJsonArray("ultra_candidate_feedback")
+
+        assertFalse(repository.heartbeat())
+        val failed = feedbackOf(server.takeRequest().body.readUtf8())
+        assertEquals(1, failed.size())
+        val item = failed[0].asJsonObject
+        assertEquals(170L, item.get("forward_id").asLong)
+        assertEquals("ev-1", item.get("evidence_id").asString)
+        assertEquals("b".repeat(64), item.get("lease_hash").asString)
+
+        assertTrue(repository.heartbeat())
+        assertEquals(failed, feedbackOf(server.takeRequest().body.readUtf8()))
+
+        assertTrue(repository.heartbeat())
+        val after = JsonParser.parseString(server.takeRequest().body.readUtf8()).asJsonObject
+        assertFalse(after.has("ultra_candidate_feedback"))
+        // Status keeps reporting the failing forward independently of the delivered feedback.
+        assertEquals(1, after.getAsJsonArray("ultra_status").size())
     }
 }
