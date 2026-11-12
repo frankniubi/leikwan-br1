@@ -31,7 +31,7 @@ echo "==> building leikwand for linux/$GOARCH"
 mkdir -p "$HERE/leikwand/bin"
 ( cd "$REPO/tools/leikwand" && \
 	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-	go build -trimpath -ldflags "-s -w -X main.agentVersion=${VERSION:-1.2.10}" \
+	go build -trimpath -ldflags "-s -w -X main.agentVersion=${VERSION:-1.2.11}" \
 	-o "$HERE/leikwand/bin/leikwand" . )
 
 echo "==> building ultra-client runtime for linux/$GOARCH"
