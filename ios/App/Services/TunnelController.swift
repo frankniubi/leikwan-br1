@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import LeikwanIOSCore
 import NetworkExtension
 
 /// Owns the app's NETunnelProviderManager: installs the VPN profile, starts
@@ -158,6 +159,15 @@ final class TunnelController: ObservableObject {
             .split(separator: "\n", omittingEmptySubsequences: true)
             .suffix(400)
             .map(String.init)
+    }
+
+    /// Asks the running tunnel to run one module script now. nil when no tunnel answered or
+    /// its plan has no such script; the caller then runs it in the app.
+    func runScript(key: String, trigger: String) async -> ScriptOutcome? {
+        guard !isSimulated, isConnected,
+              let reply = await send(TunnelRequest(command: .runScript, launch: nil, scriptKey: key, scriptTrigger: trigger))
+        else { return nil }
+        return try? JSONDecoder().decode(ScriptOutcome.self, from: reply)
     }
 
     private func installedManager() async throws -> NETunnelProviderManager {

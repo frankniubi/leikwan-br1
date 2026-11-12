@@ -37,6 +37,14 @@ enum AppGroup {
     /// `RuleSetInstaller` empties that directory whenever the bundled sets change.
     static var userRuleSetDirectory: URL { ensure(containerURL.appendingPathComponent("user-rule-sets", isDirectory: true)) }
 
+    /// Installed modules (`SurgeModuleStore`): module text, script sources, the scripts' store
+    /// and their last results. Read by the tunnel, written by the app.
+    static var moduleDirectory: URL { ensure(containerURL.appendingPathComponent("modules", isDirectory: true)) }
+
+    static var scriptStoreURL: URL { moduleDirectory.appendingPathComponent("store.json") }
+
+    static var scriptResultsURL: URL { moduleDirectory.appendingPathComponent("results.json") }
+
     static var cacheDirectory: URL {
         ensure(containerURL.appendingPathComponent("Library/Caches", isDirectory: true))
     }

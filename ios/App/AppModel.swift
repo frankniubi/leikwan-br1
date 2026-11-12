@@ -43,6 +43,17 @@ final class AppModel: ObservableObject {
     /// Transient banner text.
     @Published var notice: String?
 
+    // MARK: Modules (stored state only; logic lives in AppModel+Modules.swift)
+
+    /// Installed Surge modules: their rules, scripts and panels. Saved by `modulesChanged`.
+    @Published var moduleLibrary = ModuleLibrary()
+    /// Last run of each module script, as read from the app group.
+    @Published var scriptRuns: [String: ScriptRunRecord] = [:]
+    /// Keys of the scripts with a run in flight.
+    @Published var runningScripts: Set<String> = []
+    /// Runs scripts in the app while the VPN is off (the tunnel runs them otherwise).
+    let scriptExecutor = ScriptExecutor(log: { _ in })
+
     // MARK: Cloud nodes + bindings (stored state only; logic and the UI surface live in
     // AppModel+CloudNodes.swift). Write these through the methods there, not directly.
 
@@ -90,6 +101,7 @@ final class AppModel: ObservableObject {
         nodes = JSONStore.load([ProxyNode].self, name: "nodes") ?? []
         subscriptions = JSONStore.load([Subscription].self, name: "subscriptions") ?? []
         routing = JSONStore.load(RoutingPreferences.self, name: "routing") ?? RoutingPreferences()
+        loadModules()
         selectedForwardID = (UserDefaults.standard.object(forKey: "selected_forward_id") as? NSNumber)?.int64Value
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
@@ -437,6 +449,12 @@ final class AppModel: ObservableObject {
     }
 
     func buildLaunch() throws -> TunnelLaunchOptions {
+        var launch = try buildRoutingLaunch()
+        launch.scripts = scriptLaunches()
+        return launch
+    }
+
+    private func buildRoutingLaunch() throws -> TunnelLaunchOptions {
         // Native outbound needs no node and has its own plan (see "MARK: Native outbound").
         if nativeOutboundPreferences.enabled {
             return try buildNativeOutboundLaunch()

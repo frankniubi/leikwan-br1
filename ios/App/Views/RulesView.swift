@@ -309,6 +309,13 @@ private struct CustomRuleEditor: View {
         case .dstPort: return "443 or 8000:8999"
         case .domainRegex: return "^ad\\d+\\.example\\.com$"
         case .userList: return ""
+        case .domainWildcard: return "*.example.com"
+        case .srcIp: return "192.168.1.0/24"
+        case .srcPort: return "5000 or 5000-5100"
+        case .protocolType: return "QUIC / HTTP / HTTPS / STUN / TCP / UDP"
+        case .subnet: return "TYPE:CELLULAR / SSID:Home"
+        case .logicalAnd, .logicalOr: return "((DOMAIN-SUFFIX,example.com),(DST-PORT,443))"
+        case .logicalNot: return "((DOMAIN-SUFFIX,example.com))"
         }
     }
 }
@@ -371,15 +378,16 @@ private struct MatchOrderCard: View {
             CardHeader(L("Rule mode match order"), systemImage: "list.number")
             VStack(alignment: .leading, spacing: 6) {
                 step(1, L("The server and the forward lines"), L("Direct (fixed)"))
-                step(2, L("Custom rules"), L("In list order: proxy / direct / reject; proxy can name a binding"))
-                step(3, L("Apps"), L("By each app's domains and IP ranges; can name a binding"))
-                step(4, L("Countries / regions"), L("By the destination IP's country"))
-                step(5, L("Mainland China sites and IPs"), bypassChina ? L("Direct (on)") : L("Off, skipped"))
-                step(6, L("Direct list"), L("Direct"))
-                step(7, L("All other traffic"), L("Default binding"))
+                step(2, L("Module rules"), L("Rules of the enabled modules, in module order"))
+                step(3, L("Custom rules"), L("In list order: proxy / direct / reject; proxy can name a binding"))
+                step(4, L("Apps"), L("By each app's domains and IP ranges; can name a binding"))
+                step(5, L("Countries / regions"), L("By the destination IP's country"))
+                step(6, L("Mainland China sites and IPs"), bypassChina ? L("Direct (on)") : L("Off, skipped"))
+                step(7, L("Direct list"), L("Direct"))
+                step(8, L("All other traffic"), L("Default binding"))
             }
             if mode != .rule {
-                Label(mode == .global ? L("Global mode: steps 2–6 are skipped and everything uses the proxy.") : L("Direct mode: the rules above are skipped and everything goes direct."), systemImage: "exclamationmark.circle")
+                Label(mode == .global ? L("Global mode: steps 2–7 are skipped and everything uses the proxy.") : L("Direct mode: the rules above are skipped and everything goes direct."), systemImage: "exclamationmark.circle")
                     .font(.caption)
                     .foregroundStyle(Palette.onWarningContainer)
                     .padding(10)

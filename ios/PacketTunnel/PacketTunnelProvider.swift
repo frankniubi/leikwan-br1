@@ -19,6 +19,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let native = self.nativeLeases?.activeEndpoint() { endpoints[native.forwardID] = native.endpoint }
         return endpoints
     }
+    /// Module scripts: cron schedules, network-changed events, panel runs.
+    private let scripts = ScriptScheduler()
     private var launch: TunnelLaunchOptions?
     private var controlLoop: TunnelControlLoop?
     private var ultraLeases: UltraLeaseManager?
@@ -127,6 +129,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             controlLoop = loop
             loop.start()
         }
+        scripts.update(launch.scripts)
         TunnelLog.shared.write("tunnel started")
     }
 
@@ -134,6 +137,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         TunnelLog.shared.write("tunnel stopping, reason \(reason.rawValue)")
         watchdogTask?.cancel()
         watchdogTask = nil
+        scripts.stop()
         controlLoop?.stop()
         controlLoop = nil
         stopUltraLeases()
@@ -196,6 +200,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             } catch {
                 return error.localizedDescription.data(using: .utf8)
             }
+        case .runScript:
+            guard let key = request.scriptKey,
+                  let outcome = await scripts.run(key: key, trigger: request.scriptTrigger ?? "manual")
+            else { return nil }
+            return try? encoder.encode(outcome)
         }
     }
 
@@ -206,6 +215,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func wake() {
         commandServer?.wake()
         refreshControlPlane("device woke")
+        scripts.deviceWoke()
     }
 
     /// The default network changed (TunnelPlatformInterface). Path updates come in bursts, so
@@ -216,7 +226,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let due = now.timeIntervalSince(lastPathRefresh) >= 5
         if due { lastPathRefresh = now }
         refreshLock.unlock()
-        if due { refreshControlPlane("network changed") }
+        if due {
+            refreshControlPlane("network changed")
+            scripts.networkChanged()
+        }
     }
 
     /// Heartbeat and re-check the leases now rather than at the end of their waits: after a
@@ -280,6 +293,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     func stopServiceFromCommand() {
+        scripts.stop()
         stopUltraLeases()
         stopNativeLeases()
         stopService()
@@ -327,6 +341,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             stopNativeLeases()
             throw error
         }
+        scripts.update(next.scripts)
         if previous?.panel != next.panel {
             controlLoop?.stop()
             controlLoop = nil
@@ -462,6 +477,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if permanent {
             try? FileManager.default.removeItem(at: AppGroup.launchSnapshotURL)
         }
+        scripts.stop()
         stopUltraLeases()
         stopNativeLeases()
         stopService()
@@ -474,6 +490,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// snapshot is kept; VPN On Demand starts the tunnel again with a fresh lease attempt.
     private func handleUltraUnusable(_ message: String) {
         TunnelLog.shared.write("ultra lease unusable, stopping the tunnel: \(message)", level: 1)
+        scripts.stop()
         stopUltraLeases()
         stopNativeLeases()
         stopService()
@@ -504,6 +521,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// forwarding immediately, like Android's SessionRevocationCoordinator.
     private func handleTerminal(_ alert: String) {
         TunnelLog.shared.write("panel revoked this device: \(alert)", level: 1)
+        scripts.stop()
         try? FileManager.default.removeItem(at: AppGroup.launchSnapshotURL)
         stopUltraLeases()
         stopNativeLeases()
