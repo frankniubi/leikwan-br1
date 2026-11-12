@@ -41,15 +41,15 @@ type ClientMeta struct {
 	DiagStatus         string               `json:"diag_status"`
 	DebugCollection    *DebugCollectionMeta `json:"debug_collection"`
 	AgentConfigJSON    json.RawMessage      `json:"agent_config_json"`
-	UpdateRequestToken string          `json:"agent_update_request_token"`
-	DesiredAgentVer    string          `json:"desired_agent_version"`
-	DesiredAgentSHA    string          `json:"desired_agent_sha256"`
-	DesiredAgentURL    string          `json:"desired_agent_url"`
-	DesiredUltraVer    string          `json:"desired_ultra_runtime_version"`
-	DesiredUltraSHA    string          `json:"desired_ultra_runtime_sha256"`
-	OnlineDeviceLimit  int             `json:"online_device_limit"`
-	ActiveOnlineDevice int             `json:"active_online_devices"`
-	CurrentDeviceID    string          `json:"current_device_id"`
+	UpdateRequestToken string               `json:"agent_update_request_token"`
+	DesiredAgentVer    string               `json:"desired_agent_version"`
+	DesiredAgentSHA    string               `json:"desired_agent_sha256"`
+	DesiredAgentURL    string               `json:"desired_agent_url"`
+	DesiredUltraVer    string               `json:"desired_ultra_runtime_version"`
+	DesiredUltraSHA    string               `json:"desired_ultra_runtime_sha256"`
+	OnlineDeviceLimit  int                  `json:"online_device_limit"`
+	ActiveOnlineDevice int                  `json:"active_online_devices"`
+	CurrentDeviceID    string               `json:"current_device_id"`
 }
 
 type ForwardConfig struct {

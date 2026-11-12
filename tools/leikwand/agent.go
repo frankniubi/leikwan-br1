@@ -181,6 +181,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Always running: it starts the native relay when the Panel grants native
 	// outbound, without a mode switch and without a service restart.
 	start(a.gatewayLoop)
+	start(a.traceLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
