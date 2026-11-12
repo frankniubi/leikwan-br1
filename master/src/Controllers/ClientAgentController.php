@@ -1903,22 +1903,20 @@ final class ClientAgentController extends BaseController
             }
         }
         // A line refresh replaces the credential inside an installed lease
-        // without moving the generation; tell the device to lease again. Only
-        // the router agent acts on "refresh" so far, the other clients skip
-        // every action but "stop".
-        if ($this->isOpenwrtRequest($request)) {
-            try {
-                foreach ($this->ultraClientStatus->staleCredentialForwards((int) $client['id'], $deviceId) as $staleForwardId) {
-                    $ultraActions[$staleForwardId] ??= [
-                        'forward_id' => $staleForwardId,
-                        'policy_generation' => '',
-                        'action' => 'refresh',
-                        'reason' => 'credential_refreshed',
-                    ];
-                }
-            } catch (\Throwable) {
-                // Advisory only; the lease still renews on its own schedule.
+        // without moving the generation; tell the device to lease again.
+        // Clients that do not know "refresh" (every build has skipped all
+        // actions but "stop" since the field exists) keep their schedule.
+        try {
+            foreach ($this->ultraClientStatus->staleCredentialForwards((int) $client['id'], $deviceId) as $staleForwardId) {
+                $ultraActions[$staleForwardId] ??= [
+                    'forward_id' => $staleForwardId,
+                    'policy_generation' => '',
+                    'action' => 'refresh',
+                    'reason' => 'credential_refreshed',
+                ];
             }
+        } catch (\Throwable) {
+            // Advisory only; the lease still renews on its own schedule.
         }
         if ($shouldRepublish) {
             $this->provisioning->republishActiveForwardsForClient((int) $client['id']);
@@ -2255,11 +2253,6 @@ final class ClientAgentController extends BaseController
             $this->db,
             new TrustedClientIpResolver((string) ($this->config->get('TRUSTED_PROXY_CIDRS', '') ?? '')),
         );
-    }
-
-    private function isOpenwrtRequest(Request $request): bool
-    {
-        return strtolower(trim((string) ($request->header('x-device-platform') ?? ''))) === 'openwrt';
     }
 
     private function isAndroidRequest(Request $request): bool

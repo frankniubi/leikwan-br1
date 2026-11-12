@@ -135,8 +135,8 @@ namespace {
 
     $controller = (string) file_get_contents(__DIR__ . '/../src/Controllers/ClientAgentController.php');
     check(
-        preg_match('/if \(\$this->isOpenwrtRequest\(\$request\)\) \{\s+try \{\s+foreach \(\$this->ultraClientStatus->staleCredentialForwards\(/', $controller) === 1,
-        'the heartbeat asks only router agents to refresh'
+        preg_match('/foreach \(\$this->ultraClientStatus->staleCredentialForwards\(\(int\) \$client\[\'id\'\], \$deviceId\) as \$staleForwardId\)/', $controller) === 1,
+        'the heartbeat answers with refresh actions'
     );
     check(str_contains($controller, "'action' => 'refresh'") && str_contains($controller, '$ultraActions[$staleForwardId] ??='), 'a stop action is never replaced by a refresh');
 
