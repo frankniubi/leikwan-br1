@@ -89,6 +89,8 @@ type Agent struct {
 	// returning the token until its own result row clears it, so without this
 	// the same request would be re-run on every pull.
 	diagDoneToken string
+	debugUUID     string
+	debugDoneUUID string
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -179,6 +181,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Always running: it starts the native relay when the Panel grants native
 	// outbound, without a mode switch and without a service restart.
 	start(a.gatewayLoop)
+	start(a.traceLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
@@ -403,6 +406,11 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	// router at all.
 	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
 		a.diagToken = token
+	}
+	if coll := response.Client.DebugCollection; coll != nil && strings.EqualFold(strings.TrimSpace(coll.Status), "active") {
+		if uuid := strings.ToLower(strings.TrimSpace(coll.UUID)); uuid != "" && uuid != a.debugDoneUUID {
+			a.debugUUID = uuid
+		}
 	}
 	a.lastPullAt = time.Now()
 	a.configLoaded = true

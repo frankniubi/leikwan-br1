@@ -556,6 +556,37 @@ func (c *PanelClient) DiagnosticsResult(ctx context.Context, payload any) error 
 	return c.do(ctx, http.MethodPost, "/api/client/diagnostics/result", payload, nil)
 }
 
+type DebugCollectionStartResponse struct {
+	OK              bool                 `json:"ok"`
+	ReferenceCode   string               `json:"reference_code"`
+	DebugCollection *DebugCollectionMeta `json:"debug_collection"`
+}
+
+func (c *PanelClient) StartDebugCollection(ctx context.Context) (*DebugCollectionStartResponse, error) {
+	var out DebugCollectionStartResponse
+	if err := c.do(ctx, http.MethodPost, "/api/client/debug/start", map[string]any{}, &out); err != nil {
+		return nil, err
+	}
+	if !out.OK || out.DebugCollection == nil || strings.TrimSpace(out.DebugCollection.UUID) == "" {
+		return nil, errors.New("debug_collection_invalid")
+	}
+	if out.ReferenceCode == "" && len(out.DebugCollection.UUID) >= 8 {
+		out.ReferenceCode = out.DebugCollection.UUID[:8]
+	}
+	return &out, nil
+}
+
+func (c *PanelClient) UploadDebugLogChunk(ctx context.Context, uuid string, sequence int, sha256Hex, chunkBase64, source string) error {
+	payload := map[string]any{
+		"collection_uuid": uuid,
+		"sequence":        sequence,
+		"sha256":          sha256Hex,
+		"chunk_base64":    chunkBase64,
+		"source":          source,
+	}
+	return c.do(ctx, http.MethodPost, "/api/client/debug/log", payload, nil)
+}
+
 // Probe performs an authenticated pull with no wait. It is the "Test
 // connection" action in LuCI and intentionally costs one round trip only.
 func (c *PanelClient) Probe(ctx context.Context) error {
