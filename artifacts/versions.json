@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "5d9231403d900da9b9033cd4bbf170f725938bd6e998347c0529a5bfe7a599a6",
+    "sha256": "0c16fc8ba4ee382456aa67c607ee21a3d0fa97e71ec29699610059e2b463bb50",
     "size_bytes": 74822033,
-    "version": "0.2.49",
-    "version_code": 51
+    "version": "0.2.50",
+    "version_code": 52
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "12cbabf37be7765aebb4f769588fbc35519f177e84e9fc2fc6a85f711b925e6f",
-    "size": 423322,
-    "size_bytes": 423322,
-    "version": "2026.11.12.1"
+    "sha256": "bd9e0f0dab02d7107f307696fa98a8efdb89dc0997ef1a86c83bbfb5433a1845",
+    "size": 423800,
+    "size_bytes": 423800,
+    "version": "2026.11.13.1"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -61,9 +61,9 @@
     "format": "elf-onefile-pyinstaller",
     "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
     "runtime_mode": "frozen",
-    "sha256": "53b8ddfd2876dc8d375ef4ef33b6466415b609500243a4f9127d9e62db1d1a89",
-    "size_bytes": 8962216,
-    "version": "2026.11.12.1"
+    "sha256": "8fd21138f5a6c74c1ff3ed73fd3eb6a57303622967781184f226ce1063400611",
+    "size_bytes": 8962352,
+    "version": "2026.11.13.1"
   },
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
@@ -299,17 +299,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/leikwan-bond": "6dd04454135d72a252bd110e2d941c0c805205137b5884a7bbad19ee87a7a362",
-      "bin/leikwan-ingress": "09048cfc723ce826501c6692a720967ef6fad5ff996f3b4c4015e17c25a9c178",
-      "bin/leikwan-uot-bond": "32a088ab2bafcb1a6c0990d06a84ab2bfc2e09e0fb20e3a6f0d03a39ed5a4b86",
-      "bin/sing-box": "90efbd8c7365a2c224c343d69374ca159390ee89e6723d0ef2c66f129fe28de9",
-      "bin/ultra-client": "e0384e50e3db894a8dd2cd9b8386589b3b9696409b42a03662c995c3c3737c89",
-      "bin/wstunnel": "70fec314a0d81741f821246378e93d51ea413216bfa6585c04a5eb91c0ae73c5"
+      "bin/leikwan-bond": "c868fe0cd3d82901590ddc8ab74c0b8e108d72da3f1bf8f4c9d1311127b555b1",
+      "bin/leikwan-ingress": "8a3ad5beba513e5c8c3585d89f2a240dc8062f65b37b41543bde95e6e028272e",
+      "bin/leikwan-uot-bond": "828be0fb7e3245a4629f049a6ca8871e26cbd9692b9652a1ab926f2ab9929177",
+      "bin/sing-box": "e709ef50471caef028ed2428c0de1d4bba0d6d7686d550d9f9920dc53c4c8fa6",
+      "bin/ultra-client": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
+      "bin/wstunnel": "2f77f3aeb4627ccb139d64ce82938c0477356ed62eeebd50e454e9b8018c78e6"
     },
-    "sha256": "905ea566501fbfc58c6f17aa700ee8aef8b46a7d4f1c8999f585812c6dd40ce9",
-    "size_bytes": 79209495,
-    "version": "1.0.63",
-    "source_commit": "247beaf4"
+    "sha256": "71213dbc023cf5168583859db6da06bc1fcd0a29526a69206de8309466bfd62c",
+    "size_bytes": 79212356,
+    "version": "1.0.64",
+    "source_commit": "4827c594"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -346,17 +346,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/leikwan-bond": "6dd04454135d72a252bd110e2d941c0c805205137b5884a7bbad19ee87a7a362",
-      "bin/leikwan-ingress": "09048cfc723ce826501c6692a720967ef6fad5ff996f3b4c4015e17c25a9c178",
-      "bin/leikwan-uot-bond": "32a088ab2bafcb1a6c0990d06a84ab2bfc2e09e0fb20e3a6f0d03a39ed5a4b86",
-      "bin/sing-box": "90efbd8c7365a2c224c343d69374ca159390ee89e6723d0ef2c66f129fe28de9",
-      "bin/ultra-client": "e0384e50e3db894a8dd2cd9b8386589b3b9696409b42a03662c995c3c3737c89",
-      "bin/wstunnel": "70fec314a0d81741f821246378e93d51ea413216bfa6585c04a5eb91c0ae73c5"
+      "bin/leikwan-bond": "c868fe0cd3d82901590ddc8ab74c0b8e108d72da3f1bf8f4c9d1311127b555b1",
+      "bin/leikwan-ingress": "8a3ad5beba513e5c8c3585d89f2a240dc8062f65b37b41543bde95e6e028272e",
+      "bin/leikwan-uot-bond": "828be0fb7e3245a4629f049a6ca8871e26cbd9692b9652a1ab926f2ab9929177",
+      "bin/sing-box": "e709ef50471caef028ed2428c0de1d4bba0d6d7686d550d9f9920dc53c4c8fa6",
+      "bin/ultra-client": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
+      "bin/wstunnel": "2f77f3aeb4627ccb139d64ce82938c0477356ed62eeebd50e454e9b8018c78e6"
     },
-    "sha256": "0b9537e889500ccf374286dc31a5021556704dafac5bc8fcad6d867c450d9480",
-    "size_bytes": 70514408,
-    "version": "1.0.63",
-    "source_commit": "247beaf4"
+    "sha256": "ad8863d4fca9cb266b849db00c4f2b2f392bb716a5b51493dd7fee95f8e28a71",
+    "size_bytes": 70517726,
+    "version": "1.0.64",
+    "source_commit": "4827c594"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -420,43 +420,43 @@
   },
   "openwrt_leikwand_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.10-r1_aarch64_generic.ipk",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.10-r1_aarch64_generic.ipk",
-    "sha256": "629b6f00f78d92d4eecf866f60ce833d76e1c10985feb317691b8bfb8388822f",
-    "size_bytes": 2685795,
-    "version": "1.2.10"
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk",
+    "sha256": "cdfe9c338610539ad070b8f9a58777785994ccf5bf0e7a1a067be645248d1e98",
+    "size_bytes": 2688503,
+    "version": "1.2.11"
   },
   "openwrt_leikwand_apk_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.10-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.11-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.10-r1.apk",
-    "sha256": "38b7448f71c3f3de94cb53292f5dfb7a7d23722ae4d5438f9261ab6db8b917c3",
-    "size_bytes": 2674693,
-    "version": "1.2.10"
+    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.11-r1.apk",
+    "sha256": "2701431ee2be4c75df685ed095bd23ffddfba8c9afae796d212c4f4225926eeb",
+    "size_bytes": 2677219,
+    "version": "1.2.11"
   },
   "openwrt_leikwand_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.10-r1_x86_64.ipk",
+    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.11-r1_x86_64.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.10-r1_x86_64.ipk",
-    "sha256": "14e8a9249fbd8455f5026471ad781226b59a200da869be32418917cc901a5e52",
-    "size_bytes": 2983306,
-    "version": "1.2.10"
+    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.11-r1_x86_64.ipk",
+    "sha256": "76fd3eae56269cd8fc5340d123eb5ad141ad28e6dfa4e3c89c69c5f2ad264de1",
+    "size_bytes": 2985850,
+    "version": "1.2.11"
   },
   "openwrt_leikwand_apk_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.10-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.11-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.10-r1.apk",
-    "sha256": "60b7389773aa1f9b4943deae06733ae068259bf75225a60fb1eb070fa01ac257",
-    "size_bytes": 2966186,
-    "version": "1.2.10"
+    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.11-r1.apk",
+    "sha256": "191c1a887c9214e4e417d271f8c8b185bfb1967723ed4cb875e775ed94d40f23",
+    "size_bytes": 2969494,
+    "version": "1.2.11"
   },
   "retired_runtime_030b48158478": {
     "attestation": {
@@ -695,13 +695,13 @@
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
       "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "e0384e50e3db894a8dd2cd9b8386589b3b9696409b42a03662c995c3c3737c89"
+      "self_sha256": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d"
     },
     "build": "go1.26.10 darwin/arm64 (GitHub Actions macos-15), garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, Developer ID signed + notarized in bundle, 2026.11.12.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "e0384e50e3db894a8dd2cd9b8386589b3b9696409b42a03662c995c3c3737c89",
-    "size_bytes": 16109232,
+    "sha256": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
+    "size_bytes": 16109264,
     "version": "2026.11.12.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "hardening": [
@@ -715,10 +715,10 @@
       "notarized"
     ],
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "4827c594",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "macOS 1.0.64 bundle: same runtime source and fingerprint, re-signed by CI"
     }
   },
   "ultra_client_runtime_macos_x64": {
@@ -824,9 +824,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
     },
-    "sha256": "09464024b4b166eb31b54fc606f96db619c17e802e80eebf1cef60193dd7a8bb",
-    "size_bytes": 69963957,
-    "version": "0.1.20.81"
+    "sha256": "340f2c90c5e94820b3dee7213c05d604b9bd5cc5de3dd0a263abd7bc36891107",
+    "size_bytes": 69961645,
+    "version": "0.1.20.82"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -834,9 +834,9 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "cca70ac6c8d9304187efe40e6565514af147e792f0bbd1477c2242ce7c02743d",
-    "size_bytes": 64060919,
-    "version": "0.1.20.70",
+    "sha256": "9e8b79adc8ab65371671a8b113b564258caa5b05a346477dc663deb508915d7f",
+    "size_bytes": 64061317,
+    "version": "0.1.20.71",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -849,9 +849,9 @@
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "4ae33b562df31a44f10ffa7c8a197ad9a81f57d53e12c95dbe48850ac120d3bd",
+    "sha256": "4d6f35fce2b675d28e988d37b4dab53633877d240470c57758256a14b4faba83",
     "size_bytes": 16837,
-    "version": "0.1.20.70",
+    "version": "0.1.20.71",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {
