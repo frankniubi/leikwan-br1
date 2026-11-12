@@ -499,6 +499,174 @@ func dialCandidateStream(ctx context.Context, s *PolicyStore, host string, port 
 // Logical UDP uses the same TCP carrier dialer, but has independent health and
 // quarantine state. A failed user-TCP path must not evict a working UoT carrier.
 func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protocol, host string, port int, total time.Duration, dial candidateStreamDial) (net.Conn, RuntimeSnapshot, error) {
+	return dialCandidateStreamReporting(ctx, s, protocol, host, port, total, dial, nil)
+}
+
+// candidateFailureHook observes one failed setup attempt on an authorized
+// candidate, after its local isolation was recorded. It may run after the dial
+// helper returned (see drainOvertakenAttempts), so it must be goroutine safe.
+type candidateFailureHook func(ss RuntimeSnapshot, err error)
+
+// fixedTargetFailureReason names a failed fixed-target setup attempt in the
+// native gateway's candidate-feedback vocabulary (nativeTCPFailureReason and
+// udpArmFailureReason). ok is false when the attempt is no evidence about the
+// relay: a local cancellation or expiry, or the relay's own report that the
+// fixed target refused. A downed target is reached through every relay, so
+// blaming each relay for it would quarantine healthy lines for every tenant.
+func fixedTargetFailureReason(protocol string, err error) (string, bool) {
+	switch {
+	case err == nil, errors.Is(err, context.Canceled), errors.Is(err, ErrPolicyExpired):
+		return "", false
+	case streamCredentialRejected(err):
+		return credentialRejectedReason, true
+	case errors.Is(err, errStreamCommandRejected):
+		return "", false
+	case protocol == "udp":
+		// The UoT carrier is a stream to the sidecar; its relay leg failing
+		// is a logical-UDP arm failure, exactly as for a datagram arm.
+		return udpArmFailureReason(err), true
+	}
+	return nativeTCPFailureReason(err), true
+}
+
+// fixedTargetFailureFeedback reports failed fixed-target setup attempts to the
+// Panel through candidate_feedback, the way dialNativeStreamWithCandidates does
+// for the native gateway. Before it existed a port-forward relay that timed
+// out only produced a local tcp_connect_failed, so the Panel never learned
+// which relay was failing. The Panel counts one failure per observer and
+// window however often a device retries, so every attempt is reported.
+func fixedTargetFailureFeedback(status *StatusWriter, protocol string) candidateFailureHook {
+	if status == nil {
+		return nil
+	}
+	return func(ss RuntimeSnapshot, err error) {
+		reason, ok := fixedTargetFailureReason(protocol, err)
+		if !ok {
+			return
+		}
+		key := ss.Lease.CandidateKeyHash
+		if strings.TrimSpace(key) == "" {
+			key = ss.Lease.SelectionRef
+		}
+		status.RecordCandidateFailure(key, protocol, reason, ss.Lease.LeaseHash)
+	}
+}
+
+// Staggered candidate setup.
+//
+// The setup budget used to be split evenly: with the hosts' 5 s connect timeout
+// and four candidates every relay got about 1.25 s for connect, greeting and
+// reply. One lost SYN (a 1 s retransmission) or a relay that needed 1.5 s to
+// open the target therefore failed every candidate in turn, isolated all of
+// them, and an OpenWrt router saw minutes of "tcp stream setup failed" against
+// relays that were healthy (2026-11-12).
+//
+// An attempt now keeps up to candidateAttemptCap of its own, and the next
+// candidate is started next to it instead of after it: immediately when the
+// running attempt fails, otherwise one stagger later. The stagger is the old
+// even share of the remaining budget, so every candidate starts no later than
+// it did under the split, but a slow attempt is no longer cut off when its
+// share runs out. The first completed handshake wins; no caller payload has
+// been read, so no byte is ever sent twice. Every attempt still ends at the one
+// total deadline.
+const (
+	candidateAttemptCap = 3 * time.Second
+	// The stagger never drops below a normal relay handshake, so a healthy
+	// path is not hedged on every stream, and never exceeds half the attempt
+	// cap, so a black-holed first candidate delays a stream by at most 1.5 s.
+	candidateStaggerMin = 250 * time.Millisecond
+	candidateStaggerMax = 1500 * time.Millisecond
+)
+
+// candidateLaunchJitter desynchronizes a burst of failed 128-worker connections.
+// It stays inside the original setup deadline and never replays user bytes.
+func candidateLaunchJitter(remaining time.Duration) time.Duration {
+	pause := time.Duration(10+rand.IntN(41)) * time.Millisecond
+	if pause > remaining/4 {
+		pause = remaining / 4
+	}
+	if pause < 0 {
+		pause = 0
+	}
+	return pause
+}
+
+type candidateAttemptResult struct {
+	index int
+	conn  net.Conn
+	err   error
+}
+
+// recordCandidateAttemptFailure is the evidence one failed candidate attempt
+// leaves behind: local isolation, a log line that names the candidate by opaque
+// hashes and keeps the raw error, and the optional Panel feedback hook.
+func recordCandidateAttemptFailure(s *PolicyStore, protocol, host string, port int, ss RuntimeSnapshot, attempt int, err error, onFailure candidateFailureHook) {
+	s.FailCandidate(protocol, ss.Lease)
+	log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s error=%q candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, attempt, haErrorClass(err), boundedStatusText(fmt.Sprint(err), 160), ss.Lease.CandidateKeyHash, ss.Lease.LeaseHash, haPathKey(ss.Lease), tcpTargetHash(net.JoinHostPort(host, fmt.Sprint(port))))
+	if onFailure != nil {
+		onFailure(ss, err)
+	}
+}
+
+// drainOvertakenAttempts settles the attempts that were still running when a
+// sibling won. Abandoning them silently would never isolate a black-holed
+// candidate: every new stream would wait one stagger on it again. Each one is
+// judged by its own result within its own deadline; a late success is only
+// closed. done is closed once every attempt is settled, which releases (and
+// closes) any result that arrives later still.
+func drainOvertakenAttempts(ctx context.Context, s *PolicyStore, protocol, host string, port int, pending map[int]RuntimeSnapshot, until map[int]time.Time, results <-chan candidateAttemptResult, done chan struct{}, onFailure candidateFailureHook) {
+	defer close(done)
+	defer func() {
+		for _, ss := range pending {
+			ss.Lease.wipe()
+		}
+	}()
+	for len(pending) > 0 {
+		wake := time.Time{}
+		for i := range pending {
+			if wake.IsZero() || until[i].Before(wake) {
+				wake = until[i]
+			}
+		}
+		timer := time.NewTimer(time.Until(wake))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case r := <-results:
+			timer.Stop()
+			if r.conn != nil {
+				r.conn.Close()
+			}
+			ss, ok := pending[r.index]
+			if !ok {
+				continue
+			}
+			delete(pending, r.index)
+			if r.err != nil && s.acceptsInFlight(ss) {
+				recordCandidateAttemptFailure(s, protocol, host, port, ss, r.index+1, r.err, onFailure)
+			}
+			ss.Lease.wipe()
+		case <-timer.C:
+			now := time.Now()
+			for i, ss := range pending {
+				if now.Before(until[i]) {
+					continue
+				}
+				delete(pending, i)
+				if s.acceptsInFlight(ss) {
+					recordCandidateAttemptFailure(s, protocol, host, port, ss, i+1, context.DeadlineExceeded, onFailure)
+				}
+				ss.Lease.wipe()
+			}
+		}
+	}
+}
+
+// dialCandidateStreamReporting is dialCandidateStreamForProtocol with a hook
+// that sees every failed candidate attempt, so fixed-target port forwarding can
+// report the failing relay to the Panel like the native gateway does.
+func dialCandidateStreamReporting(ctx context.Context, s *PolicyStore, protocol, host string, port int, total time.Duration, dial candidateStreamDial, onFailure candidateFailureHook) (net.Conn, RuntimeSnapshot, error) {
 	if protocol != "tcp" && protocol != "udp" {
 		return nil, RuntimeSnapshot{}, ErrPolicyInvalid
 	}
@@ -522,99 +690,46 @@ func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protoco
 	last := error(errHACandidatesUnavailable)
 	var first error
 	activeAttempted := false
-	for i := 0; i < len(candidates); i++ {
+
+	// Workers hand their result to this loop, or to drainOvertakenAttempts
+	// once a sibling won. Closing done releases every worker that is left; a
+	// worker then closes its own late connection.
+	results := make(chan candidateAttemptResult)
+	done := make(chan struct{})
+	drainOwnsDone := false
+	defer func() {
+		if !drainOwnsDone {
+			close(done)
+		}
+	}()
+	var running []int
+	until := map[int]time.Time{}
+	stopRunning := func(i int) bool {
+		for j, k := range running {
+			if k == i {
+				running = append(running[:j], running[j+1:]...)
+				return true
+			}
+		}
+		return false
+	}
+	next := 0
+	nextLaunch := time.Now()
+	// launchSoon moves the next start forward after a failure; a failed
+	// attempt no longer holds its sibling back for the rest of the stagger.
+	launchSoon := func() {
+		if soon := time.Now().Add(candidateLaunchJitter(time.Until(deadline))); soon.Before(nextLaunch) {
+			nextLaunch = soon
+		}
+	}
+	failed := func(i int, e error) {
 		ss := candidates[i]
-		if i > 0 {
-			// Desynchronize a burst of failed 128-worker connections. This is
-			// inside the original setup deadline and never replays user bytes.
-			pause := time.Duration(10+rand.IntN(41)) * time.Millisecond
-			if remaining := time.Until(deadline); pause > remaining/4 {
-				pause = remaining / 4
-			}
-			if pause > 0 {
-				timer := time.NewTimer(pause)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: ctx.Err()}
-				case <-timer.C:
-				}
-			}
-		}
-		if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
-			activeAttempted = true
-		}
-		if !s.acceptsInFlight(ss) {
-			return nil, RuntimeSnapshot{}, ErrPolicyExpired
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, RuntimeSnapshot{}, err
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: context.DeadlineExceeded}
-		}
-		budget := remaining / time.Duration(len(candidates)-i)
-		if budget > 3*time.Second {
-			budget = 3 * time.Second
-		}
-		if expiry := time.Until(ss.Lease.ExpiresAt); expiry < budget {
-			budget = expiry
-		}
-		if budget <= 0 {
-			continue
-		}
-		// The worker owns a clone even if cancellation returns before its dial ends.
-		owned := cloneHALease(ss.Lease)
-		type dialResult struct {
-			conn net.Conn
-			err  error
-		}
-		result := make(chan dialResult)
-		attempt, stop := context.WithTimeout(ctx, budget)
-		go func() {
-			defer owned.wipe()
-			c, e := dial(owned, host, port, budget)
-			select {
-			case result <- dialResult{c, e}:
-			case <-attempt.Done():
-				if c != nil {
-					c.Close()
-				}
-			}
-		}()
-		var c net.Conn
-		var e error
-		select {
-		case r := <-result:
-			c, e = r.conn, r.err
-		case <-attempt.Done():
-			e = attempt.Err()
-		}
-		stop()
-		if ctx.Err() != nil {
-			if c != nil {
-				c.Close()
-			}
-			return nil, RuntimeSnapshot{}, ctx.Err()
-		}
-		if e == nil {
-			if !s.acceptsInFlight(ss) {
-				c.Close()
-				return nil, RuntimeSnapshot{}, ErrPolicyExpired
-			}
-			ss.Lease = cloneHALease(ss.Lease)
-			return c, ss, nil
-		}
-		if c != nil {
-			c.Close()
-		}
-		s.FailCandidate(protocol, ss.Lease)
-		log.Printf("tcp candidate failed forward_id=%d selection_ref=%s generation=%s attempt=%d reason=%s candidate_hash=%s lease_hash=%s relay_hash=%s target_hash=%s", ss.Policy.ForwardID, ss.Lease.SelectionRef, ss.Policy.PolicyGeneration, i+1, haErrorClass(e), ss.Lease.CandidateKeyHash, ss.Lease.LeaseHash, haPathKey(ss.Lease), tcpTargetHash(net.JoinHostPort(host, fmt.Sprint(port))))
+		recordCandidateAttemptFailure(s, protocol, host, port, ss, i+1, e, onFailure)
 		if first == nil {
 			first = e
 		}
 		last = e
+		launchSoon()
 		// With one eligible TCP path, the per-attempt cap used to discard
 		// the rest of the total setup budget after one transient timeout.
 		// Retry at most once, before reading any caller payload. Do not
@@ -626,6 +741,127 @@ func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protoco
 			retry := ss
 			retry.Lease = cloneHALease(ss.Lease)
 			candidates = append(candidates, retry)
+		}
+	}
+	for next < len(candidates) || len(running) > 0 {
+		now := time.Now()
+		// An attempt that outlived its own budget failed; its late result is
+		// closed when it arrives.
+		for _, i := range append([]int(nil), running...) {
+			if !now.Before(until[i]) {
+				stopRunning(i)
+				failed(i, context.DeadlineExceeded)
+			}
+		}
+		if next < len(candidates) && !now.Before(nextLaunch) {
+			i := next
+			next++
+			ss := candidates[i]
+			if activeOK && haPathKey(ss.Lease) == haPathKey(active.Lease) {
+				activeAttempted = true
+			}
+			if !s.acceptsInFlight(ss) {
+				return nil, RuntimeSnapshot{}, ErrPolicyExpired
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, RuntimeSnapshot{}, err
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: context.DeadlineExceeded}
+			}
+			budget := remaining
+			if budget > candidateAttemptCap {
+				budget = candidateAttemptCap
+			}
+			if expiry := time.Until(ss.Lease.ExpiresAt); expiry < budget {
+				budget = expiry
+			}
+			if budget <= 0 {
+				continue
+			}
+			stagger := remaining / time.Duration(len(candidates)-i)
+			if stagger < candidateStaggerMin {
+				stagger = candidateStaggerMin
+			}
+			if stagger > candidateStaggerMax {
+				stagger = candidateStaggerMax
+			}
+			nextLaunch = now.Add(stagger + candidateLaunchJitter(remaining))
+			// The worker owns a clone even if this loop returns before its dial ends.
+			owned := cloneHALease(ss.Lease)
+			go func(index int, owned ProviderLease, budget time.Duration) {
+				defer owned.wipe()
+				c, e := dial(owned, host, port, budget)
+				select {
+				case results <- candidateAttemptResult{index: index, conn: c, err: e}:
+				case <-done:
+					if c != nil {
+						c.Close()
+					}
+				}
+			}(i, owned, budget)
+			running = append(running, i)
+			until[i] = now.Add(budget)
+			continue
+		}
+		if len(running) == 0 && next >= len(candidates) {
+			break
+		}
+		wake := deadline
+		if next < len(candidates) && nextLaunch.Before(wake) {
+			wake = nextLaunch
+		}
+		for _, i := range running {
+			if until[i].Before(wake) {
+				wake = until[i]
+			}
+		}
+		timer := time.NewTimer(time.Until(wake))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, RuntimeSnapshot{}, ctx.Err()
+		case <-timer.C:
+		case r := <-results:
+			timer.Stop()
+			if !stopRunning(r.index) {
+				// Already counted as timed out at its own deadline.
+				if r.conn != nil {
+					r.conn.Close()
+				}
+				continue
+			}
+			if ctx.Err() != nil {
+				if r.conn != nil {
+					r.conn.Close()
+				}
+				return nil, RuntimeSnapshot{}, ctx.Err()
+			}
+			if r.err != nil {
+				if r.conn != nil {
+					r.conn.Close()
+				}
+				failed(r.index, r.err)
+				continue
+			}
+			ss := candidates[r.index]
+			if !s.acceptsInFlight(ss) {
+				r.conn.Close()
+				return nil, RuntimeSnapshot{}, ErrPolicyExpired
+			}
+			if len(running) > 0 {
+				pending := make(map[int]RuntimeSnapshot, len(running))
+				deadlines := make(map[int]time.Time, len(running))
+				for _, k := range running {
+					pending[k] = RuntimeSnapshot{Policy: candidates[k].Policy, Lease: cloneHALease(candidates[k].Lease)}
+					deadlines[k] = until[k]
+				}
+				drainOwnsDone = true
+				go drainOvertakenAttempts(ctx, s, protocol, host, port, pending, deadlines, results, done, onFailure)
+			}
+			ss.Lease = cloneHALease(ss.Lease)
+			return r.conn, ss, nil
 		}
 	}
 	// A probe can reject every fresh candidate during a transient false
@@ -673,7 +909,12 @@ func dialCandidateStreamForProtocol(ctx context.Context, s *PolicyStore, protoco
 			if first == nil {
 				first = err
 			}
-			log.Printf("active candidate forwarding test failed protocol=tcp forward_id=%d selection_ref=%s generation=%s reason=%s", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err))
+			log.Printf("active candidate forwarding test failed protocol=tcp forward_id=%d selection_ref=%s generation=%s reason=%s error=%q", active.Policy.ForwardID, active.Lease.SelectionRef, active.Policy.PolicyGeneration, haErrorClass(err), boundedStatusText(fmt.Sprint(err), 160))
+			// A real dial through the active path failed: that is the same
+			// evidence as any other candidate attempt, not a probe verdict.
+			if onFailure != nil {
+				onFailure(active, err)
+			}
 		}
 	}
 	return nil, RuntimeSnapshot{}, &candidateDialFailure{First: first, Last: last, Terminal: errHACandidatesUnavailable}

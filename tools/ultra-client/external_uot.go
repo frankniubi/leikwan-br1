@@ -866,13 +866,17 @@ func (association *externalUoTAssociation) run() {
 			}
 			disconnectedAt = time.Time{}
 		}
-		connection, snapshot, err := dialCandidateStreamForProtocol(
+		// A carrier that cannot reach the sidecar through a relay is a logical
+		// UDP association failure in port-forward mode: report the relay to
+		// the Panel like a datagram arm failure, not only as a local reconnect.
+		connection, snapshot, err := dialCandidateStreamReporting(
 			association.ctx,
 			association.store,
 			"udp",
 			association.sidecarHost(), association.sidecarPort(),
 			time.Duration(association.config.ConnectTimeoutSecs)*time.Second,
 			dialStreamForConfig(association.config),
+			fixedTargetFailureFeedback(association.status, "udp"),
 		)
 		if err == nil {
 			started := time.Now()

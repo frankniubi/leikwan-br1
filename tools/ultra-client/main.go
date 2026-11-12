@@ -693,9 +693,12 @@ func dialStreamWithGreetingOrderConfig(
 	if !isRetryableHandshakeError(err) {
 		return conn, err
 	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return nil, &greetingFallbackError{initial: err, fallback: context.DeadlineExceeded}
+	// A fallback needs a fresh connect plus one handshake round trip. When the
+	// first greeting used up the attempt (a timeout usually does), there is no
+	// second try to report: "fallback=context deadline exceeded" only hid the
+	// real failure behind a fake one. Return the first error unchanged.
+	if time.Until(deadline) < greetingFallbackMinBudget {
+		return nil, err
 	}
 	fallbackConn, fallbackErr := dialStreamWithGreetingUntilConfig(config, lease, targetHost, targetPort, deadline, order[1])
 	if fallbackErr == nil {
@@ -703,6 +706,13 @@ func dialStreamWithGreetingOrderConfig(
 	}
 	return nil, &greetingFallbackError{initial: err, fallback: fallbackErr}
 }
+
+// greetingFallbackMinBudget is the least time a greeting fallback is started
+// with. It needs a TCP connect plus one handshake round trip, two RTTs; below
+// this not even a nearby relay can answer. It is kept small on purpose: an
+// 800 ms selection probe whose first greeting was refused quickly must still
+// try the second one.
+const greetingFallbackMinBudget = 250 * time.Millisecond
 
 // greetingFallbackError is a stream handshake that failed with both greetings.
 // It unwraps to the fallback error only, exactly like the fmt.Errorf form it
@@ -789,13 +799,10 @@ func dialStreamWithCandidates(
 			current.wipe()
 			return nil, ProviderLease{}, fmt.Errorf("%w: %v", errNoHealthyCandidate, ErrPolicyExpired)
 		}
-		identity := strings.TrimSpace(current.CandidateKeyHash)
-		if identity == "" {
-			identity = strings.TrimSpace(current.SelectionRef)
-		}
-		if identity != "" {
-			attempted = append(attempted, identity)
-		}
+		// Attempts are tracked per relay, not per line: the relays of one
+		// line share a candidate_key_hash, and a failed relay must not hide
+		// its healthy siblings from this connection.
+		attempted = append(attempted, providerLeaseIdentity(current))
 		if operatorQuarantines(store.config, current, "tcp", time.Now()) {
 			current.wipe()
 			lastErr = errOperatorQuarantine
@@ -818,11 +825,9 @@ func dialStreamWithCandidates(
 		if onFailure != nil {
 			onFailure(current, err)
 		}
-		failureKey := current.CandidateKeyHash
-		if strings.TrimSpace(failureKey) == "" {
-			failureKey = current.SelectionRef
-		}
-		store.MarkCandidateFailure(failureKey)
+		// Local isolation names the exact relay; onFailure above still reports
+		// the line-level candidate_key_hash to the Panel.
+		store.MarkCandidateLeaseFailure(current)
 		current.wipe()
 		if attempt == 3 {
 			break
@@ -990,6 +995,7 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 	}()
 	dial := dialStreamForConfig(config)
 	replay := tcpReplayDialerFor(config, store, status, targetHost, targetPort, dial)
+	feedback := fixedTargetFailureFeedback(status, "tcp")
 	limit := config.MaxTCPConnections
 	if limit < 1 || limit > 4096 {
 		limit = 512
@@ -1009,13 +1015,15 @@ func serveTCP(ctx context.Context, config Config, store *PolicyStore, status *St
 				defer func() { <-semaphore }()
 				defer local.Close()
 				started := time.Now()
-				remote, snapshot, dialErr := dialCandidateStream(
+				remote, snapshot, dialErr := dialCandidateStreamReporting(
 					ctx,
 					store,
+					"tcp",
 					targetHost,
 					targetPort,
 					time.Duration(config.ConnectTimeoutSecs)*time.Second,
 					dial,
+					feedback,
 				)
 				if dialErr != nil {
 					status.RecordHAEvent("tcp", haErrorClass(dialErr), "")

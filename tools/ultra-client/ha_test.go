@@ -205,8 +205,11 @@ func TestHACandidateRetryAndProtocolIsolation(t *testing.T) {
 	conn, chosen, err := dialCandidateStream(context.Background(), s, "example.test", 443, 80*time.Millisecond, func(l ProviderLease, _ string, _ int, budget time.Duration) (net.Conn, error) {
 		calls++
 		if l.IP == leases[0].IP {
-			if budget > 45*time.Millisecond {
-				t.Error("first candidate consumed whole budget")
+			// Candidates are staggered rather than handed an even split of
+			// the budget (ha_candidates.go): an attempt may use the rest of
+			// the total, never more, and a failure starts the backup at once.
+			if budget > 80*time.Millisecond {
+				t.Error("candidate attempt exceeded the total setup budget")
 			}
 			return nil, errors.New("refused")
 		}
