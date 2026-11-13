@@ -2,10 +2,10 @@
   "android_client_apk": {
     "artifact_url": "/artifacts/leikwan-android-client.apk",
     "path": "artifacts/android/leikwan-android-client.apk",
-    "sha256": "0c16fc8ba4ee382456aa67c607ee21a3d0fa97e71ec29699610059e2b463bb50",
-    "size_bytes": 74822033,
-    "version": "0.2.50",
-    "version_code": 52
+    "sha256": "94de28ed79b7c3e77411bb5a2f2c2940825880735be57508acbbb565fe802789",
+    "size_bytes": 74797185,
+    "version": "0.2.51",
+    "version_code": 53
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
