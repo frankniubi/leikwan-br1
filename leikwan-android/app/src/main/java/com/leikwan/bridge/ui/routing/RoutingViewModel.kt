@@ -18,6 +18,8 @@ import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.routing.ClashRuleParser
 import com.leikwan.bridge.routing.ClashRuleCatalog
+import com.leikwan.bridge.service.LeikwanVpnService
+import com.leikwan.bridge.service.TunnelOrchestrator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -41,6 +43,8 @@ data class RoutingUiState(
     /** Imported Surge/Clash lists by id (labels and counts for IMPORTED_LIST rules). */
     val importedLists: Map<String, ImportedRuleListStore.ImportedRuleList> = emptyMap(),
     val listImportBusy: Boolean = false,
+    val applying: Boolean = false,
+    val applyMessage: String? = null,
     /** Result line of the last list import (summary or error). */
     val listImportMessage: String? = null,
 )
@@ -277,6 +281,22 @@ class RoutingViewModel(
         viewModelScope.launch {
             runCatching { catalogRefresher?.invoke() }
             refreshNow()
+        }
+    }
+
+    fun applyToRunningTunnel() {
+        if (_state.value.applying) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(applying = true, applyMessage = null)
+            val message = if (!LeikwanVpnService.isRunning) {
+                "The VPN is not connected. Your changes are saved and will be used on the next connect."
+            } else try {
+                TunnelOrchestrator.forApplication(getApplication()).reconnectSaved()
+                "Changes applied to the running VPN."
+            } catch (e: Exception) {
+                e.message ?: "The changes could not be applied."
+            }
+            _state.value = _state.value.copy(applying = false, applyMessage = message)
         }
     }
 

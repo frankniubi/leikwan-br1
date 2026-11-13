@@ -4,9 +4,12 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
+import com.leikwan.bridge.ui.theme.LeikwanTheme
 import org.junit.Rule
 import org.junit.Test
 
@@ -43,6 +46,7 @@ class RoutingScreenTest {
     @Test
     fun rendersAuthoringControlsAndRules() {
         composeRule.setContent {
+            LeikwanTheme {
             RoutingScreenContent(
                 state = seededState,
                 onSetSelectorEnabled = {},
@@ -56,10 +60,13 @@ class RoutingScreenTest {
                 onSetTargetNode = { _, _ -> },
                 onDelete = {},
             )
+            }
         }
 
-        composeRule.onNode(hasText("Add country rule") and hasClickAction()).assertExists()
-        composeRule.onNode(hasText("Add category rule") and hasClickAction()).assertExists()
+        composeRule.onNodeWithText("Add a rule").performClick()
+        composeRule.onNodeWithText("Import rules").performClick()
+        composeRule.onNodeWithText("Add country rule").assertExists()
+        composeRule.onNodeWithText("Add category rule").assertExists()
         composeRule.onNodeWithTag("routing-rule-country-cn").assertExists()
         composeRule.onNodeWithTag("routing-rule-category-video").assertExists()
     }

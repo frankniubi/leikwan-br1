@@ -442,4 +442,13 @@
     <string name="settings_upload_logs_hint">Send redacted client logs to support</string>
     <string name="settings_upload_logs_done_format">Uploaded (ref: %1$s)</string>
     <string name="settings_upload_logs_failed">Failed to upload logs</string>
+    <string name="routing_hub_rules_title">Routing rules</string>
+    <string name="routing_hub_rules_detail">%1$d custom rules. Country, category and imported lists, with per-rule exit and node selection.</string>
+    <string name="routing_hub_apps_detail">Choose which apps use the VPN, which bypass it, and which line each group uses.</string>
+    <string name="routing_hub_manage">Manage</string>
+    <string name="routing_hub_note">Changes are saved immediately. Use Apply to current VPN to update a running connection. The switch controls country and category rules; imported and app rules are managed separately.</string>
+    <string name="routing_apply">Apply to current VPN</string>
+    <string name="routing_applying">Applying…</string>
+    <string name="routing_add_section">Add a rule</string>
+    <string name="routing_import_section">Import rules</string>
 </resources>

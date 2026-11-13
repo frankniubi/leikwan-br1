@@ -75,6 +75,7 @@ import com.leikwan.bridge.ui.connections.appGroupLines
 import com.leikwan.bridge.ui.connections.connectToggle
 import com.leikwan.bridge.ui.proxies.ProxiesScreen
 import com.leikwan.bridge.ui.proxies.ProxiesViewModel
+import com.leikwan.bridge.ui.routing.RoutingHubScreen
 import com.leikwan.bridge.ui.routing.RoutingScreen
 import com.leikwan.bridge.ui.settings.SettingsScreen
 import com.leikwan.bridge.ui.shared.RequiredUpdateDialog
@@ -97,6 +98,7 @@ enum class Screen(
 /** Secondary pages; they get a top app bar and no dock. */
 internal enum class SubPage(val route: String, @StringRes val titleRes: Int) {
     Routing("routing", R.string.nav_routing),
+    RoutingRules("routing-rules", R.string.nav_routing),
     ClientRules("client-rules", R.string.nav_client_rules),
     AppRouting("app-routing", R.string.dash_app_routing),
 }
@@ -199,6 +201,14 @@ fun MainScreen(onLogout: () -> Unit = {}) {
                 }
                 composable(SubPage.Routing.route) {
                     SubPageScaffold(SubPage.Routing, onBack = { navController.popBackStack() }) {
+                        RoutingHubScreen(
+                            onOpenRules = { navController.navigate(SubPage.RoutingRules.route) },
+                            onOpenAppRouting = { navController.navigate(SubPage.AppRouting.route) },
+                        )
+                    }
+                }
+                composable(SubPage.RoutingRules.route) {
+                    SubPageScaffold(SubPage.RoutingRules, onBack = { navController.popBackStack() }) {
                         RoutingScreen(showTitle = false)
                     }
                 }

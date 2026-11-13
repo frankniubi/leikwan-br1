@@ -57,6 +57,7 @@ import com.leikwan.bridge.routing.RoutingRule
 import com.leikwan.bridge.routing.RoutingRuleKind
 import com.leikwan.bridge.routing.UserTrafficOutcome
 import com.leikwan.bridge.routing.CountryCatalog
+import com.leikwan.bridge.service.LeikwanVpnService
 
 @Composable
 fun RoutingScreen(
@@ -85,6 +86,7 @@ fun RoutingScreen(
         showTitle = showTitle,
         onImportRuleList = viewModel::importRuleList,
         onRefreshImportedList = viewModel::refreshImportedList,
+        onApply = viewModel::applyToRunningTunnel,
     )
 }
 
@@ -99,14 +101,15 @@ internal fun RoutingScreenContent(
     onSelectCountrySuggestion: (com.leikwan.bridge.routing.Country) -> Unit,
     onAddCountry: (String, UserTrafficOutcome) -> Unit,
     onAddCategory: (String, UserTrafficOutcome) -> Unit,
-    onImportClash: (String) -> Unit,
-    onToggle: (String) -> Unit,
-    onSetTargetNode: (String, Long?) -> Unit,
-    onDelete: (String) -> Unit,
-    onRefreshRules: () -> Unit,
+    onImportClash: (String) -> Unit = {},
+    onToggle: (String) -> Unit = {},
+    onSetTargetNode: (String, Long?) -> Unit = { _, _ -> },
+    onDelete: (String) -> Unit = {},
+    onRefreshRules: () -> Unit = {},
     showTitle: Boolean = true,
     onImportRuleList: (url: String, name: String, outcome: UserTrafficOutcome) -> Unit = { _, _, _ -> },
     onRefreshImportedList: (ruleId: String) -> Unit = {},
+    onApply: () -> Unit = {},
 ) {
     val zh = isZhLocale()
     Column(
@@ -155,7 +158,7 @@ internal fun RoutingScreenContent(
         Text(stringResource(R.string.routing_global_default), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            UserTrafficOutcome.entries.forEach { outcome ->
+            UserTrafficOutcome.entries.filter { it != UserTrafficOutcome.REJECT }.forEach { outcome ->
                 FilterChip(
                     selected = state.globalDefault == outcome,
                     onClick = { onSetGlobalDefault(outcome) },
@@ -184,6 +187,14 @@ internal fun RoutingScreenContent(
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
+        var addExpanded by remember { mutableStateOf(false) }
+        var importExpanded by remember { mutableStateOf(false) }
+        AssistChip(
+            onClick = { addExpanded = !addExpanded },
+            label = { Text(stringResource(R.string.routing_add_section)) },
+            enabled = state.selectorEnabled,
+        )
+        if (addExpanded) {
         // Add country rule
         Text(stringResource(R.string.routing_add_country_rule), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
@@ -332,11 +343,14 @@ internal fun RoutingScreenContent(
         ) {
             Text(stringResource(R.string.routing_add_category_rule))
         }
-
-        Spacer(Modifier.height(24.dp))
-        HorizontalDivider()
+        }
         Spacer(Modifier.height(16.dp))
-
+        AssistChip(
+            onClick = { importExpanded = !importExpanded },
+            label = { Text(stringResource(R.string.routing_import_section)) },
+            enabled = state.selectorEnabled,
+        )
+        if (importExpanded) {
         // Import a Surge/Clash rule list by URL
         Text(stringResource(R.string.routing_list_import_title), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(4.dp))
@@ -446,9 +460,7 @@ internal fun RoutingScreenContent(
                 )
             }
         }
-
-        Spacer(Modifier.height(24.dp))
-        HorizontalDivider()
+        }
         Spacer(Modifier.height(16.dp))
 
         // Existing rules
@@ -475,6 +487,16 @@ internal fun RoutingScreenContent(
                     onRefreshList = onRefreshImportedList.takeIf { !state.listImportBusy },
                 )
                 Spacer(Modifier.height(8.dp))
+            }
+        }
+        if (state.applyMessage != null || state.applying || LeikwanVpnService.isRunning) {
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onApply, enabled = !state.applying && LeikwanVpnService.isRunning, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(if (state.applying) R.string.routing_applying else R.string.routing_apply))
+            }
+            state.applyMessage?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         }
