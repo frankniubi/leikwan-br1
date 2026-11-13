@@ -10,7 +10,7 @@ import android.net.VpnService
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -42,7 +42,7 @@ private data class EnrollmentLink(
     val code: String,
 )
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private companion object {
         /** Per process, so a declined prompt is not repeated on every connect. */
         var batteryPromptOffered = false

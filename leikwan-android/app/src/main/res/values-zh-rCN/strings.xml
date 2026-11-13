@@ -441,4 +441,13 @@
     <string name="settings_upload_logs_hint">向技术支持发送脱敏后的客户端日志</string>
     <string name="settings_upload_logs_done_format">已上传（编号：%1$s）</string>
     <string name="settings_upload_logs_failed">上传日志失败</string>
+    <string name="routing_hub_rules_title">分流规则</string>
+    <string name="routing_hub_rules_detail">已添加 %1$d 条自定义规则。按国家、分类或规则列表分流，每条规则可单独选择出口和节点。</string>
+    <string name="routing_hub_apps_detail">选择哪些应用走 VPN、哪些绕过 VPN，以及每组应用使用哪条线路。</string>
+    <string name="routing_hub_manage">管理</string>
+    <string name="routing_hub_note">修改会立即保存；如需更新正在运行的连接，请点击“应用到当前 VPN”。开关控制国家和分类规则；导入列表与应用分流单独管理。</string>
+    <string name="routing_apply">应用到当前 VPN</string>
+    <string name="routing_applying">正在应用…</string>
+    <string name="routing_add_section">添加规则</string>
+    <string name="routing_import_section">导入规则</string>
 </resources>
