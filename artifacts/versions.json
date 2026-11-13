@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "bd9e0f0dab02d7107f307696fa98a8efdb89dc0997ef1a86c83bbfb5433a1845",
+    "sha256": "db15d10bf1e84b6975fafc98c46d3f228741cc01405f655f7353128d482c6e4d",
     "size": 423800,
     "size_bytes": 423800,
-    "version": "2026.11.13.1"
+    "version": "2026.11.13.2"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -420,43 +420,43 @@
   },
   "openwrt_leikwand_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk",
+    "artifact_url": "/artifacts/files/openwrt/arm64/leikwand_1.2.12-r1_aarch64_generic.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.11-r1_aarch64_generic.ipk",
-    "sha256": "cdfe9c338610539ad070b8f9a58777785994ccf5bf0e7a1a067be645248d1e98",
-    "size_bytes": 2688503,
-    "version": "1.2.11"
+    "path": "public/artifacts/openwrt/arm64/leikwand_1.2.12-r1_aarch64_generic.ipk",
+    "sha256": "4f3f38508933423a8c4951e4a37fec1403a71efa737bb2b4361dd12292fe4385",
+    "size_bytes": 2688683,
+    "version": "1.2.12"
   },
   "openwrt_leikwand_apk_aarch64_generic": {
     "architecture": "arm64",
-    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.11-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/arm64/leikwand-1.2.12-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.11-r1.apk",
-    "sha256": "2701431ee2be4c75df685ed095bd23ffddfba8c9afae796d212c4f4225926eeb",
-    "size_bytes": 2677219,
-    "version": "1.2.11"
+    "path": "public/artifacts/openwrt/apk/arm64/leikwand-1.2.12-r1.apk",
+    "sha256": "f3d2a5949c33aeffb676acc2d168b77bcdc77b91490ffea2a85959f41996bcd5",
+    "size_bytes": 2677073,
+    "version": "1.2.12"
   },
   "openwrt_leikwand_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.11-r1_x86_64.ipk",
+    "artifact_url": "/artifacts/files/openwrt/amd64/leikwand_1.2.12-r1_x86_64.ipk",
     "format": "opkg-ipk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.11-r1_x86_64.ipk",
-    "sha256": "76fd3eae56269cd8fc5340d123eb5ad141ad28e6dfa4e3c89c69c5f2ad264de1",
-    "size_bytes": 2985850,
-    "version": "1.2.11"
+    "path": "public/artifacts/openwrt/amd64/leikwand_1.2.12-r1_x86_64.ipk",
+    "sha256": "5ffb1b01872ff5053c74239e597181fc45289d0fd828c8a25b06cba23c90c892",
+    "size_bytes": 2985599,
+    "version": "1.2.12"
   },
   "openwrt_leikwand_apk_x86_64": {
     "architecture": "amd64",
-    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.11-r1.apk",
+    "artifact_url": "/artifacts/files/openwrt/apk/amd64/leikwand-1.2.12-r1.apk",
     "format": "openwrt-apk",
     "package": "leikwand",
-    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.11-r1.apk",
-    "sha256": "191c1a887c9214e4e417d271f8c8b185bfb1967723ed4cb875e775ed94d40f23",
-    "size_bytes": 2969494,
-    "version": "1.2.11"
+    "path": "public/artifacts/openwrt/apk/amd64/leikwand-1.2.12-r1.apk",
+    "sha256": "07a8169e4e07f18ead2e735888db9637ec201593dc51c665f57376e1660ce75b",
+    "size_bytes": 2969471,
+    "version": "1.2.12"
   },
   "retired_runtime_030b48158478": {
     "attestation": {
@@ -569,8 +569,8 @@
   "ultra_client_runtime": {
     "artifact_url": "/artifacts/ultra/ultra-client_linux_amd64",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "d5e3d4f43712d200f11c9aefcaeb2ad6e8c1d8729fd7ce40cd6822dfad1ee36a"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "5ffad1ad62e2e2adfb58f17cbe3a43d8a4ff4ebdb59b9d7136c7419bb7e18d53"
     },
     "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.12.1",
     "hardening": [
@@ -585,9 +585,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_amd64",
-    "sha256": "d5e3d4f43712d200f11c9aefcaeb2ad6e8c1d8729fd7ce40cd6822dfad1ee36a",
-    "size_bytes": 19341578,
-    "version": "2026.11.12.1",
+    "sha256": "5ffad1ad62e2e2adfb58f17cbe3a43d8a4ff4ebdb59b9d7136c7419bb7e18d53",
+    "size_bytes": 19235082,
+    "version": "2026.11.13.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "build_provenance": {
       "source_commit": "247beaf4",
@@ -600,8 +600,8 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "1ef70429198d7391272340602e6237f39eca3d3b8481b5a047cb8effae3c7e8e"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "23aee28a42d2728e1f7b38508e565ce38261375ac147bb94092f19dcf02d619a"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.12.1",
     "hardening": [
@@ -616,9 +616,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_arm64",
-    "sha256": "1ef70429198d7391272340602e6237f39eca3d3b8481b5a047cb8effae3c7e8e",
+    "sha256": "23aee28a42d2728e1f7b38508e565ce38261375ac147bb94092f19dcf02d619a",
     "size_bytes": 17563908,
-    "version": "2026.11.12.1",
+    "version": "2026.11.13.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "build_provenance": {
       "source_commit": "247beaf4",
@@ -631,8 +631,8 @@
     "architecture": "x86_64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "fe322467700a2808bd42aef0f648845be3b4a3f31ce7e9fa08e516119c0e7382"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "53a74d28aadd579dfe84c274e8116b22ec34d1405dcb5af5fd3b4ef1d13a7aa8"
     },
     "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.12.1",
     "hardening": [
@@ -648,9 +648,9 @@
     "note": "android/amd64 requires cgo external linking (Go toolchain refuses internal linking); linked with NDK 27.1.12297006 clang",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_android_x86_64",
-    "sha256": "fe322467700a2808bd42aef0f648845be3b4a3f31ce7e9fa08e516119c0e7382",
-    "size_bytes": 19349600,
-    "version": "2026.11.12.1",
+    "sha256": "53a74d28aadd579dfe84c274e8116b22ec34d1405dcb5af5fd3b4ef1d13a7aa8",
+    "size_bytes": 19320032,
+    "version": "2026.11.13.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "build_provenance": {
       "source_commit": "247beaf4",
@@ -663,8 +663,8 @@
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_linux_arm64",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "bfa368e87c8f0bf023df1d7a94e8365863de52a21373966682d707cd9e247031"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "aedd44a84eb600b90112c992075ab3f779175e3d1c09e4f6abbd49c13602e7a4"
     },
     "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.12.1",
     "hardening": [
@@ -679,9 +679,9 @@
     ],
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_linux_arm64",
-    "sha256": "bfa368e87c8f0bf023df1d7a94e8365863de52a21373966682d707cd9e247031",
-    "size_bytes": 17629450,
-    "version": "2026.11.12.1",
+    "sha256": "aedd44a84eb600b90112c992075ab3f779175e3d1c09e4f6abbd49c13602e7a4",
+    "size_bytes": 17563914,
+    "version": "2026.11.13.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "build_provenance": {
       "source_commit": "247beaf4",
@@ -755,15 +755,15 @@
   "ultra_client_runtime_windows": {
     "artifact_url": "/artifacts/ultra/ultra-client_windows_amd64.exe",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973"
     },
     "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.11.12.1",
     "obfuscator": "none",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
-    "sha256": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3",
+    "sha256": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973",
     "size_bytes": 7514112,
-    "version": "2026.11.12.1",
+    "version": "2026.11.13.1",
     "runtime_build_version": "2026.11.12.1.893ba1e57667",
     "hardening": [
       "cgo-disabled",
@@ -771,10 +771,10 @@
       "stripped"
     ],
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "1add2836",
       "compiler": "go",
       "obfuscation": "none",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "clients-20261113-3: first-read coalesce fix"
     }
   },
   "uot_bond_runtime": {
@@ -824,9 +824,9 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
     },
-    "sha256": "340f2c90c5e94820b3dee7213c05d604b9bd5cc5de3dd0a263abd7bc36891107",
-    "size_bytes": 69961645,
-    "version": "0.1.20.82"
+    "sha256": "e17c7d5b083d6b72208ca8d96c617b603df740da9c0376dc7ca15b7b5bfecd67",
+    "size_bytes": 22975194,
+    "version": "0.1.20.83"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -834,9 +834,9 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "9e8b79adc8ab65371671a8b113b564258caa5b05a346477dc663deb508915d7f",
-    "size_bytes": 64061317,
-    "version": "0.1.20.71",
+    "sha256": "38596d5478122483642554c9b5ee76e9fbc548d2c6a0d36ce2ba67cdb16e5407",
+    "size_bytes": 30903425,
+    "version": "0.1.20.72",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -849,9 +849,9 @@
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "4d6f35fce2b675d28e988d37b4dab53633877d240470c57758256a14b4faba83",
+    "sha256": "5b3c5ceb220e130e5328ccb882cd0bbfa5e2106aa0c5b35fd8743811d424b543",
     "size_bytes": 16837,
-    "version": "0.1.20.71",
+    "version": "0.1.20.72",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {
