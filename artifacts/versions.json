@@ -824,8 +824,8 @@
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
       "ultra_client_runtime_windows": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
     },
-    "sha256": "e17c7d5b083d6b72208ca8d96c617b603df740da9c0376dc7ca15b7b5bfecd67",
-    "size_bytes": 22975194,
+    "sha256": "e3194a0a1a04eb48a8cfe93a6d62306777288b34933d7984e51ef86707233790",
+    "size_bytes": 69959500,
     "version": "0.1.20.83"
   },
   "windows_headless_client": {
@@ -834,8 +834,8 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "38596d5478122483642554c9b5ee76e9fbc548d2c6a0d36ce2ba67cdb16e5407",
-    "size_bytes": 30903425,
+    "sha256": "20541fa796d19aa624f3b304a7af351b62085e8314727601f596181ae277c328",
+    "size_bytes": 64062898,
     "version": "0.1.20.72",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
