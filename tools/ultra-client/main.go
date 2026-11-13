@@ -226,6 +226,15 @@ func (conn *bufferedConn) Read(buffer []byte) (int, error) {
 	if len(conn.legacyFinalPrefix) > 0 {
 		count := copy(buffer, conn.legacyFinalPrefix)
 		conn.legacyFinalPrefix = conn.legacyFinalPrefix[count:]
+		// The inspected bytes start the first response, and the rest of it
+		// usually arrived with them. Return what is already buffered in the
+		// same Read (never blocking for more): handing the application a lone
+		// first byte broke clients that read a whole response header with one
+		// Read, such as xray's SS2022 client (2026-11 report from client 44).
+		if len(conn.legacyFinalPrefix) == 0 && count < len(buffer) && conn.reader.Buffered() > 0 {
+			more, _ := conn.reader.Read(buffer[count:])
+			count += more
+		}
 		return count, nil
 	}
 	if conn.legacyFinalPending != nil {
