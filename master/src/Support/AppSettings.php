@@ -25,6 +25,36 @@ final class AppSettings
         return array_key_exists('setting_value', $row) ? (string) $row['setting_value'] : $default;
     }
 
+    /**
+     * When each existing key was last written, as UTC unix time. Keys that do
+     * not exist are left out.
+     *
+     * @param array<int, string> $keys
+     * @return array<string, int>
+     */
+    public function updatedAt(array $keys): array
+    {
+        $params = [];
+        foreach (array_values(array_unique($keys)) as $index => $key) {
+            $params['k' . $index] = $key;
+        }
+        if ($params === []) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT setting_key, updated_at FROM app_settings WHERE setting_key IN (:' . implode(', :', array_keys($params)) . ')',
+            $params
+        );
+        $result = [];
+        foreach ($rows as $row) {
+            $time = strtotime((string) ($row['updated_at'] ?? '') . ' UTC');
+            if ($time !== false) {
+                $result[(string) ($row['setting_key'] ?? '')] = $time;
+            }
+        }
+        return $result;
+    }
+
     public function getBool(string $key, bool $default = false): bool
     {
         $raw = strtolower((string) ($this->get($key, $default ? '1' : '0') ?? ($default ? '1' : '0')));
