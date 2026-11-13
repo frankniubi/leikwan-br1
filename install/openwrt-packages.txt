@@ -3,15 +3,15 @@
 # Exactly one entry per package name, format and architecture: the installer
 # refuses an ambiguous manifest. Update this file together with the uploaded
 # packages on every release (leikwand / leikwan-runtime / luci-app-leikwan).
-76fd3eae56269cd8fc5340d123eb5ad141ad28e6dfa4e3c89c69c5f2ad264de1  amd64/leikwand_1.2.11-r1_x86_64.ipk
-7dc18ac795bde1627fb4d03d152a127a37b33ff7b5574bb6d55ed136724be485  amd64/leikwan-runtime_1.2.10-r1_x86_64.ipk
+5ffb1b01872ff5053c74239e597181fc45289d0fd828c8a25b06cba23c90c892  amd64/leikwand_1.2.12-r1_x86_64.ipk
+f9be4c62b7a48e1bcdea22ba7527522c85fa7bafb2f02d0b4535d81bf615afd3  amd64/leikwan-runtime_1.2.12-r1_x86_64.ipk
 519541e6c2da58e0a9b3c5bc88107186ef341f431d71bf62585a092290064ddf  amd64/luci-app-leikwan_1.1.1-r1_all.ipk
-cdfe9c338610539ad070b8f9a58777785994ccf5bf0e7a1a067be645248d1e98  arm64/leikwand_1.2.11-r1_aarch64_generic.ipk
-32e7dab0c491f056453ceda35ca4c89bf51ff44225e17698b9a1761e3e317a3d  arm64/leikwan-runtime_1.2.10-r1_aarch64_generic.ipk
+4f3f38508933423a8c4951e4a37fec1403a71efa737bb2b4361dd12292fe4385  arm64/leikwand_1.2.12-r1_aarch64_generic.ipk
+95d05831077a0b1915063a6ac91ace519f4ae5df15ade8984362143e21c7f103  arm64/leikwan-runtime_1.2.12-r1_aarch64_generic.ipk
 519541e6c2da58e0a9b3c5bc88107186ef341f431d71bf62585a092290064ddf  arm64/luci-app-leikwan_1.1.1-r1_all.ipk
-191c1a887c9214e4e417d271f8c8b185bfb1967723ed4cb875e775ed94d40f23  apk/amd64/leikwand-1.2.11-r1.apk
-d8bf93541a84a78e78c2ac9bbe1c93ac33f1ea3b7f9a9b0176b7e9b0d5b8a0ce  apk/amd64/leikwan-runtime-1.2.10-r1.apk
+07a8169e4e07f18ead2e735888db9637ec201593dc51c665f57376e1660ce75b  apk/amd64/leikwand-1.2.12-r1.apk
+7efa8e821bcf6e6b7371049fde0fffdba2ae3bebde23498f9ebebb26b6b10fb2  apk/amd64/leikwan-runtime-1.2.12-r1.apk
 ae6e37be4f2a1f45c9c7e0f8f2033a7ec17f0c6aaa46ff175a16d9d5729fe8de  apk/amd64/luci-app-leikwan-1.1.1-r1.apk
-2701431ee2be4c75df685ed095bd23ffddfba8c9afae796d212c4f4225926eeb  apk/arm64/leikwand-1.2.11-r1.apk
-8144af48469a929c0b40ab89d531857dd267f52012a52bc91e31cee7a296dee9  apk/arm64/leikwan-runtime-1.2.10-r1.apk
+f3d2a5949c33aeffb676acc2d168b77bcdc77b91490ffea2a85959f41996bcd5  apk/arm64/leikwand-1.2.12-r1.apk
+aae59d3409b3cb84222be115e4eaca52a8f18d9ea42d0ec89e784c009035f3e1  apk/arm64/leikwan-runtime-1.2.12-r1.apk
 ae6e37be4f2a1f45c9c7e0f8f2033a7ec17f0c6aaa46ff175a16d9d5729fe8de  apk/arm64/luci-app-leikwan-1.1.1-r1.apk
