@@ -251,31 +251,55 @@ public final class PanelClient {
         let expiresAt = coll["expires_at"] as? String ?? ""
         let ref = (obj["reference_code"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedRef = (ref?.isEmpty == false) ? ref! : String(uuid.prefix(8))
-        return (DebugCollectionMeta(uuid: uuid, status: status, expiresAt: expiresAt), resolvedRef)
+        return (DebugCollectionMeta(
+            uuid: uuid, status: status, expiresAt: expiresAt,
+            supportsUploadID: coll["supports_upload_id"] as? Bool == true
+        ), resolvedRef)
     }
 
-    /// Redacts and uploads `rawText` in 256 KiB chunks (`POST api/client/debug/log`).
-    public func uploadDebugLogBundle(uuid: String, rawText: String, source: String = "ios-client.log") async throws -> (chunks: Int, bytes: Int) {
-        let normalizedUUID = uuid.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard DebugLogUploader.isValidCollectionUUID(normalizedUUID) else {
-            throw PanelError.invalidResponse("debug_collection_invalid")
-        }
-        let chunks = DebugLogUploader.buildChunks(fromRawText: rawText)
+    /// Only accepts a persisted immutable bundle. Replaying from sequence zero is safe because
+    /// every attempt uses the same upload_id and exactly the same bytes.
+    public func uploadDebugLogBundle(
+        _ bundle: PendingDebugLogBundle,
+        validateContext: () async throws -> Void = {}
+    ) async throws -> (chunks: Int, bytes: Int) {
+        try bundle.validate()
+        let chunks = DebugLogUploader.buildChunks(fromSanitizedBundle: bundle.bytes)
         var totalBytes = 0
         for chunk in chunks {
+            try Task.checkCancellation()
+            try await validateContext()
             let payload: [String: Any] = [
-                "collection_uuid": normalizedUUID,
+                "collection_uuid": bundle.collection.uuid,
+                "upload_id": bundle.uploadID,
                 "sequence": chunk.sequence,
                 "sha256": chunk.sha256,
                 "chunk_base64": chunk.chunkBase64,
-                "source": source,
+                "source": bundle.source,
             ]
-            let (data, _) = try await perform(path: PanelClient.debugLogPath, method: "POST", jsonBody: payload, extraHeaders: [:])
-            guard let obj = JSONLenient.parseObject(data), JSONLenient.bool(obj["ok"]) == true else {
+            // Diagnostics must not change the control-plane endpoint or turn an upload's
+            // 403/409 into a device-control action. Preserve the HTTP status for retry policy.
+            let request = try makeRequest(endpoint: activeEndpoint, path: Self.debugLogPath, method: "POST", jsonBody: payload)
+            let result: (Data, HTTPURLResponse)
+            do {
+                result = try await transport.send(request)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw error
+            } catch {
+                throw PanelError.transport(error)
+            }
+            try Task.checkCancellation()
+            guard (200...299).contains(result.1.statusCode) else {
+                throw DebugLogHTTPError(status: result.1.statusCode, body: result.0)
+            }
+            guard let obj = JSONLenient.parseObject(result.0), JSONLenient.bool(obj["ok"]) == true else {
                 throw PanelError.invalidResponse("debug_upload_rejected")
             }
             totalBytes += chunk.byteCount
         }
+        try Task.checkCancellation()
         return (chunks.count, totalBytes)
     }
 }

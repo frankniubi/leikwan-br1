@@ -9,6 +9,24 @@ namespace LeikwanBridge.App.Tests.ViewModels;
 
 public sealed class MainViewModelTests
 {
+    [Theory]
+    [InlineData("complete", true)]
+    [InlineData("retry_later", false)]
+    [InlineData("expired", false)]
+    [InlineData("unsupported_upload_protocol", false)]
+    [InlineData("paused_auth", false)]
+    [InlineData("busy", false)]
+    public void LogUploadUiOnlyReportsSuccessForCompleteResult(string status, bool success)
+    {
+        var vm = new MainViewModel();
+        typeof(MainViewModel).GetMethod("ApplyLogUploadResult", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .Invoke(vm, [new DebugManualUploadResult(status, "deadbeef", 1, 1234)]);
+
+        Assert.Equal(success, vm.LogUploadSummary.StartsWith("Ref ", StringComparison.Ordinal));
+        Assert.Equal(success, vm.LogEntries.Any(line => line.Contains("Uploaded diagnostic logs", StringComparison.Ordinal)));
+        if (!success) Assert.Contains(status, vm.LogUploadSummary);
+    }
+
     [Fact]
     public void NativeRouteScopeSelectorFollowsSelectedCarrier()
     {

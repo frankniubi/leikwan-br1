@@ -149,7 +149,7 @@ class SingboxConfigBuilder(
         }
         val root = JsonObject()
         root.add("log", JsonObject().apply {
-            addProperty("level", "debug")
+            addProperty("level", "warn")
         })
         val dnsProxyDetourTag = finalProxyTag.takeIf {
             nativeMode || activeProxyNodes.isNotEmpty()

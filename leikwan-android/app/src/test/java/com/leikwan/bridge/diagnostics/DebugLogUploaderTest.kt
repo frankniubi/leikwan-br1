@@ -14,10 +14,11 @@ class DebugLogUploaderTest {
         val raw = """
             12:34:56.789 Authorization: Bearer supersecret123
             agent_token=tok_987 password="my pass" ?token=qtok&ok=1
+            {"device_session_token":"session-value","private_key":"private-value"}
             peer 203.0.113.42:443 v6 [2001:db8::abcd]:8443
         """.trimIndent()
         val out = DebugLogUploader.redact(raw)
-        for (secret in listOf("supersecret123", "tok_987", "my pass", "qtok", "203.0.113.42", "2001:db8::abcd")) {
+        for (secret in listOf("supersecret123", "tok_987", "my pass", "qtok", "session-value", "private-value", "203.0.113.42", "2001:db8::abcd")) {
             assertFalse("leaked $secret in: $out", out.contains(secret))
         }
         assertTrue(out.contains("12:34:56"))

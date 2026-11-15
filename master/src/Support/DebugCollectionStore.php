@@ -11,7 +11,7 @@ use Leikwan\Master\Database\Database;
  *
  * Collection metadata is kept on the client row so a config pull can expose
  * it without creating a second authenticated lookup. Chunks are immutable and
- * keyed by (client, collection, sequence); the byte counter is updated while
+ * keyed by (client, collection, upload, sequence); the byte counter is updated while
  * the client row is locked in a transaction.
  */
 final class DebugCollectionStore
@@ -26,7 +26,7 @@ final class DebugCollectionStore
     ) {
     }
 
-    /** @return array{uuid:string,expires_at:string,status:string,byte_limit:int,bytes_received:int} */
+    /** @return array{uuid:string,expires_at:string,status:string,byte_limit:int,bytes_received:int,supports_upload_id:bool} */
     public function create(int $clientId, ?int $ttlSeconds = null): array
     {
         if ($clientId <= 0) {
@@ -62,10 +62,11 @@ final class DebugCollectionStore
             'status' => 'active',
             'byte_limit' => self::BYTE_LIMIT,
             'bytes_received' => 0,
+            'supports_upload_id' => true,
         ];
     }
 
-    /** @return array{uuid:string,expires_at:string,status:string,byte_limit:int,bytes_received:int}|null */
+    /** @return array{uuid:string,expires_at:string,status:string,byte_limit:int,bytes_received:int,supports_upload_id:bool}|null */
     public function metadata(array $client): ?array
     {
         $uuid = trim((string) ($client['debug_collection_uuid'] ?? ''));
@@ -95,20 +96,27 @@ final class DebugCollectionStore
             'status' => $status,
             'byte_limit' => self::BYTE_LIMIT,
             'bytes_received' => max(0, (int) ($client['debug_collection_bytes'] ?? 0)),
+            'supports_upload_id' => true,
         ];
     }
 
     /**
      * Append one authenticated chunk. The operation is idempotent for an
-     * identical (uuid, sequence, hash, length) retry and rejects conflicts.
+     * identical (uuid, upload, sequence, hash, length) retry and rejects conflicts.
      *
      * @return array{accepted:bool,duplicate:bool,bytes_received:int,byte_limit:int}
      */
-    public function append(array $client, string $uuid, int $sequence, string $sha256, string $encodedChunk): array
+    public function append(array $client, string $uuid, int $sequence, string $sha256, string $encodedChunk, ?string $uploadId = null): array
     {
         $clientId = (int) ($client['id'] ?? 0);
         $uuid = strtolower(trim($uuid));
         $sha256 = strtolower(trim($sha256));
+        // Omitted upload IDs retain the legacy namespace; an explicit ID names
+        // one immutable bundle, not an authentication or collection credential.
+        if ($uploadId !== null && !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', trim($uploadId))) {
+            throw new ApiException('debug_upload_invalid', 422);
+        }
+        $uploadId = $uploadId === null ? '' : strtolower(trim($uploadId));
         if ($clientId <= 0 || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', $uuid)) {
             throw new ApiException('debug_collection_invalid', 422);
         }
@@ -144,7 +152,7 @@ final class DebugCollectionStore
         @chmod($path, 0600);
 
         try {
-            $result = $this->db->transaction(function (Database $db) use ($clientId, $uuid, $sequence, $sha256, $length, $path): array {
+            $result = $this->db->transaction(function (Database $db) use ($clientId, $uuid, $uploadId, $sequence, $sha256, $length, $path): array {
                 $lockSuffix = (string) $this->config->get('DB_DRIVER', 'mysql') === 'sqlite' ? '' : ' FOR UPDATE';
                 $collection = $db->fetchOne(
                     'SELECT id, debug_collection_uuid, debug_collection_expires_at, debug_collection_status, debug_collection_bytes
@@ -167,8 +175,8 @@ final class DebugCollectionStore
 
                 $existing = $db->fetchOne(
                     'SELECT chunk_sha256, byte_length FROM client_debug_chunks
-                     WHERE client_id = :client_id AND collection_uuid = :uuid AND sequence = :sequence LIMIT 1',
-                    ['client_id' => $clientId, 'uuid' => $uuid, 'sequence' => $sequence]
+                     WHERE client_id = :client_id AND collection_uuid = :uuid AND upload_id = :upload_id AND sequence = :sequence LIMIT 1',
+                    ['client_id' => $clientId, 'uuid' => $uuid, 'upload_id' => $uploadId, 'sequence' => $sequence]
                 );
                 if ($existing !== null) {
                     if (hash_equals($sha256, strtolower((string) ($existing['chunk_sha256'] ?? '')))
@@ -193,6 +201,7 @@ final class DebugCollectionStore
                 $db->insert('client_debug_chunks', [
                     'client_id' => $clientId,
                     'collection_uuid' => $uuid,
+                    'upload_id' => $uploadId,
                     'sequence' => $sequence,
                     'chunk_sha256' => $sha256,
                     'byte_length' => $length,
@@ -263,9 +272,9 @@ final class DebugCollectionStore
         }
 
         $rows = $this->db->fetchAll(
-            'SELECT sequence, byte_length, storage_path FROM client_debug_chunks
+            'SELECT upload_id, sequence, byte_length, storage_path FROM client_debug_chunks
              WHERE client_id = :client_id AND collection_uuid = :uuid
-             ORDER BY sequence ASC, id ASC',
+             ORDER BY upload_id ASC, sequence ASC, id ASC',
             ['client_id' => $clientId, 'uuid' => $resolvedUuid]
         );
         if ($rows === []) {
@@ -275,6 +284,8 @@ final class DebugCollectionStore
         $expectedPrefix = $this->storageRoot() . DIRECTORY_SEPARATOR . (string) $clientId . DIRECTORY_SEPARATOR . $resolvedUuid . DIRECTORY_SEPARATOR;
         $parts = [];
         $totalBytes = 0;
+        $chunkCount = 0;
+        $previousUploadId = null;
         foreach ($rows as $row) {
             $storagePath = (string) ($row['storage_path'] ?? '');
             if ($storagePath === '' || !str_starts_with($storagePath, $expectedPrefix) || !is_file($storagePath)) {
@@ -284,7 +295,13 @@ final class DebugCollectionStore
             if (!is_string($data)) {
                 continue;
             }
+            $uploadId = (string) ($row['upload_id'] ?? '');
+            if ($uploadId !== '' && $uploadId !== $previousUploadId) {
+                $parts[] = "\n=== upload: {$uploadId} ===\n";
+            }
+            $previousUploadId = $uploadId;
             $parts[] = $data;
+            $chunkCount++;
             $totalBytes += strlen($data);
             if ($totalBytes >= self::BYTE_LIMIT) {
                 break;
@@ -294,7 +311,7 @@ final class DebugCollectionStore
         return [
             'uuid' => $resolvedUuid,
             'bytes' => $totalBytes,
-            'chunks' => count($parts),
+            'chunks' => $chunkCount,
             'content' => implode('', $parts),
         ];
     }

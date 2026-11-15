@@ -44,7 +44,6 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -87,8 +86,6 @@ fun SettingsScreen(
         onUpdateDnsServer = viewModel::updateDnsServer,
         onUpdateDnsFallback = viewModel::updateDnsFallback,
         onUpdateDnsStrategy = viewModel::updateDnsStrategy,
-        onUpdateBypassLan = viewModel::updateBypassLan,
-        onUpdateBypassChina = viewModel::updateBypassChina,
         onUpdateCustomBypass = viewModel::updateCustomBypass,
         onUpdateRules = viewModel::updateRules,
         onRollbackRules = viewModel::rollbackRules,
@@ -109,8 +106,6 @@ internal fun SettingsScreenContent(
     onUpdateDnsServer: (String) -> Unit,
     onUpdateDnsFallback: (String) -> Unit,
     onUpdateDnsStrategy: (String) -> Unit,
-    onUpdateBypassLan: (Boolean) -> Unit,
-    onUpdateBypassChina: (Boolean) -> Unit,
     onUpdateCustomBypass: (String) -> Unit,
     onUpdateRules: () -> Unit,
     onRollbackRules: () -> Unit,
@@ -186,8 +181,6 @@ internal fun SettingsScreenContent(
             onUpdateDnsServer = onUpdateDnsServer,
             onUpdateDnsFallback = onUpdateDnsFallback,
             onUpdateDnsStrategy = onUpdateDnsStrategy,
-            onUpdateBypassLan = onUpdateBypassLan,
-            onUpdateBypassChina = onUpdateBypassChina,
             onUpdateCustomBypass = onUpdateCustomBypass,
             onUpdateRules = onUpdateRules,
             onRollbackRules = onRollbackRules,
@@ -309,6 +302,7 @@ private fun LanguageRow() {
     val options = listOf(
         "" to stringResource(R.string.settings_language_system),
         "zh-CN" to stringResource(R.string.language_zh),
+        "zh-HK" to stringResource(R.string.language_zh_hk),
         "en" to stringResource(R.string.language_en),
     )
     Column(Modifier.padding(16.dp)) {
@@ -321,8 +315,7 @@ private fun LanguageRow() {
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             options.forEachIndexed { index, (tag, label) ->
                 SegmentedButton(
-                    selected = selected.equals(tag, ignoreCase = true) ||
-                        (tag == "zh-CN" && selected.startsWith("zh", ignoreCase = true)),
+                    selected = selected.equals(tag, ignoreCase = true),
                     onClick = {
                         selected = tag
                         AppCompatDelegate.setApplicationLocales(
@@ -346,8 +339,6 @@ private fun AdvancedGroup(
     onUpdateDnsServer: (String) -> Unit,
     onUpdateDnsFallback: (String) -> Unit,
     onUpdateDnsStrategy: (String) -> Unit,
-    onUpdateBypassLan: (Boolean) -> Unit,
-    onUpdateBypassChina: (Boolean) -> Unit,
     onUpdateCustomBypass: (String) -> Unit,
     onUpdateRules: () -> Unit,
     onRollbackRules: () -> Unit,
@@ -412,8 +403,6 @@ private fun AdvancedGroup(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text(stringResource(R.string.settings_bypass_rules), style = MaterialTheme.typography.titleSmall)
-            SwitchLine(stringResource(R.string.settings_bypass_lan_ip), state.bypassLan, onUpdateBypassLan)
-            SwitchLine(stringResource(R.string.settings_bypass_china), state.bypassChina, onUpdateBypassChina)
             OutlinedTextField(
                 value = state.customBypassRules,
                 onValueChange = onUpdateCustomBypass,
@@ -458,17 +447,5 @@ private fun AdvancedGroup(
                 RoutingDiagnosticsCard(model = diagnostics)
             }
         }
-    }
-}
-
-@Composable
-private fun SwitchLine(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }

@@ -161,6 +161,55 @@ public enum SurgeListConverter {
         try JSONSerialization.data(withJSONObject: ["version": 2, "rules": conversion.rules], options: [.sortedKeys])
     }
 
+    /// One rule line (`TYPE,value[,POLICY…]`, AND/OR/NOT included) as a single headless rule,
+    /// for callers that keep per-line order and policy (module `[Rule]` sections). nil when the
+    /// line is a type sing-box cannot express here; FINAL/MATCH and rule-set references are the
+    /// caller's business. `extended` adds the types only route rules can carry (SRC-PORT,
+    /// PROTOCOL, SUBNET); imported lists keep the Android-parity subset.
+    public static func convertRuleLine(_ line: String, extended: Bool = false) -> [String: Any]? {
+        let parts = splitTopLevel(line)
+        let type = parts[0].trimmingCharacters(in: .whitespaces).uppercased()
+        if type == "AND" || type == "OR" || type == "NOT" {
+            return parts.count > 1 ? convertLogical(mode: type, operandsText: parts[1], extended: extended) : nil
+        }
+        guard parts.count > 1 else { return nil }
+        return convertOperand(parts[0] + "," + parts[1], extended: extended)
+    }
+
+    /// A Surge DOMAIN-SET: one domain per line, a leading `.` meaning the domain and its
+    /// subdomains. Converted like a list (one outcome for the whole set).
+    public static func parseDomainSet(_ text: String) throws -> Conversion {
+        if text.utf16.count > maxBytes { throw TooLargeError() }
+        var domain = OrderedSet(), domainSuffix = OrderedSet()
+        var skipped: [String: Int] = [:]
+        var converted = 0
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            guard let line = cleanLine(String(rawLine)) else { continue }
+            if converted >= maxRules {
+                skipped["LIMIT", default: 0] += 1
+                continue
+            }
+            let ok: Bool
+            if line.hasPrefix(".") {
+                ok = normalizeDomain(String(line.dropFirst())).map { domainSuffix.insert($0) } != nil
+            } else {
+                ok = normalizeDomain(line).map { domain.insert($0) } != nil
+            }
+            if ok { converted += 1 } else { skipped["INVALID", default: 0] += 1 }
+        }
+        var rule: [String: Any] = [:]
+        if !domain.isEmpty { rule["domain"] = domain.items }
+        if !domainSuffix.isEmpty { rule["domain_suffix"] = domainSuffix.items }
+        return Conversion(
+            rules: rule.isEmpty ? [] : [rule],
+            convertedCount: converted,
+            skipped: skipped,
+            policies: [:],
+            finalPolicy: nil,
+            samples: []
+        )
+    }
+
     // MARK: Line handling
 
     /// Strips comments, YAML list markers and quotes; nil for lines that carry no rule.
@@ -214,13 +263,13 @@ public enum SurgeListConverter {
     /// `((DOMAIN,a.com),(DST-PORT,443))` → sing-box logical rule. NOT takes exactly one
     /// operand and becomes that operand with `invert: true`. nil when any operand is a type
     /// sing-box cannot express (the whole rule is skipped, never partially applied).
-    private static func convertLogical(mode: String, operandsText: String) -> [String: Any]? {
+    private static func convertLogical(mode: String, operandsText: String, extended: Bool = false) -> [String: Any]? {
         let inner = unwrapParens(operandsText.trimmingCharacters(in: .whitespaces))
         let operands = splitTopLevel(inner).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         if operands.isEmpty { return nil }
         var converted: [[String: Any]] = []
         for operand in operands {
-            guard let rule = convertOperand(unwrapParens(operand)) else { return nil }
+            guard let rule = convertOperand(unwrapParens(operand), extended: extended) else { return nil }
             converted.append(rule)
         }
         if mode == "NOT" {
@@ -232,11 +281,11 @@ public enum SurgeListConverter {
         return ["type": "logical", "mode": mode.lowercased(), "rules": converted]
     }
 
-    private static func convertOperand(_ text: String) -> [String: Any]? {
+    private static func convertOperand(_ text: String, extended: Bool = false) -> [String: Any]? {
         let parts = splitTopLevel(text)
         let type = parts[0].trimmingCharacters(in: .whitespaces).uppercased()
         if type == "AND" || type == "OR" || type == "NOT" {
-            return parts.count > 1 ? convertLogical(mode: type, operandsText: parts[1]) : nil
+            return parts.count > 1 ? convertLogical(mode: type, operandsText: parts[1], extended: extended) : nil
         }
         let value = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
         func single(_ key: String, _ v: String?) -> [String: Any]? { v.map { [key: [$0]] } }
@@ -253,6 +302,47 @@ public enum SurgeListConverter {
             case .single(let port)?: return ["port": [port]]
             case .range(let range)?: return ["port_range": [range]]
             case nil: return nil
+            }
+        default: return extended ? convertExtendedOperand(type, value) : nil
+        }
+    }
+
+    /// Surge types beyond the list spec (custom rules and module `[Rule]` lines).
+    private static func convertExtendedOperand(_ type: String, _ value: String) -> [String: Any]? {
+        switch type {
+        case "SRC-PORT":
+            switch parsePort(value) {
+            case .single(let port)?: return ["source_port": [port]]
+            case .range(let range)?: return ["source_port_range": [range]]
+            case nil: return nil
+            }
+        case "PROTOCOL":
+            switch value.uppercased() {
+            case "HTTP": return ["protocol": ["http"]]
+            case "HTTPS", "TLS": return ["protocol": ["tls"]]
+            case "QUIC": return ["protocol": ["quic"]]
+            case "STUN": return ["protocol": ["stun"]]
+            case "TCP": return ["network": ["tcp"]]
+            case "UDP": return ["network": ["udp"]]
+            default: return nil
+            }
+        case "SUBNET":
+            // SSID:name / BSSID:mac / TYPE:WIFI|WIRED|CELLULAR. ROUTER: has no sing-box match.
+            let pieces = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard pieces.count == 2 else { return nil }
+            let argument = pieces[1].trimmingCharacters(in: .whitespaces)
+            guard !argument.isEmpty else { return nil }
+            switch pieces[0].trimmingCharacters(in: .whitespaces).uppercased() {
+            case "SSID": return ["wifi_ssid": [argument]]
+            case "BSSID": return ["wifi_bssid": [argument.lowercased()]]
+            case "TYPE":
+                switch argument.uppercased() {
+                case "WIFI": return ["network_type": ["wifi"]]
+                case "WIRED": return ["network_type": ["ethernet"]]
+                case "CELLULAR": return ["network_type": ["cellular"]]
+                default: return nil
+                }
+            default: return nil
             }
         default: return nil
         }

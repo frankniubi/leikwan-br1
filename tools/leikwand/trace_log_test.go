@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -67,7 +68,7 @@ func TestDebugBundleCarriesTraceAndRuntimeStatus(t *testing.T) {
 	agent.panel = newPanelClient(cfg, SecretState{}, "dev-1", "router")
 	var state traceState
 	agent.captureTrace(&state)
-	bundle := string(agent.buildDebugLogBundle())
+	bundle := string(agent.buildDebugLogBundle(context.Background()))
 	for _, want := range []string{"=== runtime status 292 ===", `"ha_failures":3`, "=== trace", "tcp candidate failed forward_id=292"} {
 		if !strings.Contains(bundle, want) {
 			t.Fatalf("bundle missing %q:\n%s", want, bundle)

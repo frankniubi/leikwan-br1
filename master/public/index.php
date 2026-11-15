@@ -70,6 +70,7 @@ function publicErrorResponse(?Request $request, Throwable $exception): Response
         'account_banned',
         'client_online_limit_reached',
         'debug_collection_invalid',
+        'debug_upload_invalid',
         'debug_collection_not_found',
         'debug_collection_expired',
         'debug_collection_replay',

@@ -1842,8 +1842,7 @@ public partial class MainViewModel : ObservableObject
             var uploader = new DebugLogUploader(logDir, _config.GetEffectiveStateDir());
             var snapshotLines = LogEntries.ToArray();
             var result = await Task.Run(() => uploader.UploadNowAsync(api, snapshotLines, _lifecycleCts.Token));
-            LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
-            AddLog($"Uploaded diagnostic logs (ref: {result.ReferenceCode}, {result.Bytes} bytes).");
+            ApplyLogUploadResult(result);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1854,6 +1853,18 @@ public partial class MainViewModel : ObservableObject
         {
             IsUploadingLogs = false;
         }
+    }
+
+    private void ApplyLogUploadResult(DebugManualUploadResult result)
+    {
+        if (!string.Equals(result.Status, "complete", StringComparison.Ordinal))
+        {
+            LogUploadSummary = $"Diagnostic upload: {result.Status} ({result.Bytes / 1024.0:F1} KB acknowledged)";
+            AddLog(LogUploadSummary);
+            return;
+        }
+        LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
+        AddLog($"Uploaded diagnostic logs (ref: {result.ReferenceCode}, {result.Bytes} bytes).");
     }
 
     public AgentConfig Config => _config;

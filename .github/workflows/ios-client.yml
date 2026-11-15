@@ -2,6 +2,12 @@ name: iOS client
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_testflight:
+        description: "Publish to TestFlight only after all release workflows pass"
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - ".github/workflows/ios-client.yml"
@@ -200,18 +206,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Uploads every non-PR run once the secrets exist; build number = run number.
+  # Release is explicit and gated on the simulator/device build and both test jobs.
   testflight:
     name: Signed build to TestFlight
     # Xcode 27.1 / iOS 27.1 SDK: App Store Connect refuses older SDKs, and anything older than
     # 27.1 runs letterboxed on iPhone Duo.
     runs-on: xcode-27
-    needs: [frameworks, core-tests]
-    # Signing secrets exist only on pushes/dispatches in this repository, never for pull requests;
-    # temporary ci/* verification branches validate simulator + unsigned ipa only and never ship to TestFlight.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'))
+    needs: [frameworks, core-tests, runtime-tests, app]
+    # Validation runs never publish. The release coordinator dispatches this only
+    # after every required platform workflow has passed for the exact source SHA.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_testflight == true
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer

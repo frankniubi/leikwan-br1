@@ -47,12 +47,13 @@ $pdo->exec('CREATE TABLE client_debug_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id INTEGER NOT NULL,
     collection_uuid TEXT NOT NULL,
+    upload_id TEXT NOT NULL DEFAULT "",
     sequence INTEGER NOT NULL,
     chunk_sha256 TEXT NOT NULL,
     byte_length INTEGER NOT NULL,
     storage_path TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE(client_id, collection_uuid, sequence)
+    UNIQUE(client_id, collection_uuid, upload_id, sequence)
 )');
 
 $now = gmdate('Y-m-d H:i:s');
@@ -95,6 +96,88 @@ try {
 }
 if (!$threw404) {
     fail('missing collection did not throw 404');
+}
+
+// Independent immutable bundles may both start at sequence zero.
+if (($created['supports_upload_id'] ?? false) !== true
+    || ($store->metadata($clientRow)['supports_upload_id'] ?? false) !== true) {
+    fail('collection metadata did not advertise upload isolation');
+}
+$uploadA = '11111111-1111-4111-8111-111111111111';
+$uploadB = '22222222-2222-4222-8222-222222222222';
+$bodyA = "device A first\n";
+$bodyB = "device B first\n";
+$bodyA1 = "device A second\n";
+foreach ([[$uploadB, 0, $bodyB], [$uploadA, 1, $bodyA1], [$uploadA, 0, $bodyA]] as [$uploadId, $sequence, $body]) {
+    $result = $store->append($clientRow, $uuid, $sequence, hash('sha256', $body), base64_encode($body), $uploadId);
+    if (!$result['accepted']) {
+        fail('independent upload was not accepted');
+    }
+}
+$beforeDuplicate = $db->fetchOne('SELECT debug_collection_bytes FROM clients WHERE id = 1')['debug_collection_bytes'];
+$dup = $store->append($clientRow, $uuid, 0, hash('sha256', $bodyA), base64_encode($bodyA), strtoupper($uploadA));
+if (!$dup['duplicate'] || $dup['bytes_received'] !== (int) $beforeDuplicate) {
+    fail('isolated duplicate was charged twice');
+}
+try {
+    $store->append($clientRow, $uuid, 0, hash('sha256', $bodyB), base64_encode($bodyB), $uploadA);
+    fail('different bytes in the same upload were accepted');
+} catch (ApiException $e) {
+    if ($e->statusCode() !== 409 || $e->getMessage() !== 'debug_chunk_replay') {
+        throw $e;
+    }
+}
+foreach (['', '../escape', '11111111-1111-1111-8111-111111111111'] as $invalidId) {
+    try {
+        $store->append($clientRow, $uuid, 0, hash('sha256', $bodyA), base64_encode($bodyA), $invalidId);
+        fail('invalid upload ID was accepted');
+    } catch (ApiException $e) {
+        if ($e->statusCode() !== 422 || $e->getMessage() !== 'debug_upload_invalid') {
+            throw $e;
+        }
+    }
+}
+$assembled = $store->assembleText(1, $uuid);
+if ($assembled['chunks'] !== 5 || !str_starts_with($assembled['content'], $chunk0 . $chunk1)
+    || !str_contains($assembled['content'], $bodyA . $bodyA1)
+    || !str_contains($assembled['content'], '=== upload: ' . $uploadA . ' ===')
+    || !str_contains($assembled['content'], '=== upload: ' . $uploadB . ' ===')) {
+    fail('assembly interleaved independent uploads or lost legacy data');
+}
+// The quota belongs to the collection, not each upload namespace.
+$db->execute('UPDATE clients SET debug_collection_bytes = :bytes WHERE id = 1', ['bytes' => DebugCollectionStore::BYTE_LIMIT]);
+try {
+    $store->append($clientRow, $uuid, 1, hash('sha256', $bodyB), base64_encode($bodyB), $uploadB);
+    fail('new upload bypassed collection quota');
+} catch (ApiException $e) {
+    if ($e->statusCode() !== 413 || $e->getMessage() !== 'debug_collection_quota_exceeded') {
+        throw $e;
+    }
+}
+// An upload ID is only a namespace, never authorization for another client.
+$db->insert('clients', ['name' => 'Other client', 'updated_at' => $now]);
+try {
+    $store->append(['id' => 2], $uuid, 0, hash('sha256', $bodyA), base64_encode($bodyA), $uploadA);
+    fail('upload ID bypassed collection ownership');
+} catch (ApiException $e) {
+    if ($e->statusCode() !== 404 || $e->getMessage() !== 'debug_collection_not_found') {
+        throw $e;
+    }
+}
+// Expiry applies even to exact retries and every upload namespace.
+$db->execute('UPDATE clients SET debug_collection_expires_at = :expires WHERE id = 1', ['expires' => '2000-01-01 00:00:00']);
+try {
+    $store->append($clientRow, $uuid, 0, hash('sha256', $bodyA), base64_encode($bodyA), $uploadA);
+    fail('expired upload accepted a duplicate');
+} catch (ApiException $e) {
+    if ($e->statusCode() !== 410) {
+        throw $e;
+    }
+}
+// All rejected requests must remove their tentative storage files.
+$storedFiles = glob($logDir . '/1/' . $uuid . '/*.logchunk') ?: [];
+if (count($storedFiles) !== 5) {
+    fail('a rejected upload left an orphaned file');
 }
 
 // Route & controller wiring checks for client-initiated start and admin download.

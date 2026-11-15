@@ -9,6 +9,24 @@ namespace LeikwanBridge.Mac.Tests.ViewModels;
 
 public sealed class MainWindowViewModelTests
 {
+    [Theory]
+    [InlineData("complete", true)]
+    [InlineData("retry_later", false)]
+    [InlineData("expired", false)]
+    [InlineData("unsupported_upload_protocol", false)]
+    [InlineData("paused_auth", false)]
+    [InlineData("busy", false)]
+    public void LogUploadUiOnlyReportsSuccessForCompleteResult(string status, bool success)
+    {
+        var vm = new MainWindowViewModel(new FakeController(new DesktopClientSnapshot()), dispatch: action => action());
+        typeof(MainWindowViewModel).GetMethod("ApplyLogUploadResult",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .Invoke(vm, [new DebugManualUploadResult(status, "deadbeef", 1, 1234)]);
+
+        Assert.Equal(success, vm.LogUploadSummary.StartsWith("Ref ", StringComparison.Ordinal));
+        if (!success) Assert.Contains(status, vm.LogUploadSummary);
+    }
+
     [Fact]
     public void PairingNavigationDoesNotEnterProxyOrStartConnections()
     {

@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.11.13.2"
+AGENT_VERSION = "2026.11.15.1"
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
@@ -214,14 +214,134 @@ DEFAULT_MANAGED_CONFIG = {
 DEBUG_LOG_CHUNK_BYTES = 256 * 1024
 DEBUG_LOG_BYTE_LIMIT = 100 * 1024 * 1024
 DEBUG_LOG_MAX_FILES = 32
+DEBUG_UPLOAD_BACKOFF_BASE_SECONDS = 5
+DEBUG_UPLOAD_BACKOFF_MAX_SECONDS = 300
+DEBUG_UPLOAD_UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+
+
+@contextlib.contextmanager
+def debug_upload_lock(state_dir: pathlib.Path):
+    """One non-blocking owner across CLI invocations and passive workers.
+
+    The lock file is permanent: unlinking it would let two processes lock
+    different inodes. The OS releases the lock even when an uploader crashes.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "debug-upload.lock").open("a+b") as handle:
+        acquired = False
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                pass
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _debug_fsync_directory(directory: pathlib.Path) -> None:
+    if os.name != "nt":
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _persist_debug_upload(state_dir: pathlib.Path, state: dict) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=".debug-upload-state-", suffix=".tmp", dir=state_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, state_dir / "debug-upload-state.json")
+        _debug_fsync_directory(state_dir)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
+def _load_debug_upload(state_dir: pathlib.Path) -> dict:
+    try:
+        # A manifest contains at most one descriptor per bounded chunk/file.
+        with (state_dir / "debug-upload-state.json").open("rb") as handle:
+            state = json.loads(handle.read(1024 * 1024))
+    except FileNotFoundError:
+        return {}
+    # Only absence permits a new snapshot. An unreadable or corrupt manifest
+    # must stop the upload, not replace a possibly partially accepted upload.
+    if (
+        not isinstance(state, dict)
+        or state.get("schema") != 1
+        or not re.fullmatch(DEBUG_UPLOAD_UUID_RE, str(state.get("collection_uuid", "")))
+        or not re.fullmatch(DEBUG_UPLOAD_UUID_RE, str(state.get("upload_id", "")))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(state.get("identity_sha256", "")))
+        or not isinstance(state.get("device_id"), str)
+        or not isinstance(state.get("collection"), dict)
+        or type(state.get("next_sequence")) is not int
+        or not isinstance(state.get("chunks"), list)
+        or state.get("status") not in {"pending", "retry_later", "complete", "terminal", "paused"}
+    ):
+        raise ValueError("invalid debug upload manifest")
+    return state
+
+
+def _debug_identity(master: str, token: str, config: dict | None) -> str:
+    # Use the configured primary so selecting a mirror cannot change ownership.
+    panel = str((config or {}).get("master_url") or master).rstrip("/")
+    return hashlib.sha256(json.dumps([panel, token], separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _debug_upload_matches(state: dict, identity: str, device_id: str) -> bool:
+    return (
+        state.get("schema") == 1
+        and state.get("identity_sha256") == identity
+        and state.get("device_id") == device_id
+        and re.fullmatch(DEBUG_UPLOAD_UUID_RE, str(state.get("upload_id", ""))) is not None
+    )
+
+
+def _cleanup_debug_snapshots(state_dir: pathlib.Path, keep: str = "") -> None:
+    for path in state_dir.glob("debug-upload-*.bin"):
+        upload_id = path.name[len("debug-upload-") : -len(".bin")]
+        if upload_id != keep and re.fullmatch(DEBUG_UPLOAD_UUID_RE, upload_id):
+            with contextlib.suppress(OSError):
+                path.unlink()
+    for path in state_dir.glob(".debug-upload-*.tmp"):
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def redact_debug_text(value: str) -> str:
     """Remove bearer material and credential-shaped values before upload."""
     text = str(value or "").replace("\x00", "")
-    text = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(r"(?i)(authorization[\"']?\s*:\s*[\"']?bearer\s+)[^\s,;\"']+", r"\1[REDACTED]", text)
     text = re.sub(
-        r"(?i)(\b(?:password|passwd|secret|token|credential|session[_-]?ticket|private[_-]?key|api[_-]?key)\b\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"(?i)([\"']?\b(?:password|passwd|(?:[a-z0-9]+[_-])*(?:secret|token|credential)|session[_-]?ticket|private[_-]?key|api[_-]?key)\b[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s,;&]+)",
         r"\1[REDACTED]",
         text,
     )
@@ -258,9 +378,13 @@ def debug_log_paths(config: dict, state_dir: pathlib.Path) -> list[pathlib.Path]
     files: list[pathlib.Path] = []
     seen: set[str] = set()
     for root in roots:
-        candidates = [root] if root.is_file() else list(root.glob("**/*")) if root.is_dir() else []
+        if len(files) >= DEBUG_LOG_MAX_FILES:
+            break
+        candidates = [root] if root.is_file() else root.glob("**/*") if root.is_dir() else []
         for path in candidates:
-            if len(files) >= DEBUG_LOG_MAX_FILES or not path.is_file():
+            if len(files) >= DEBUG_LOG_MAX_FILES:
+                break
+            if not path.is_file():
                 continue
             if path.suffix.lower() not in {".log", ".txt", ".out", ".err"}:
                 continue
@@ -292,6 +416,97 @@ def debug_journal_bytes() -> bytes:
     return bytes(result.stdout or b"")[:DEBUG_LOG_BYTE_LIMIT]
 
 
+def _create_debug_snapshot(
+    state_dir: pathlib.Path, collection: dict, identity: str, device_id: str, config: dict,
+) -> dict:
+    """Publish redacted bytes before publishing the cursor or making any request."""
+    upload_id = str(uuid.uuid4())
+    state = {
+        "schema": 1, "collection_uuid": str(collection["uuid"]).lower(),
+        "collection": {key: collection[key] for key in ("uuid", "status", "expires_at", "supports_upload_id") if key in collection},
+        "upload_id": upload_id, "identity_sha256": identity, "device_id": device_id,
+        "next_sequence": 0, "status": "pending", "failures": 0, "retry_at": 0,
+        "chunks": [], "snapshot_bytes": 0,
+    }
+    digest = hashlib.sha256()
+    fd, temporary = tempfile.mkstemp(prefix=".debug-upload-", suffix=".tmp", dir=state_dir)
+    remaining = DEBUG_LOG_BYTE_LIMIT
+    raw_remaining = DEBUG_LOG_BYTE_LIMIT
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            def append(source: str, raw: bytes) -> None:
+                nonlocal remaining
+                sanitized = redact_debug_text(raw.decode("utf-8", errors="replace")).encode("utf-8")[:remaining]
+                source = redact_debug_text(pathlib.Path(source).name)[:128]
+                for offset in range(0, len(sanitized), DEBUG_LOG_CHUNK_BYTES):
+                    chunk = sanitized[offset : offset + DEBUG_LOG_CHUNK_BYTES]
+                    state["chunks"].append({
+                        "offset": handle.tell(), "bytes": len(chunk), "source": source,
+                        "sha256": hashlib.sha256(chunk).hexdigest(),
+                    })
+                    handle.write(chunk)
+                    digest.update(chunk)
+                remaining -= len(sanitized)
+
+            for path in debug_log_paths(config, state_dir):
+                if remaining <= 0 or raw_remaining <= 0:
+                    break
+                try:
+                    with path.open("rb") as source:
+                        raw = source.read(min(remaining, raw_remaining))
+                except OSError:
+                    continue
+                raw_remaining -= len(raw)
+                append(str(path), raw)
+            if remaining > 0 and raw_remaining > 0:
+                append("journalctl-leikwan-client-agent.log", debug_journal_bytes()[:min(remaining, raw_remaining)])
+            state["snapshot_bytes"] = handle.tell()
+            state["snapshot_sha256"] = digest.hexdigest()
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, state_dir / f"debug-upload-{upload_id}.bin")
+        _debug_fsync_directory(state_dir)
+        _persist_debug_upload(state_dir, state)
+        _cleanup_debug_snapshots(state_dir, keep=upload_id)
+        return state
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
+def _debug_upload_failure(exc: Exception) -> tuple[str, str]:
+    """Classify diagnostics locally; do not change shared control-plane recovery."""
+    status = None
+    body = ""
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, urllib.error.HTTPError):
+            status = cause.code
+            # The common HTTP helper has already consumed the body and chained
+            # this cause. Direct test/custom transports still have a body here.
+            body = cause.read(64 * 1024).decode("utf-8", errors="replace")
+            break
+        cause = cause.__cause__
+    match = re.match(r"http (\d{3}) \S+: (.*)", str(exc), re.DOTALL)
+    if match:
+        status = int(match[1])
+        body = body or match[2]
+    code = ""
+    try:
+        decoded = json.loads(body)
+        if isinstance(decoded, dict):
+            code = str(decoded.get("error", ""))
+    except ValueError:
+        pass
+    if status in (401, 403):
+        return "paused", f"http_{status}"
+    if status in (410, 413, 422) or (status == 404 and code == "debug_collection_not_found") or (status == 409 and code == "debug_chunk_replay"):
+        return "terminal", code if re.fullmatch(r"[a-z_]{1,80}", code) else f"http_{status}"
+    if status is not None and 400 <= status < 500 and status not in (404, 408, 409, 429):
+        return "terminal", f"http_{status}"
+    return "retry_later", f"http_{status}" if status else "transport_error"
+
+
 def upload_debug_collection(
     master: str,
     token: str,
@@ -300,112 +515,117 @@ def upload_debug_collection(
     config: dict | None = None,
     post=None,
     device_id: str = "",
+    *,
+    resume_auth: bool = False,
 ) -> dict:
-    """Upload a resumable, sanitized collection without blocking sync_once."""
+    """Take the same interprocess lock as the manual /debug/start path."""
+    state_dir = pathlib.Path(state_dir)
+    with debug_upload_lock(state_dir) as acquired:
+        if not acquired:
+            return {"status": "busy", "chunks": 0, "bytes": 0}
+        return _upload_debug_collection_locked(
+            master, token, client_meta, state_dir, config, post, device_id, resume_auth=resume_auth,
+        )
+
+
+def _upload_debug_collection_locked(
+    master: str, token: str, client_meta: dict, state_dir: pathlib.Path,
+    config: dict | None = None, post=None, device_id: str = "", *, resume_auth: bool = False,
+) -> dict:
     collection = client_meta.get("debug_collection") if isinstance(client_meta, dict) else None
+    result = {"status": "not_requested", "chunks": 0, "bytes": 0}
     if not isinstance(collection, dict):
-        return {"status": "not_requested", "chunks": 0, "bytes": 0}
-    uuid = str(collection.get("uuid", "") or "").strip().lower()
-    status = str(collection.get("status", "") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", uuid) or status != "active":
-        return {"status": "inactive", "chunks": 0, "bytes": 0}
+        return result
+    collection_uuid = str(collection.get("uuid", "") or "").strip().lower()
+    if not re.fullmatch(DEBUG_UPLOAD_UUID_RE, collection_uuid) or collection.get("status") != "active":
+        return {**result, "status": "inactive"}
+    if collection.get("supports_upload_id") is not True:
+        return {**result, "status": "unsupported_upload_protocol"}
+    identity = _debug_identity(master, token, config)
+    device_id = device_id or load_or_create_device_id(state_dir) or str(client_meta.get("current_device_id", "") or "")
+    state = _load_debug_upload(state_dir)
+    matches = _debug_upload_matches(state, identity, device_id) and state.get("collection_uuid") == collection_uuid
     expires = parse_rfc3339(collection.get("expires_at"))
     if expires is not None and expires <= time.time():
-        return {"status": "expired", "chunks": 0, "bytes": 0}
-    state_path = state_dir / "debug-upload-state.json"
+        if matches:
+            state.update(status="terminal", error="expired")
+            _persist_debug_upload(state_dir, state)
+        return {**result, "status": "expired"}
+    if not matches:
+        state = _create_debug_snapshot(state_dir, collection, identity, device_id, config or {})
+    result["upload_id"] = state["upload_id"]
+    status = state.get("status")
+    if status in {"complete", "terminal"} or (status == "paused" and not resume_auth):
+        return {**result, "status": status, "error": state.get("error", "")}
+    # A manual retry or a successful authenticated fresh pull may probe once
+    # with the same ID/cursor/bytes. Keep the durable pause until an ACK or a
+    # new failure is persisted; a crash must not silently unpause background work.
+    if float(state.get("retry_at", 0)) > time.time():
+        return {**result, "status": "retry_later"}
+
+    def finish(status: str, error: str = "") -> dict:
+        state.update(status=status, error=error)
+        _persist_debug_upload(state_dir, state)
+        return {**result, "status": status, "error": error}
+
+    # Verify the immutable snapshot and chunk boundaries before any replay.
+    # A missing/corrupt file must never be rebuilt under an existing upload ID.
     try:
-        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {}
-    except (OSError, json.JSONDecodeError):
-        state = {}
-    if not isinstance(state, dict) or state.get("collection_uuid") != uuid:
-        state = {"collection_uuid": uuid, "next_sequence": 0, "files": {}}
-    if state.get("completed") is True:
-        return {"status": "complete", "chunks": 0, "bytes": 0}
-    files_state = state.get("files") if isinstance(state.get("files"), dict) else {}
-    state["files"] = files_state
-    post = post or (lambda payload: http_json_with_headers(
-        "POST",
-        f"{master.rstrip('/')}/api/client/debug/log",
-        token,
-        payload,
-        extra_headers=device_request_headers(
-            device_id or load_or_create_device_id(state_dir) or str(client_meta.get("current_device_id", "") or "")
-        ),
-    )[0])
-    total_bytes = 0
-    chunks_sent = 0
-    remaining = DEBUG_LOG_BYTE_LIMIT
-
-    def persist() -> None:
-        state_dir.mkdir(parents=True, exist_ok=True)
-        temporary = state_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(state_path)
-
-    def source_iter():
-        for path in debug_log_paths(config or {}, state_dir):
-            if remaining <= 0:
-                return
-            try:
-                with path.open("rb") as handle:
-                    raw = handle.read(remaining)
-            except OSError:
-                continue
-            if raw:
-                yield str(path), raw
-        if remaining > 0:
-            journal = debug_journal_bytes()
-            if journal:
-                yield "journalctl-leikwan-client-agent.log", journal[:remaining]
-
-    for source_path, raw in source_iter():
-        if remaining <= 0:
-            break
-        sanitized = redact_debug_text(raw.decode("utf-8", errors="replace")).encode("utf-8")[:remaining]
-        if not sanitized:
-            continue
-        digest = hashlib.sha256(sanitized).hexdigest()
-        key = source_path
-        previous = files_state.get(key)
-        if isinstance(previous, dict) and previous.get("sha256") == digest:
-            continue
-        source_name = pathlib.Path(source_path).name[:128]
-        for offset in range(0, len(sanitized), DEBUG_LOG_CHUNK_BYTES):
-            chunk = sanitized[offset : offset + DEBUG_LOG_CHUNK_BYTES]
-            sequence = int(state.get("next_sequence", 0) or 0)
+        handle = (state_dir / f"debug-upload-{state['upload_id']}.bin").open("rb")
+    except OSError:
+        return finish("terminal", "snapshot_unavailable")
+    with handle:
+        try:
+            chunks = state["chunks"]
+            cursor = state["next_sequence"]
+            if not isinstance(chunks, list) or type(cursor) is not int or not 0 <= cursor <= len(chunks):
+                raise ValueError("invalid cursor")
+            if len(chunks) > DEBUG_LOG_BYTE_LIMIT // DEBUG_LOG_CHUNK_BYTES + DEBUG_LOG_MAX_FILES + 1:
+                raise ValueError("invalid chunk count")
+            offset = 0
+            digest = hashlib.sha256()
+            for entry in chunks:
+                size = entry["bytes"]
+                if type(size) is not int or not 0 < size <= DEBUG_LOG_CHUNK_BYTES or entry["offset"] != offset:
+                    raise ValueError("invalid chunk")
+                chunk = handle.read(size)
+                if len(chunk) != size or hashlib.sha256(chunk).hexdigest() != entry["sha256"]:
+                    raise ValueError("invalid digest")
+                offset += size
+                digest.update(chunk)
+            if offset > DEBUG_LOG_BYTE_LIMIT or offset != state["snapshot_bytes"] or handle.read(1) or digest.hexdigest() != state["snapshot_sha256"]:
+                raise ValueError("invalid snapshot")
+        except (KeyError, TypeError, ValueError):
+            return finish("terminal", "snapshot_corrupt")
+        post = post or (lambda payload: http_json_with_headers(
+            "POST", f"{master.rstrip('/')}/api/client/debug/log", token, payload,
+            extra_headers=device_request_headers(device_id),
+        )[0])
+        for sequence in range(cursor, len(chunks)):
+            entry = chunks[sequence]
+            handle.seek(entry["offset"])
+            chunk = handle.read(entry["bytes"])
             payload = {
-                "collection_uuid": uuid,
-                "sequence": sequence,
-                "sha256": hashlib.sha256(chunk).hexdigest(),
-                "chunk_base64": base64.b64encode(chunk).decode("ascii"),
-                "source": source_name,
+                "collection_uuid": collection_uuid, "upload_id": state["upload_id"],
+                "sequence": sequence, "sha256": entry["sha256"],
+                "chunk_base64": base64.b64encode(chunk).decode("ascii"), "source": entry["source"],
             }
-            last_error = None
-            for attempt in range(3):
-                try:
-                    response = post(payload)
-                    if not isinstance(response, dict) or response.get("ok") is not True:
-                        raise RuntimeError("debug upload rejected")
-                    last_error = None
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    last_error = exc
-                    if attempt < 2:
-                        time.sleep(0.5 * (attempt + 1))
-            if last_error is not None:
-                logging.warning("debug log upload paused: %s", last_error)
-                persist()
-                return {"status": "retry_later", "chunks": chunks_sent, "bytes": total_bytes}
-            state["next_sequence"] = sequence + 1
-            chunks_sent += 1
-            total_bytes += len(chunk)
-            remaining -= len(chunk)
-            persist()
-        files_state[key] = {"sha256": digest, "bytes": len(sanitized)}
-        persist()
-    state["completed"] = True
-    persist()
-    return {"status": "complete", "chunks": chunks_sent, "bytes": total_bytes}
+            try:
+                response = post(payload)
+                if not isinstance(response, dict) or response.get("ok") is not True:
+                    raise RuntimeError("debug upload rejected")
+            except Exception as exc:  # noqa: BLE001
+                status, error = _debug_upload_failure(exc)
+                if status == "retry_later":
+                    state["failures"] = int(state.get("failures", 0)) + 1
+                    delay = min(DEBUG_UPLOAD_BACKOFF_MAX_SECONDS, DEBUG_UPLOAD_BACKOFF_BASE_SECONDS * 2 ** min(state["failures"] - 1, 8))
+                    state["retry_at"] = time.time() + random.uniform(delay / 2, delay)
+                return finish(status, error)
+            state.update(next_sequence=sequence + 1, status="pending", failures=0, retry_at=0, error="")
+            _persist_debug_upload(state_dir, state)
+            result["chunks"] += 1
+            result["bytes"] += len(chunk)
+        return finish("complete")
 
 
 def start_debug_collection(
@@ -2343,9 +2563,13 @@ class ClientAgent:
         with self._applied_state_lock:
             self._write_applied_state_locked(applied)
 
-    def schedule_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
+    def schedule_debug_log_upload(
+        self, master: str, token: str, client_meta: dict, *, resume_auth: bool = False,
+    ) -> None:
         """Start at most one daemon uploader; config sync remains non-blocking."""
         if not isinstance(client_meta, dict) or not isinstance(client_meta.get("debug_collection"), dict):
+            return
+        if client_meta["debug_collection"].get("supports_upload_id") is not True:
             return
         if not hasattr(self, "_debug_upload_lock"):
             self._debug_upload_lock = threading.Lock()
@@ -2357,29 +2581,31 @@ class ClientAgent:
             thread = threading.Thread(
                 target=self._run_debug_log_upload,
                 args=(master, token, dict(client_meta)),
+                kwargs={"resume_auth": resume_auth},
                 name="debug-log-upload",
                 daemon=True,
             )
             self._debug_upload_thread = thread
             thread.start()
 
-    def _run_debug_log_upload(self, master: str, token: str, client_meta: dict) -> None:
+    def _run_debug_log_upload(
+        self, master: str, token: str, client_meta: dict, *, resume_auth: bool = False,
+    ) -> None:
         try:
+            # Freeze the same endpoint, account and device for the whole upload.
+            # The shared request helper consults mutable self.config/device_id
+            # on every chunk and could otherwise route old logs to a new panel.
+            config = dict(self.config)
+            if str(config.get("agent_token", "") or "").strip() != token or master.rstrip("/") not in control_plane_endpoints(config):
+                return
             result = upload_debug_collection(
                 master,
                 token,
                 client_meta,
                 self.state_dir,
-                self.config,
-                post=lambda payload: self.control_plane_request(
-                    "POST",
-                    "/api/client/debug/log",
-                    token,
-                    payload,
-                    extra_headers=device_request_headers(
-                        self.device_id() or str(client_meta.get("current_device_id", "") or "")
-                    ),
-                ),
+                config,
+                device_id=self.device_id() or str(client_meta.get("current_device_id", "") or ""),
+                resume_auth=resume_auth,
             )
             if result.get("status") not in {"not_requested", "inactive", "expired", "complete"}:
                 logging.info("debug log upload status=%s chunks=%s bytes=%s", result.get("status"), result.get("chunks"), result.get("bytes"))
@@ -4172,7 +4398,9 @@ class ClientAgent:
 
         self.write_applied_state(applied)
         self.reconcile_global_mptcp_state(self.latest_forwards)
-        self.schedule_debug_log_upload(master, token, client_meta)
+        # This metadata came from a successful authenticated fresh pull, not a
+        # cached request. Permit one probe of an auth-paused immutable upload.
+        self.schedule_debug_log_upload(master, token, client_meta, resume_auth=True)
         self.run_diagnostics_if_requested(master, token, client_meta, self.latest_forwards)
         usage_totals = self.collect_usage_totals()
         wireguard_public_key = self.ensure_wireguard_identity()
@@ -8831,37 +9059,55 @@ class ClientAgent:
         return summary
 
     def upload_logs_now(self) -> dict:
-        configure_panel_egress(getattr(self, "config", None))
-        token = str(self.config.get("agent_token", "") or "").strip()
+        config = dict(self.config)
+        configure_panel_egress(config)
+        token = str(config.get("agent_token", "") or "").strip()
         if not token:
             return {"ok": False, "error": "agent_token is missing from config"}
         state_dir = pathlib.Path(getattr(self, "state_dir", "/var/lib/leikwan-client-agent"))
-        dev_id = self.device_id()
-        selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
-        errors: list[str] = []
-        for endpoint in selector.ordered(control_plane_endpoints(self.config)):
-            try:
-                started = start_debug_collection(endpoint, token, state_dir, device_id=dev_id)
-                selector.success(endpoint)
-                result = upload_debug_collection(
-                    endpoint,
-                    token,
-                    {"debug_collection": started["debug_collection"]},
-                    state_dir,
-                    config=self.config,
-                    device_id=dev_id,
-                )
-                return {
-                    "ok": result.get("status") == "complete",
-                    "reference_code": started["reference_code"],
-                    "status": result.get("status"),
-                    "chunks": result.get("chunks", 0),
-                    "bytes": result.get("bytes", 0),
-                }
-            except Exception as exc:  # noqa: BLE001
-                selector.failure(endpoint, exc)
-                errors.append(f"{endpoint}: {exc}")
-        return {"ok": False, "error": "; ".join(errors) or "no control-plane endpoint configured"}
+        # Hold this before /debug/start: a concurrent CLI must not close the
+        # passive worker's collection or start a second manual collection.
+        with debug_upload_lock(state_dir) as acquired:
+            if not acquired:
+                return {"ok": False, "status": "busy", "chunks": 0, "bytes": 0}
+            dev_id = self.device_id()
+            selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
+            errors: list[str] = []
+            state = _load_debug_upload(state_dir)
+            for endpoint in selector.ordered(control_plane_endpoints(config)):
+                try:
+                    identity = _debug_identity(endpoint, token, config)
+                    previous_collection = state.get("collection")
+                    expires = parse_rfc3339(previous_collection.get("expires_at")) if isinstance(previous_collection, dict) else None
+                    if (
+                        _debug_upload_matches(state, identity, dev_id)
+                        and isinstance(previous_collection, dict)
+                        and state.get("status") != "complete"
+                        and (state.get("status") in {"terminal", "paused"} or expires is None or expires > time.time())
+                    ):
+                        # Retry an interrupted command without replacing its
+                        # collection. A completed/expired manual collection can
+                        # be explicitly replaced by a new manual capture.
+                        started = {"debug_collection": previous_collection, "reference_code": state["collection_uuid"][:8]}
+                    else:
+                        started = start_debug_collection(endpoint, token, state_dir, device_id=dev_id)
+                    selector.success(endpoint)
+                    result = _upload_debug_collection_locked(
+                        endpoint, token, {"debug_collection": started["debug_collection"]},
+                        state_dir, config=config, device_id=dev_id, resume_auth=True,
+                    )
+                    return {
+                        **result,
+                        "ok": result.get("status") == "complete",
+                        "reference_code": started["reference_code"],
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    selector.failure(endpoint, exc)
+                    # Re-read if a local persistence failure followed a start;
+                    # never send a different snapshot under an existing ID.
+                    state = _load_debug_upload(state_dir)
+                    errors.append(f"{endpoint}: {exc}")
+            return {"ok": False, "error": "; ".join(errors) or "no control-plane endpoint configured"}
 
     def local_forward_strategies(self) -> dict[str, str]:
         strategy_dir = pathlib.Path(

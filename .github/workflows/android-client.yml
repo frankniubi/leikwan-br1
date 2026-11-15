@@ -83,6 +83,27 @@ jobs:
           ./gradlew --no-daemon --stacktrace assembleDebug
           ls -la app/build/outputs/apk/debug/
 
+      - name: Build release APK with R8
+        id: release_apk
+        continue-on-error: true
+        shell: bash
+        working-directory: leikwan-android
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Upload release APK and mapping
+        if: ${{ steps.release_apk.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-unsigned
+          path: |
+            leikwan-android/app/build/outputs/apk/release/*.apk
+            leikwan-android/app/build/outputs/mapping/release/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload Android outputs
         if: ${{ steps.apk.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -111,6 +132,7 @@ jobs:
             runtime=${{ steps.runtime.outcome }}
             unit_tests=${{ steps.unit_tests.outcome }}
             apk=${{ steps.apk.outcome }}
+            release_apk=${{ steps.release_apk.outcome }}
         run: |
           set -euo pipefail
           failed=0

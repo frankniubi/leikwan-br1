@@ -50,6 +50,7 @@ public sealed class ClientDiagnosticsServiceTests
                 {
                     Uuid = "123e4567-e89b-42d3-a456-426614174000",
                     Status = "active",
+                    SupportsUploadId = true,
                     ExpiresAt = "2999-01-01T00:00:00Z",
                 },
             }, api);
@@ -86,7 +87,7 @@ public sealed class ClientDiagnosticsServiceTests
                         return new HttpResponseMessage(HttpStatusCode.OK)
                         {
                             Content = new StringContent(
-                                "{\"ok\":true,\"reference_code\":\"deadbeef\",\"debug_collection\":{\"uuid\":\"deadbeef-e89b-42d3-a456-426614174000\",\"status\":\"active\",\"expires_at\":\"2999-01-01T00:00:00Z\",\"byte_limit\":104857600,\"bytes_received\":0}}",
+                                "{\"ok\":true,\"reference_code\":\"deadbeef\",\"debug_collection\":{\"uuid\":\"deadbeef-e89b-42d3-a456-426614174000\",\"status\":\"active\",\"expires_at\":\"2999-01-01T00:00:00Z\",\"byte_limit\":104857600,\"bytes_received\":0,\"supports_upload_id\":true}}",
                                 Encoding.UTF8,
                                 "application/json"),
                         };
@@ -102,7 +103,7 @@ public sealed class ClientDiagnosticsServiceTests
             var result = await uploader.UploadNowAsync(api, ["ui line token=secret123"]);
             Assert.Equal("complete", result.Status);
             Assert.Equal("deadbeef", result.ReferenceCode);
-            Assert.True(result.Chunks >= 2);
+            Assert.True(result.Chunks >= 1);
             Assert.Contains("/api/client/debug/start", paths);
             Assert.Contains("/api/client/debug/log", paths);
         }

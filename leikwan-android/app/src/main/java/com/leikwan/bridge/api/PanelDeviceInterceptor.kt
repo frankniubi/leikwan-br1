@@ -6,12 +6,50 @@ import com.leikwan.bridge.session.DeviceControlEnvelope
 import com.leikwan.bridge.session.PanelControlException
 import okhttp3.Interceptor
 import okhttp3.Response
+import java.io.IOException
+import java.security.MessageDigest
+
+/** Diagnostic calls pin one enrollment/session; secrets are never persisted or logged. */
+class DebugAuthSnapshot internal constructor(
+    internal val panelUrl: String,
+    internal val clientId: Long,
+    internal val agentToken: String,
+    internal val deviceId: String,
+    internal val sessionToken: String,
+    internal val sessionExpiresAtMs: Long,
+) {
+    internal val authorization: String get() = "Bearer $agentToken"
+    // Stable across session renewal, but never across account, panel, device or agent-token changes.
+    internal val binding: String get() = MessageDigest.getInstance("SHA-256")
+        .digest(listOf(panelUrl, clientId.toString(), agentToken, deviceId).joinToString("\u0000").toByteArray())
+        .joinToString("") { "%02x".format(it) }
+
+    internal fun requireCurrent(prefs: Prefs, nowMs: Long) {
+        if (prefs.panelUrl != panelUrl || prefs.clientId != clientId || prefs.agentToken != agentToken ||
+            prefs.enrolledDeviceId != deviceId || prefs.deviceSessionToken != sessionToken ||
+            prefs.deviceSessionExpiresAtMs != sessionExpiresAtMs
+        ) throw IOException("debug_upload_context_changed")
+        if (sessionExpiresAtMs <= nowMs) throw IOException("debug_upload_session_expired")
+    }
+
+    internal companion object {
+        fun capture(prefs: Prefs, nowMs: Long): DebugAuthSnapshot {
+            val snapshot = DebugAuthSnapshot(prefs.panelUrl, prefs.clientId, prefs.agentToken.orEmpty(),
+                prefs.enrolledDeviceId.orEmpty(), prefs.deviceSessionToken.orEmpty(), prefs.deviceSessionExpiresAtMs)
+            if (snapshot.clientId <= 0 || snapshot.agentToken.isBlank() || snapshot.deviceId.isBlank() ||
+                snapshot.sessionToken.isBlank()) throw IOException("debug_upload_not_enrolled")
+            snapshot.requireCurrent(prefs, nowMs)
+            return snapshot
+        }
+    }
+}
 
 class PanelDeviceInterceptor(
     private val prefs: Prefs,
     private val deviceNameProvider: () -> String,
     private val clientVersion: String,
     private val nowMs: () -> Long,
+    private val debugAuthSnapshot: DebugAuthSnapshot? = null,
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val builder = chain.request().newBuilder()
@@ -19,12 +57,19 @@ class PanelDeviceInterceptor(
             .header("X-Client-Version", clientVersion)
             .header("User-Agent", "LeiKwan-Host-Android/$clientVersion")
 
-        prefs.agentToken?.takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
-        prefs.enrolledDeviceId?.takeIf { it.isNotBlank() }?.let { builder.header("X-Device-Id", it) }
+        if (debugAuthSnapshot != null) {
+            debugAuthSnapshot.requireCurrent(prefs, nowMs())
+            builder.header("Authorization", debugAuthSnapshot.authorization)
+                .header("X-Device-Id", debugAuthSnapshot.deviceId)
+                .header("X-Device-Session", debugAuthSnapshot.sessionToken)
+        } else {
+            prefs.agentToken?.takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
+            prefs.enrolledDeviceId?.takeIf { it.isNotBlank() }?.let { builder.header("X-Device-Id", it) }
+            prefs.deviceSessionToken
+                ?.takeIf { it.isNotBlank() && prefs.deviceSessionExpiresAtMs > nowMs() }
+                ?.let { builder.header("X-Device-Session", it) }
+        }
         sanitizeHeader(deviceNameProvider())?.let { builder.header("X-Device-Name", it) }
-        prefs.deviceSessionToken
-            ?.takeIf { it.isNotBlank() && prefs.deviceSessionExpiresAtMs > nowMs() }
-            ?.let { builder.header("X-Device-Session", it) }
 
         return chain.proceed(builder.build())
     }

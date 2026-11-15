@@ -19,6 +19,8 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.app.NotificationCompat
 import com.leikwan.bridge.R
 import com.leikwan.bridge.data.Prefs
+import com.leikwan.bridge.diagnostics.VpnEventJournal
+import com.leikwan.bridge.diagnostics.DiagnosticLogBudget
 import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.shared.deviceLimitMessage
@@ -47,13 +49,13 @@ import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import java.net.InetAddress
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "LeikwanVpnService"
@@ -116,7 +118,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             // Disconnected from the notification: the tunnel must not come back on its own.
             runCatching { Prefs.get(this).vpnConnectIntent = false }
             recovering = false
-            stopVpn()
+            stopVpn("notification")
             return START_NOT_STICKY
         }
 
@@ -158,35 +160,62 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             stopSelf()
             return START_NOT_STICKY
         }
+        Log.i(TAG, "Rebuilding the connection after the service was restarted")
+        rebuildInPlace("service restarted")
+        return START_STICKY
+    }
+
+    /**
+     * Rebuilds the user's last connection while this service stays in the foreground. With
+     * [recovering] set, the orchestrator's stop of the old tunnel keeps the service alive and
+     * [startRecoveredConfig] starts the rebuilt config in place, so Android is never asked for a
+     * background foreground-service start. Runs as [recoveryJob], never inside
+     * [switchRecoveryJob]: [stopVpn] cancels that job, so a rebuild running there cancelled itself
+     * right after stopping the tunnel and left the VPN off until the user reconnected.
+     */
+    private fun rebuildInPlace(reason: String) {
         recovering = true
         startupState = VpnStartupState.IDLE
         lastStartError = null
-        Log.i(TAG, "Rebuilding the connection after the service was restarted")
+        VpnEventJournal.record(this, "rebuild start: $reason")
+        recoveryJob?.cancel()
         recoveryJob = recoveryScope.launch {
-            var failure: Exception? = null
-            for (attempt in 1..VpnRecovery.ATTEMPTS) {
-                if (attempt > 1) delay(VpnRecovery.RETRY_DELAYS_MS[attempt - 2])
-                if (!recovering) return@launch
-                // The user disconnected in the app meanwhile.
-                if (!connectIntentSet()) break
-                try {
-                    TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
-                    return@launch
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    failure = e
-                    Log.w(TAG, "Reconnect attempt $attempt failed", e)
+            val outcome = VpnRecovery.runRebuildAttempts(
+                reconnect = { TunnelOrchestrator.forApplication(applicationContext).reconnectSaved() },
+                stillRecovering = { recovering },
+                connectIntent = ::connectIntentSet,
+                tunnelStillUp = { isRunning },
+                onAttemptFailed = { attempt, error ->
+                    Log.w(TAG, "Reconnect attempt $attempt failed", error)
+                    VpnEventJournal.record(this@LeikwanVpnService, "rebuild attempt $attempt failed: ${error.message}")
+                },
+            )
+            VpnEventJournal.record(this@LeikwanVpnService, "rebuild end: $outcome")
+            when (outcome) {
+                RebuildOutcome.Reconnected, RebuildOutcome.CalledOff -> Unit
+                is RebuildOutcome.KeptCurrent -> mainHandler.post {
+                    if (!recovering) return@post
+                    recovering = false
+                    if (isRunning) {
+                        updateNotification(getString(R.string.vpn_notification_connected))
+                        return@post
+                    }
+                    // The kept tunnel stopped meanwhile; do not linger in the foreground without it.
+                    if (connectIntentSet()) {
+                        showRecoveryFailed(outcome.failure.message ?: getString(R.string.vpn_error_no_config))
+                    }
+                    stopVpn("kept tunnel stopped")
+                }
+                is RebuildOutcome.GaveUp -> mainHandler.post {
+                    if (!recovering) return@post
+                    recovering = false
+                    if (connectIntentSet()) {
+                        showRecoveryFailed(outcome.failure?.message ?: getString(R.string.vpn_error_no_config))
+                    }
+                    stopVpn("rebuild gave up")
                 }
             }
-            mainHandler.post {
-                if (!recovering) return@post
-                recovering = false
-                if (connectIntentSet()) showRecoveryFailed(failure?.message ?: getString(R.string.vpn_error_no_config))
-                stopVpn()
-            }
         }
-        return START_STICKY
     }
 
     private fun connectIntentSet(): Boolean = runCatching { Prefs.get(this).vpnConnectIntent }.getOrDefault(false)
@@ -236,11 +265,13 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             lastStartError = null
             updateNotification(getString(R.string.vpn_notification_connected))
             Log.i(TAG, "VPN service started with libbox")
+            VpnEventJournal.record(this, "vpn started")
         } catch (e: Exception) {
             startupState = VpnStartupState.FAILED
             lastStartError = e.message ?: "Failed to start VPN"
             Log.e(TAG, "Failed to start VPN", e)
-            stopVpn()
+            VpnEventJournal.record(this, "vpn start failed: ${e.message}")
+            stopVpn("start failed")
         }
     }
 
@@ -270,7 +301,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         tunFd = null
     }
 
-    fun stopVpn() {
+    /** [reason] only labels the lifecycle journal; every external caller is the orchestrator. */
+    fun stopVpn(reason: String = "orchestrator") {
+        VpnEventJournal.record(this, "vpn stop: $reason (running=$isRunning recovering=$recovering)")
         switchRecoveryJob?.cancel()
         switchRecoveryJob = null
         closeRuntime()
@@ -293,6 +326,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onDestroy() {
+        VpnEventJournal.record(this, "service destroyed (running=$isRunning)")
         recovering = false
         switchRecoveryJob = null
         recoveryScope.cancel()
@@ -312,7 +346,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         // Another VPN took over or the user turned this one off in system settings.
         runCatching { Prefs.get(this).vpnConnectIntent = false }
         recovering = false
-        stopVpn()
+        stopVpn("revoked by system")
     }
 
     // === PlatformInterface ===
@@ -511,7 +545,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun serviceStop() {
-        stopVpn()
+        stopVpn("libbox service stop")
     }
 
     override fun getSystemProxyStatus(): SystemProxyStatus? = null
@@ -646,10 +680,10 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
      * tunnel unusable: libbox's established outbound sockets keep pointing at the dead interface
      * until they are rebuilt, and sing-box's DNS/route caches keep the old one. On a default
      * interface change while the tunnel is up, tell libbox to rebind ([CommandServer.resetNetwork]),
-     * then verify the switch actually healed the path; if it did not, rebuild the VPN in place
-     * through the orchestrator (which restarts only the runtimes and re-opens the TUN, not the
-     * whole service). A brief silence first: right after a switch the new network is still
-     * validating and a probe would fail spuriously.
+     * then check the new network; if it does not answer, rebuild the VPN in place through
+     * [rebuildInPlace] (which restarts only the runtimes and re-opens the TUN, not the whole
+     * service). A brief silence first: right after a switch the new network is still validating
+     * and a probe would fail spuriously.
      */
     private fun onDefaultInterfaceChanged(name: String?) {
         val previous = lastDefaultInterfaceName
@@ -657,6 +691,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         if (!isRunning || recovering) return
         if (previous == null && name == null) return
         Log.i(TAG, "Default interface changed: ${previous ?: "none"} -> ${name ?: "none"}")
+        VpnEventJournal.record(this, "default interface ${previous ?: "none"} -> ${name ?: "none"}")
         try {
             commandServer?.resetNetwork()
         } catch (e: Exception) {
@@ -667,26 +702,35 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             // Let the new network validate and libbox rebind before judging the tunnel.
             delay(VpnRecovery.SWITCH_PROBE_DELAY_MS)
             if (!isRunning || recovering) return@launch
-            if (probeTunnelPath()) return@launch
+            if (probeSwitchedNetwork()) return@launch
+            // The probe blocks in socket reads; a newer switch or a stop may have cancelled us.
+            ensureActive()
             Log.w(TAG, "Tunnel still unusable after the interface switch; rebuilding it")
-            try {
-                TunnelOrchestrator.forApplication(applicationContext).reconnectSaved()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Post-switch rebuild failed; the recovery loop or the user will retry", e)
-            }
+            // Not from this job: the rebuild's stop of the old tunnel cancels it.
+            mainHandler.post { rebuildAfterSwitch() }
         }
     }
 
+    private fun rebuildAfterSwitch() {
+        if (!isRunning || recovering) return
+        updateNotification(getString(R.string.vpn_notification_reconnecting))
+        rebuildInPlace("interface switch")
+    }
+
     /**
-     * The tunnel's own path check: DNS UDP to the TUN resolver through the tunnel. Cheap, uses
-     * the tunnel's own plumbing (so it fails exactly when the tunnel is broken), and needs no
-     * panel. A single 2s attempt; false negatives only cost one rebuild that would have been
-     * harmless.
+     * Whether the network after a switch answers DNS over UDP, asked of its own resolvers for a
+     * few rounds while it finishes validating. This app and its runtimes are excluded from the
+     * VPN (see [openTun]), so for this process the active network is the physical one and the
+     * query does not cross the tunnel: it checks the path the runtimes and the panel depend on.
+     * A false negative costs one in-place rebuild.
      */
-    private fun probeTunnelPath(): Boolean {
-        val dnsServer = tunDnsServer() ?: return true
+    private suspend fun probeSwitchedNetwork(): Boolean {
+        val healthy = VpnRecovery.anyResolverAnswers(activeNetworkResolvers(), query = ::queryResolver)
+        if (!healthy) VpnEventJournal.record(this, "post-switch probe failed")
+        return healthy
+    }
+
+    private fun queryResolver(dnsServer: String): Boolean {
         return runCatching {
             val socket = java.net.DatagramSocket()
             try {
@@ -703,16 +747,15 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                 socket.close()
             }
         }.getOrElse { error ->
-            Log.i(TAG, "Tunnel probe via $dnsServer failed: ${error.message}")
+            Log.i(TAG, "Network probe via $dnsServer failed: ${error.message}")
             false
         }
     }
 
-    private fun tunDnsServer(): String? {
-        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return null
-        val properties = connectivity.getLinkProperties(connectivity.activeNetwork) ?: return null
-        // On our own VPN the active network's DNS is the TUN resolver sing-box hijacks.
-        return properties.dnsServers.firstOrNull()?.hostAddress
+    private fun activeNetworkResolvers(): List<String> {
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return emptyList()
+        val properties = connectivity.getLinkProperties(connectivity.activeNetwork) ?: return emptyList()
+        return properties.dnsServers.mapNotNull { it.hostAddress }
     }
 
     /** A minimal recursive A query; no external DNS library needed for a boolean probe. */
@@ -800,6 +843,14 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     private class BoxDiagnosticsHandler : CommandClientHandler {
+        private fun reportSuppressed() {
+            val count = detailBudget.advance()
+            if (count > 0) Log.i(TAG, "box diagnostic detail suppressed=$count in previous 10s window")
+        }
+
+        // Process-wide: reconnecting the command stream does not replenish the budget.
+        companion object { private val detailBudget = DiagnosticLogBudget() }
+
         override fun connected() {
             Log.i(TAG, "box command client connected")
         }
@@ -817,22 +868,24 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         }
 
         override fun writeLogs(iterator: LogIterator?) {
-            var emitted = 0
-            while (iterator?.hasNext() == true && emitted < 80) {
+            reportSuppressed()
+            while (iterator?.hasNext() == true) {
                 val entry = iterator.next()
-                Log.d(TAG, "box log[${entry.level}]: ${entry.message}")
-                emitted += 1
-            }
-            if (iterator?.hasNext() == true) {
-                Log.d(TAG, "box log batch truncated")
+                // sing-box levels: panic=0, fatal=1, error=2, warn=3, info=4, debug=5, trace=6.
+                if (entry.level <= 3) {
+                    Log.println(if (entry.level <= 2) Log.ERROR else Log.WARN, TAG, "box log[${entry.level}]: ${entry.message}")
+                } else if (detailBudget.admit()) {
+                    Log.d(TAG, "box log[${entry.level}]: ${entry.message}")
+                }
             }
         }
 
         override fun writeConnectionEvents(events: ConnectionEvents?) {
+            reportSuppressed()
             val iterator = events?.iterator() ?: return
-            var emitted = 0
-            while (iterator.hasNext() && emitted < 80) {
+            while (iterator.hasNext()) {
                 val event = iterator.next()
+                if (!detailBudget.admit()) continue
                 val connection = event.connection
                 Log.d(
                     TAG,
@@ -841,14 +894,11 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                         "domain=${connection?.domain} outbound=${connection?.outbound} " +
                         "chain=${connection?.chain()?.toListForLog()}",
                 )
-                emitted += 1
-            }
-            if (iterator.hasNext()) {
-                Log.d(TAG, "box connection batch truncated")
             }
         }
 
         override fun writeStatus(message: StatusMessage?) {
+            reportSuppressed()
             if (message == null) return
             TrafficMonitor.report(
                 uplink = message.uplink,
@@ -857,7 +907,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                 downlinkTotal = message.downlinkTotal,
                 connections = message.connectionsOut,
             )
-            Log.d(
+            if (detailBudget.admit()) Log.d(
                 TAG,
                 "box status in=${message.connectionsIn} out=${message.connectionsOut} " +
                     "up=${message.uplinkTotal} down=${message.downlinkTotal}",
@@ -865,6 +915,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         }
 
         override fun writeGroups(iterator: OutboundGroupIterator?) {
+            reportSuppressed()
             var emitted = 0
             while (iterator?.hasNext() == true && emitted < 40) {
                 val group = iterator.next()
@@ -879,16 +930,17 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                         }
                     }
                 }
-                Log.d(TAG, "box group tag=${group.tag} type=${group.type} selected=${group.selected}")
+                if (detailBudget.admit()) Log.d(TAG, "box group tag=${group.tag} type=${group.type} selected=${group.selected}")
                 emitted += 1
             }
         }
 
         override fun writeOutbounds(iterator: OutboundGroupItemIterator?) {
+            reportSuppressed()
             var emitted = 0
             while (iterator?.hasNext() == true && emitted < 40) {
                 val outbound = iterator.next()
-                Log.d(TAG, "box outbound tag=${outbound.tag} type=${outbound.type} delay=${outbound.urlTestDelay}")
+                if (detailBudget.admit()) Log.d(TAG, "box outbound tag=${outbound.tag} type=${outbound.type} delay=${outbound.urlTestDelay}")
                 emitted += 1
             }
         }

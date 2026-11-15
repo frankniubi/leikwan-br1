@@ -9,11 +9,12 @@ extension AppModel {
         ImportedRuleListStore(directory: AppGroup.userRuleSetDirectory)
     }
 
-    /// Custom rules the engine may compile: `USER-LIST` rules whose file is gone are left out,
+    /// Custom rules the engine may compile, module rules first (as Surge orders them);
+    /// `USER-LIST` rules whose file is gone are left out,
     /// because sing-box refuses to start with a rule-set it cannot read.
     var compilableCustomRules: [CustomRoutingRule] {
         let lists = importedRuleLists
-        return routing.customRules.filter { rule in
+        return (moduleCustomRules + routing.customRules).filter { rule in
             rule.type != .userList || lists.path(for: rule.value) != nil
         }
     }

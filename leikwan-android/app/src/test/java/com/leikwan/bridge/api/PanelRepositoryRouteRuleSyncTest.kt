@@ -461,6 +461,100 @@ class PanelRepositoryRouteRuleSyncTest {
         assertTrue(store.current().directions.isEmpty())
     }
 
+    @Test
+    fun `debug capability absent is explicit for manual and passive never uploads`() = runBlocking {
+        api.debugCollection = DebugCollectionDto("123e4567-e89b-42d3-a456-426614174000", "active")
+        try {
+            repo.uploadDebugLogsNow()
+            org.junit.Assert.fail("old server must be explicit")
+        } catch (error: java.io.IOException) {
+            assertEquals("unsupported_upload_protocol", error.message)
+        }
+        api.pullResponse = PullConfigsResponse(true, JsonObject().apply {
+            add("debug_collection", com.google.gson.Gson().toJsonTree(api.debugCollection))
+        }, emptyList())
+        repo.pullCatalog()
+        assertEquals(0, api.debugChunks)
+    }
+
+    @Test
+    fun `passive diagnostic sender cannot block a config pull`() = runBlocking {
+        val uuid = "123e4567-e89b-42d3-a456-426614174099"
+        val state = java.io.File(context.filesDir, "debug-uploads/$uuid.json")
+        state.delete()
+        api.debugCollection = DebugCollectionDto(uuid, "active", supportsUploadId = true)
+        api.pullResponse = PullConfigsResponse(true, JsonObject().apply {
+            add("debug_collection", com.google.gson.Gson().toJsonTree(api.debugCollection))
+        }, emptyList())
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finished = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.debugSend = { request ->
+            assertTrue(com.leikwan.bridge.diagnostics.DebugLogUploader.isValidCollectionUuid(request.uploadId!!))
+            entered.complete(Unit)
+            try { release.await() } finally { finished.complete(Unit) }
+            throw kotlinx.coroutines.CancellationException("test finished")
+        }
+        try {
+            kotlinx.coroutines.withTimeout(15_000) {
+                repo.pullCatalog()
+                entered.await() // Pull returned while this sender still waits for release.
+                assertFalse(release.isCompleted)
+            }
+        } finally {
+            release.complete(Unit)
+            kotlinx.coroutines.withTimeout(5_000) { finished.await() }
+            // Serialize cleanup with the worker finishing cancellation.
+            com.leikwan.bridge.diagnostics.DebugUploadStore.lockFor(context.filesDir).lock()
+            try { state.delete() } finally { com.leikwan.bridge.diagnostics.DebugUploadStore.lockFor(context.filesDir).unlock() }
+        }
+    }
+
+    @Test
+    fun `manual diagnostic pauses before next chunk when enrollment changes and resumes original payload`() = runBlocking {
+        val uuid = "123e4567-e89b-42d3-a456-426614174098"
+        val state = java.io.File(context.filesDir, "debug-uploads/$uuid.json")
+        val pointer = java.io.File(context.filesDir, "debug-manual-collection.json")
+        state.delete()
+        pointer.delete()
+        val statusFiles = (0..5).map { java.io.File(context.filesDir, "diagnostic-auth-$it.status.json") }
+        statusFiles.forEach { it.writeText("a".repeat(60_000)) }
+        api.debugCollection = DebugCollectionDto(uuid, "active", supportsUploadId = true)
+        val requests = mutableListOf<DebugLogChunkRequest>()
+        api.debugSend = { request ->
+            requests += request
+            testPrefs.agentToken = "new-account-agent"
+            testPrefs.enrolledDeviceId = "new-account-device"
+            testPrefs.deviceSessionToken = "new-account-session"
+        }
+        try {
+            try {
+                repo.uploadDebugLogsNow()
+                org.junit.Assert.fail("changed account must pause before the next chunk")
+            } catch (error: java.io.IOException) {
+                assertEquals("debug_upload_context_changed", error.message)
+            }
+            assertEquals(1, requests.size)
+            assertEquals("Bearer agent-token", api.lastDebugAuth)
+            assertTrue(state.readText().contains("\"nextSequence\":1"))
+            assertTrue(state.readText().contains("\"status\":\"pending\""))
+            // Returning to the original account resumes the fixed snapshot, not the changed files.
+            testPrefs.agentToken = "agent-token"
+            testPrefs.enrolledDeviceId = deviceId
+            testPrefs.deviceSessionToken = "device-session"
+            statusFiles.forEach { it.delete() }
+            api.debugSend = { requests += it }
+            val result = repo.uploadDebugLogsNow()
+            assertTrue(result.chunks >= 2)
+            assertEquals(listOf(0, 1), requests.map { it.sequence })
+            assertEquals(1, requests.map { it.uploadId }.distinct().size)
+        } finally {
+            statusFiles.forEach { it.delete() }
+            state.delete()
+            pointer.delete()
+        }
+    }
+
     private fun sampleForward(forwardId: Long, serviceName: String, listenPort: Int): JsonElement = JsonParser.parseString(
         """
         {
@@ -568,6 +662,10 @@ class PanelRepositoryRouteRuleSyncTest {
         var createResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var updateResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
         var deleteResponse: Response<ClientRuleWriteResponse> = Response.success(ClientRuleWriteResponse(false, error = "not_configured"))
+        var debugCollection = DebugCollectionDto()
+        var debugChunks = 0
+        var lastDebugAuth: String? = null
+        var debugSend: (suspend (DebugLogChunkRequest) -> Unit)? = null
         var heartbeatException: Exception? = null
         var createException: Exception? = null
         val calls = mutableListOf<String>()
@@ -646,8 +744,14 @@ class PanelRepositoryRouteRuleSyncTest {
             return deleteResponse
         }
 
-        override suspend fun startDebugCollection(auth: String, body: Map<String, String>): retrofit2.Response<com.leikwan.bridge.api.DebugCollectionStartResponse> = throw UnsupportedOperationException()
-        override suspend fun uploadDebugLogChunk(auth: String, request: com.leikwan.bridge.api.DebugLogChunkRequest): retrofit2.Response<com.leikwan.bridge.api.DebugLogChunkResponse> = throw UnsupportedOperationException()
+        override suspend fun startDebugCollection(auth: String, body: Map<String, String>): Response<DebugCollectionStartResponse> =
+            Response.success(DebugCollectionStartResponse(true, debugCollection = debugCollection))
+        override suspend fun uploadDebugLogChunk(auth: String, request: DebugLogChunkRequest): Response<DebugLogChunkResponse> {
+            debugChunks++
+            lastDebugAuth = auth
+            debugSend?.invoke(request)
+            return Response.success(DebugLogChunkResponse(true))
+        }
         override suspend fun getForwardConfig(auth: String, forwardId: Long): JsonElement = JsonObject()
     }
 }

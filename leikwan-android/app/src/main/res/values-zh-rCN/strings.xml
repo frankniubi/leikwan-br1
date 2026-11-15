@@ -9,6 +9,7 @@
     <string name="common_unknown">未知</string>
     <string name="language">语言</string>
     <string name="language_zh">简体中文</string>
+    <string name="language_zh_hk">繁體中文（香港）</string>
     <string name="language_en">English</string>
     <string name="nav_tunnels">隧道</string>
     <string name="nav_connections">连接</string>
@@ -34,6 +35,7 @@
     <string name="login_client_id_format">ID：%1$d</string>
     <string name="login_use_first">使用第一个</string>
     <string name="login_error_generic">登录失败</string>
+    <string name="login_error_hardware_attestation">此设备无法提供硬件证明。请更新设备的安全组件，或使用经过认证的设备。</string>
     <string name="login_error_switch_failed">切换失败</string>
     <string name="login_error_select_client">请选择客户端后继续</string>
     <string name="login_error_credentials_required">请输入有效的 Client ID 和 Agent Token</string>
@@ -228,8 +230,6 @@
     <string name="settings_dns_fallback">备用 DNS</string>
     <string name="settings_dns_strategy">DNS 策略</string>
     <string name="settings_bypass_rules">绕过规则</string>
-    <string name="settings_bypass_lan_ip">绕过局域网 IP</string>
-    <string name="settings_bypass_china">绕过中国 IP/域名</string>
     <string name="settings_custom_bypass">自定义绕过（每行一个 IP 或域名）</string>
     <string name="settings_rule_packs">分流规则包</string>
     <string name="settings_rule_pack_active_format">当前：%1$s</string>
@@ -376,7 +376,7 @@
     <string name="settings_section_general">通用</string>
     <string name="settings_language_system">跟随系统</string>
     <string name="settings_section_advanced">高级</string>
-    <string name="settings_advanced_desc">DNS、绕行规则与规则包</string>
+    <string name="settings_advanced_desc">DNS、自定义绕过与规则包</string>
     <string name="settings_version">版本</string>
     <string name="nav_dashboard">仪表盘</string>
     <string name="nav_services">服务</string>

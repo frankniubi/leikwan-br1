@@ -2000,6 +2000,10 @@ final class ClientAgentController extends BaseController
         // contract aliases so older/newer agents can upload to the same API.
         $sha256 = (string) $request->input('sha256', $request->input('chunk_sha256', ''));
         $chunk = $request->input('chunk_base64', $request->input('content_base64', ''));
+        $uploadId = $request->input('upload_id', null);
+        if ($uploadId !== null && !is_string($uploadId)) {
+            return $this->noStoreJson(['ok' => false, 'error' => 'debug_upload_invalid'], 422);
+        }
         if ($sequence === false || !is_string($chunk)) {
             return $this->json(['ok' => false, 'error' => 'debug_chunk_invalid'], 422);
         }
@@ -2010,6 +2014,7 @@ final class ClientAgentController extends BaseController
             (int) $sequence,
             $sha256,
             $chunk,
+            $uploadId,
         );
         return $this->noStoreJson([
             'ok' => true,

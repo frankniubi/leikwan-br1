@@ -89,8 +89,16 @@ type Agent struct {
 	// returning the token until its own result row clears it, so without this
 	// the same request would be re-run on every pull.
 	diagDoneToken string
-	debugUUID     string
-	debugDoneUUID string
+
+	// The upload gate serializes manual/passive network work; debugMu only
+	// protects short state transactions, so pulls can supersede an in-flight
+	// upload without waiting for its HTTP timeout.
+	debugGate   chan struct{}
+	debugMu     sync.Mutex
+	debugState  debugUploadState
+	debugLoaded bool
+	debugErr    error
+	debugEpoch  uint64
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -141,6 +149,7 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		reconcile:          make(chan string, 16),
 		forceStatusFlush:   make(chan struct{}, 1),
 		gatewaySignal:      make(chan struct{}, 1),
+		debugGate:          make(chan struct{}, 1),
 		startedAt:          time.Now(),
 		refusedGenerations: map[int]string{},
 	}
@@ -182,6 +191,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// outbound, without a mode switch and without a service restart.
 	start(a.gatewayLoop)
 	start(a.traceLoop)
+	start(a.debugUploadLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
@@ -380,6 +390,7 @@ func (a *Agent) pullDelay(now time.Time, notModified bool) time.Duration {
 func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {
 	// The Panel caps the long poll at 25s; ask for a little less so the
 	// client-side timeout always fires first.
+	debugEpoch := a.debugObservation()
 	response, err := a.panel.Pull(ctx, since, waitSeconds)
 	if errors.Is(err, errNotModified) {
 		a.store.UpdatePull(func(state *PullState) {
@@ -407,16 +418,15 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
 		a.diagToken = token
 	}
-	if coll := response.Client.DebugCollection; coll != nil && strings.EqualFold(strings.TrimSpace(coll.Status), "active") {
-		if uuid := strings.ToLower(strings.TrimSpace(coll.UUID)); uuid != "" && uuid != a.debugDoneUUID {
-			a.debugUUID = uuid
-		}
-	}
 	a.lastPullAt = time.Now()
 	a.configLoaded = true
 	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
+
+	if err := a.observeDebugCollection(response.Client.DebugCollection, debugEpoch); err != nil {
+		a.log.Warn("diagnostics", "debug upload state unavailable: %v", err)
+	}
 
 	a.store.UpdatePull(func(state *PullState) {
 		state.ConfigRevision = response.ConfigRevision

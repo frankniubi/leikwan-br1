@@ -87,6 +87,10 @@ type DiagnosticCheck struct {
 }
 
 func (a *Agent) diagnose() DiagnosticReport {
+	return a.diagnoseWithContext(context.Background())
+}
+
+func (a *Agent) diagnoseWithContext(parent context.Context) DiagnosticReport {
 	report := DiagnosticReport{
 		GeneratedAt:   formatRFC3339(time.Now()),
 		Version:       agentVersion,
@@ -111,7 +115,7 @@ func (a *Agent) diagnose() DiagnosticReport {
 	add("run_directory", dirExists(a.cfg.RunDir), a.cfg.RunDir)
 	add("data_directory", dirExists(a.cfg.DataDir), a.cfg.DataDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	if err := a.panel.Probe(ctx); err != nil {
 		add("panel_reachable", false, redactSecrets(err.Error()))

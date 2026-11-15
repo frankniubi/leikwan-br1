@@ -14,9 +14,24 @@ public enum CustomRuleType: String, Codable, Equatable, CaseIterable {
     /// An imported Surge/Clash list (value = its `ImportedRuleListStore` id). Created by the
     /// list importer only, never typed or pasted as a line.
     case userList = "USER-LIST"
+    /// Surge types whose match is built from the line itself by `SurgeListConverter`
+    /// (value = the rule's second column; for AND/OR/NOT the parenthesised operands).
+    case domainWildcard = "DOMAIN-WILDCARD"
+    case srcIp = "SRC-IP"
+    case srcPort = "SRC-PORT"
+    case protocolType = "PROTOCOL"
+    case subnet = "SUBNET"
+    case logicalAnd = "AND"
+    case logicalOr = "OR"
+    case logicalNot = "NOT"
 
     /// Types a user can add by hand (the add-rule picker).
     public static var manualTypes: [CustomRuleType] { allCases.filter { $0 != .userList } }
+
+    /// Surge spellings that mean one of the types above.
+    static let aliases: [String: String] = [
+        "IP-CIDR6": "IP-CIDR", "IP6-CIDR": "IP-CIDR", "DEST-PORT": "DST-PORT", "SRC-IP-CIDR": "SRC-IP",
+    ]
 }
 
 public enum CustomRuleOutcome: String, Codable, Equatable, CaseIterable {
@@ -50,27 +65,30 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
     /// `IP-CIDR6` is accepted as `IP-CIDR`; trailing options such as `no-resolve` are ignored.
     /// Type matching is case-insensitive. POLICY follows Clash semantics (see `clashPolicyOutcome(_:)`).
     public static func parseLine(_ line: String, id: String) -> CustomRoutingRule? {
-        let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // Top-level commas only: AND/OR/NOT carry their operands in parentheses.
+        let parts = SurgeListConverter.splitTopLevel(line).map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count >= 2 else { return nil }
         var typeText = parts[0].uppercased()
-        if typeText == "IP-CIDR6" { typeText = "IP-CIDR" }
+        typeText = CustomRuleType.aliases[typeText] ?? typeText
         guard let type = CustomRuleType(rawValue: typeText), type != .userList else { return nil }
 
         let outcome: CustomRuleOutcome = parts.count >= 3 ? CustomRoutingRule.clashPolicyOutcome(parts[2]) : .proxy
 
-        let rule = CustomRoutingRule(id: id, type: type, value: parts[1], outcome: outcome)
+        // Surge writes port ranges as 8000-9000, sing-box as 8000:9000.
+        let value = type == .dstPort ? parts[1].replacingOccurrences(of: "-", with: ":") : parts[1]
+        let rule = CustomRoutingRule(id: id, type: type, value: value, outcome: outcome)
         return rule.normalizedValue() == nil ? nil : rule
     }
 
     /// Clash policy -> outcome, matching Android's ClashRuleParser: `DIRECT` and `REJECT`
-    /// (case-insensitive) are themselves; any other policy name (`PROXY`, a proxy-group name such
+    /// (case-insensitive; Surge's `REJECT-DROP`, `REJECT-TINYGIF` and `REJECT-NO-DROP` count as
+    /// `REJECT`) are themselves; any other policy name (`PROXY`, a proxy-group name such
     /// as `Proxies` or `🚀 节点选择`, or a stray option like `no-resolve`) goes through the proxy,
     /// because a pasted Clash profile names its groups freely and every one of them is a proxy.
     static func clashPolicyOutcome(_ policy: String) -> CustomRuleOutcome {
         switch policy.trimmingCharacters(in: .whitespaces).uppercased() {
         case "DIRECT": return .direct
-        case "REJECT": return .reject
+        case "REJECT", "REJECT-DROP", "REJECT-TINYGIF", "REJECT-NO-DROP": return .reject
         default: return .proxy
         }
     }
@@ -115,6 +133,8 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
             return raw
         case .userList:
             return ImportedRuleListStore.isValidID(raw) ? raw : nil
+        case .domainWildcard, .srcIp, .srcPort, .protocolType, .subnet, .logicalAnd, .logicalOr, .logicalNot:
+            return SurgeListConverter.convertRuleLine("\(type.rawValue),\(raw)", extended: true) == nil ? nil : raw
         case .domainRegex:
             // Validate regex compiles, then reject syntax sing-box's RE2 engine can't run even
             // though Foundation's ICU-backed NSRegularExpression accepts it (lookaround,
@@ -182,6 +202,8 @@ public struct CustomRoutingRule: Codable, Equatable, Identifiable {
             }
         case .domainRegex: return ["domain_regex": [normalized]]
         case .userList: return ["rule_set": [ImportedRuleListStore.tag(for: normalized)]]
+        case .domainWildcard, .srcIp, .srcPort, .protocolType, .subnet, .logicalAnd, .logicalOr, .logicalNot:
+            return SurgeListConverter.convertRuleLine("\(type.rawValue),\(normalized)", extended: true)
         }
     }
 

@@ -30,6 +30,14 @@ public sealed partial class MasterApiClient : IDisposable
 
     public Uri CurrentControlPlaneEndpoint => _endpointSupervisor.CurrentEndpoint;
 
+    // Bind diagnostic state to the configured panel and authenticated device, not the
+    // current failover mirror. Persist only this digest, never the token or device ID.
+    internal string DebugUploadScopeBinding => Convert.ToHexString(SHA256.HashData(
+        Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new[]
+        {
+            new Uri(_masterUrl).AbsoluteUri.TrimEnd('/'), _deviceId, _agentToken,
+        }))));
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -807,7 +815,8 @@ public sealed partial class MasterApiClient : IDisposable
         string sha256,
         string chunkBase64,
         string source,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? uploadId = null)
     {
         var url = $"{_masterUrl}/api/client/debug/log";
         var payload = new
@@ -817,6 +826,7 @@ public sealed partial class MasterApiClient : IDisposable
             sha256,
             chunk_base64 = chunkBase64,
             source,
+            upload_id = uploadId,
         };
         var json = JsonSerializer.Serialize(payload, JsonOptions);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");

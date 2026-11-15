@@ -24,6 +24,9 @@ struct TunnelLaunchOptions: Codable, Equatable {
     /// non-default binding are optional: if they fail to start, the tunnel starts without that
     /// binding instead of failing. Empty in older snapshots (every runtime required).
     var bindings: [TunnelBindingInfo] = []
+    /// Module scripts the tunnel runs (cron, network-changed) or answers for (panels). Their
+    /// sources are files in the app group; the tunnel downloads nothing.
+    var scripts: [ScriptLaunch] = []
 
     enum CodingKeys: String, CodingKey {
         case configContent
@@ -32,6 +35,7 @@ struct TunnelLaunchOptions: Codable, Equatable {
         case ultra
         case nativeOutbound
         case bindings
+        case scripts
     }
 
     /// runtime name -> binding id, for the runtimes the tunnel may skip on failure.
@@ -68,7 +72,24 @@ extension TunnelLaunchOptions {
         ultra = try container.decodeIfPresent([UltraForwardLaunch].self, forKey: .ultra) ?? []
         nativeOutbound = try container.decodeIfPresent(NativeOutboundLaunch.self, forKey: .nativeOutbound)
         bindings = try container.decodeIfPresent([TunnelBindingInfo].self, forKey: .bindings) ?? []
+        scripts = try container.decodeIfPresent([ScriptLaunch].self, forKey: .scripts) ?? []
     }
+}
+
+/// One module script as the tunnel needs it (`ResolvedScript`, in plain strings).
+struct ScriptLaunch: Codable, Equatable {
+    /// `<module id>/<script name>`; results are stored under it.
+    var key: String
+    var moduleName: String
+    var name: String
+    /// "cron" / "event" / "generic".
+    var kind: String
+    var cronExpression: String?
+    var eventName: String?
+    /// Absolute path of the script source in the app group.
+    var sourcePath: String
+    var argument: String?
+    var timeoutSeconds: Int
 }
 
 /// One running (forward, node) binding (diagnostics + optional-runtime grouping).
@@ -185,10 +206,15 @@ struct TunnelRequest: Codable {
         case status
         case logs
         case reload
+        /// Run one module script now (a panel tap); the reply is a `ScriptOutcome`.
+        case runScript
     }
 
     var command: Command
     var launch: TunnelLaunchOptions?
+    /// `.runScript`: the script's key and what asked for the run ("button" / "auto-interval").
+    var scriptKey: String? = nil
+    var scriptTrigger: String? = nil
 }
 
 struct TunnelStatusSnapshot: Codable, Equatable {

@@ -74,4 +74,8 @@ public sealed class DebugCollectionMeta
 
     [JsonPropertyName("bytes_received")]
     public long BytesReceived { get; set; }
+
+    // Absence means the server cannot safely resume an immutable upload.
+    [JsonPropertyName("supports_upload_id")]
+    public bool SupportsUploadId { get; set; }
 }

@@ -115,7 +115,7 @@ class SingboxConfigBuilderTest {
         val remoteDns = dnsServers.first { it.asJsonObject.get("tag").asString == "remote" }.asJsonObject
 
         assertEquals(11024, mainProxy.get("server_port").asInt)
-        assertEquals("debug", log.get("level").asString)
+        assertEquals("warn", log.get("level").asString)
         assertFalse(outbounds.any { it.asJsonObject.get("type").asString == "selector" })
         assertEquals("proxy-1", config.getAsJsonObject("route").get("final").asString)
         assertEquals("tcp", remoteDns.get("type").asString)
@@ -332,7 +332,7 @@ class SingboxConfigBuilderTest {
         assertEquals("direct", proxySelector.get("type").asString)
         assertEquals("udp", remoteDns.get("type").asString)
         assertFalse(remoteDns.has("detour"))
-        assertEquals("debug", log.get("level").asString)
+        assertEquals("warn", log.get("level").asString)
     }
 
     @Test

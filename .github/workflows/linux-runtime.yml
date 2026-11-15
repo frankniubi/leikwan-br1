@@ -18,6 +18,16 @@ jobs:
     name: Linux build and tests
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: ci-local-only
+        ports:
+          - 33306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -39,7 +49,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
-          extensions: ":mbstring, pdo_sqlite, sqlite3, curl, openssl, sodium"
+          extensions: ":mbstring, pdo_mysql, pdo_sqlite, sqlite3, curl, openssl, sodium"
           coverage: none
 
       - name: Run Go tests
@@ -55,6 +65,25 @@ jobs:
             echo "::endgroup::"
           done
           exit "$failed"
+
+      - name: Run diagnostic uploader race tests
+        id: diagnostic_race
+        continue-on-error: true
+        working-directory: tools/leikwand
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -mod=readonly ./... -count=1
+
+      - name: Rehearse diagnostic upload migration
+        id: debug_migration
+        continue-on-error: true
+        env:
+          LEIKWAN_TEST_MYSQL: "1"
+          LEIKWAN_TEST_MYSQL_HOST: "127.0.0.1"
+          LEIKWAN_TEST_MYSQL_PORT: "33306"
+          LEIKWAN_TEST_MYSQL_USER: root
+          LEIKWAN_TEST_MYSQL_PASSWORD: ci-local-only
+        run: php master/tests/debug_upload_migration_test.php
 
       - name: Build Linux Ultra runtime (amd64, arm64)
         id: runtime
@@ -140,6 +169,8 @@ jobs:
         env:
           OUTCOMES: >-
             go_tests=${{ steps.go_tests.outcome }}
+            diagnostic_race=${{ steps.diagnostic_race.outcome }}
+            debug_migration=${{ steps.debug_migration.outcome }}
             runtime=${{ steps.runtime.outcome }}
             python_tests=${{ steps.python_tests.outcome }}
             php_tests=${{ steps.php_tests.outcome }}

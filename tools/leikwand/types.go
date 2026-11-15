@@ -27,9 +27,22 @@ type PullResponse struct {
 }
 
 type DebugCollectionMeta struct {
-	UUID      string `json:"uuid"`
-	Status    string `json:"status"`
-	ExpiresAt string `json:"expires_at"`
+	UUID             string `json:"uuid"`
+	Status           string `json:"status"`
+	ExpiresAt        string `json:"expires_at"`
+	SupportsUploadID bool   `json:"supports_upload_id"`
+}
+
+// DebugLogChunkRequest is immutable for a given (collection, upload, sequence).
+// UploadID is optional on the wire for legacy callers, but the agent only sends
+// logs to collections that explicitly advertise supports_upload_id.
+type DebugLogChunkRequest struct {
+	CollectionUUID string `json:"collection_uuid"`
+	UploadID       string `json:"upload_id,omitempty"`
+	Sequence       int    `json:"sequence"`
+	SHA256         string `json:"sha256"`
+	ChunkBase64    string `json:"chunk_base64"`
+	Source         string `json:"source"`
 }
 
 type ClientMeta struct {

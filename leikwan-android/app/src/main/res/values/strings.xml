@@ -9,6 +9,7 @@
     <string name="common_unknown">Unknown</string>
     <string name="language">Language</string>
     <string name="language_zh">简体中文</string>
+    <string name="language_zh_hk">繁體中文（香港）</string>
     <string name="language_en">English</string>
     <string name="nav_tunnels">Tunnels</string>
     <string name="nav_proxies">Nodes</string>
@@ -228,8 +229,6 @@
     <string name="settings_dns_fallback">Fallback DNS</string>
     <string name="settings_dns_strategy">DNS Strategy</string>
     <string name="settings_bypass_rules">Bypass Rules</string>
-    <string name="settings_bypass_lan_ip">Bypass LAN IP</string>
-    <string name="settings_bypass_china">Bypass China IP/Domain</string>
     <string name="settings_custom_bypass">Custom bypass (one IP/domain per line)</string>
     <string name="settings_rule_packs">Routing rule packs</string>
     <string name="settings_rule_pack_active_format">Active: %1$s</string>
@@ -377,7 +376,7 @@
     <string name="settings_section_general">General</string>
     <string name="settings_language_system">System</string>
     <string name="settings_section_advanced">Advanced</string>
-    <string name="settings_advanced_desc">DNS, bypass rules and rule packs</string>
+    <string name="settings_advanced_desc">DNS, custom bypass and rule packs</string>
     <string name="settings_version">Version</string>
     <string name="nav_dashboard">Dashboard</string>
     <string name="nav_services">Services</string>

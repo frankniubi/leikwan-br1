@@ -576,14 +576,28 @@ func (c *PanelClient) StartDebugCollection(ctx context.Context) (*DebugCollectio
 	return &out, nil
 }
 
-func (c *PanelClient) UploadDebugLogChunk(ctx context.Context, uuid string, sequence int, sha256Hex, chunkBase64, source string) error {
-	payload := map[string]any{
-		"collection_uuid": uuid,
-		"sequence":        sequence,
-		"sha256":          sha256Hex,
-		"chunk_base64":    chunkBase64,
-		"source":          source,
-	}
+// debugClientSnapshot pins both endpoint pool and credentials for a diagnostic
+// operation. Enrollment during an HTTP request must never send an old bundle
+// with a new account's token. Only the hash leaves this in-memory snapshot.
+func (c *PanelClient) debugClientSnapshot() (*PanelClient, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	endpoints := append([]string(nil), c.endpoints...)
+	identity, _ := json.Marshal(struct {
+		Endpoints []string
+		Token     string
+		ClientID  int
+		DeviceID  string
+	}{endpoints, c.token, c.clientID, c.deviceID})
+	return &PanelClient{
+		endpoints: endpoints, active: c.active, token: c.token,
+		deviceID: c.deviceID, deviceNme: c.deviceNme, clientID: c.clientID,
+		http: c.http, egress: c.egress, platformTag: c.platformTag,
+		platformRetried: c.platformRetried,
+	}, sha256Hex(string(identity))
+}
+
+func (c *PanelClient) UploadDebugLogChunk(ctx context.Context, payload DebugLogChunkRequest) error {
 	return c.do(ctx, http.MethodPost, "/api/client/debug/log", payload, nil)
 }
 

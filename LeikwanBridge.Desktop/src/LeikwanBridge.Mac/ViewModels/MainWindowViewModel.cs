@@ -1365,14 +1365,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             var snapshotLines = Logs.ToArray();
             var result = await _controller.UploadDebugLogsAsync(snapshotLines).ConfigureAwait(false);
-            _dispatch(() =>
-            {
-                LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
-                ShowNotice(string.Format(
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    L.T("UploadLogsSuccess", "Uploaded diagnostic logs (ref {0})."),
-                    result.ReferenceCode));
-            });
+            _dispatch(() => ApplyLogUploadResult(result));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1386,6 +1379,21 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             _dispatch(() => IsUploadingLogs = false);
         }
+    }
+
+    private void ApplyLogUploadResult(DebugManualUploadResult result)
+    {
+        if (!string.Equals(result.Status, "complete", StringComparison.Ordinal))
+        {
+            LogUploadSummary = $"Diagnostic upload: {result.Status} ({result.Bytes / 1024.0:F1} KB acknowledged)";
+            ShowNotice(LogUploadSummary);
+            return;
+        }
+        LogUploadSummary = $"Ref {result.ReferenceCode} ({result.Bytes / 1024.0:F1} KB)";
+        ShowNotice(string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            L.T("UploadLogsSuccess", "Uploaded diagnostic logs (ref {0})."),
+            result.ReferenceCode));
     }
 
     [RelayCommand]

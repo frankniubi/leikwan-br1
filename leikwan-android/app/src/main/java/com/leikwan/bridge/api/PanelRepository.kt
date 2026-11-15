@@ -12,6 +12,19 @@ import com.leikwan.bridge.data.clientrules.ClientRouteRuleStore
 import com.leikwan.bridge.data.hosted.HostedNodeSync
 import com.leikwan.bridge.diagnostics.DebugLogUploader
 import com.leikwan.bridge.diagnostics.DebugUploadSummary
+import com.leikwan.bridge.diagnostics.DebugUploadStore
+import com.leikwan.bridge.diagnostics.DebugUploadException
+import com.leikwan.bridge.diagnostics.ManualDebugCollection
+import com.google.gson.Gson
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import com.leikwan.bridge.runtime.AndroidEffectiveForward
 import com.leikwan.bridge.runtime.AndroidEffectiveForwardBuilder
 import com.leikwan.bridge.runtime.ForwardCatalog
@@ -104,6 +117,7 @@ class PanelRepository(
     private val prefs = prefsOverride ?: Prefs.get(context)
 
     private val api: PanelApi = apiOverride ?: buildApi(panelEndpointOverride?.url ?: prefs.panelUrl)
+    private val diagnosticApiOverride = apiOverride
 
     private val hostedNodeApi: HostedNodeApi by lazy {
         hostedNodeApiOverride ?: buildRetrofit(panelEndpointOverride?.url ?: prefs.panelUrl).create(HostedNodeApi::class.java)
@@ -133,7 +147,7 @@ class PanelRepository(
 
     private fun buildApi(baseUrl: String): PanelApi = buildRetrofit(baseUrl).create(PanelApi::class.java)
 
-    private fun buildRetrofit(baseUrl: String): Retrofit {
+    private fun buildRetrofit(baseUrl: String, debugAuthSnapshot: DebugAuthSnapshot? = null): Retrofit {
         val url = baseUrl.trimEnd('/') + "/"
         val host = runCatching { URI(url).host }.getOrNull()
         val clientBuilder = httpClientOverride?.newBuilder() ?: OkHttpClient.Builder()
@@ -160,6 +174,7 @@ class PanelRepository(
                     deviceNameProvider = deviceNameProvider,
                     clientVersion = BuildConfig.VERSION_NAME,
                     nowMs = nowMs,
+                    debugAuthSnapshot = debugAuthSnapshot,
                 ),
             )
             .addInterceptor(PanelControlInterceptor())
@@ -446,6 +461,7 @@ class PanelRepository(
             // Capability advertisement is best-effort; older or temporarily unavailable
             // panels must not block the authoritative pull.
         }
+        val diagnosticAuth = runCatching { DebugAuthSnapshot.capture(prefs, nowMs()) }.getOrNull()
         val resp = api.pullConfigs(authHeader())
         if (!resp.ok) throw Exception("Pull configs failed")
         DeviceLimitGate.clear()
@@ -463,7 +479,7 @@ class PanelRepository(
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
         syncHostedNodesAfterPull(resp.client)
-        uploadDebugLogsIfRequested(resp.client)
+        if (diagnosticAuth != null) uploadDebugLogsIfRequested(resp.client, diagnosticAuth)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
             try {
@@ -886,59 +902,103 @@ class PanelRepository(
         syncVersion = syncVersion,
     )
 
-    private suspend fun uploadDebugLogsIfRequested(client: JsonElement?) {
-        val (uuid, status) = runCatching {
-            val coll = client?.takeIf { it.isJsonObject }?.asJsonObject
-                ?.get("debug_collection")?.takeIf { it.isJsonObject }?.asJsonObject
-                ?: return
-            val u = coll.get("uuid")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
-            val s = coll.get("status")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().trim().lowercase()
-            u to s
+    private fun uploadDebugLogsIfRequested(client: JsonElement?, auth: DebugAuthSnapshot) {
+        val collection = runCatching {
+            val json = client?.takeIf { it.isJsonObject }?.asJsonObject
+                ?.get("debug_collection")?.takeIf { it.isJsonObject } ?: return
+            Gson().fromJson(json, DebugCollectionDto::class.java)
         }.getOrNull() ?: return
-        if (status != "active" || !DebugLogUploader.isValidCollectionUuid(uuid)) return
-        if (DebugLogUploader.hasUploadedPassiveCollection(context.filesDir, uuid)) return
-        try {
-            val bytes = DebugLogUploader.collectAppBundle(context)
-            DebugLogUploader.uploadBytes(uuid, bytes) { seq, sha, b64, src ->
-                val resp = api.uploadDebugLogChunk(
-                    authHeader(),
-                    DebugLogChunkRequest(uuid, seq, sha, b64, src),
-                )
-                if (!resp.isSuccessful || resp.body()?.ok != true) {
-                    throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+        val uuid = collection.uuid.trim().lowercase()
+        if (collection.status != "active" || !DebugLogUploader.isValidCollectionUuid(uuid)) return
+        if (!collection.supportsUploadId) {
+            Log.w("DebugLogUploader", "unsupported_upload_protocol")
+            return
+        }
+        // Never wait for collection, disk I/O, chunks or another uploader on the config/lease path.
+        val key = context.filesDir.absolutePath
+        synchronized(passiveUploads) {
+            if (passiveUploads[key]?.isCompleted == false) return
+            val job = diagnosticScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    auth.requireCurrent(prefs, nowMs())
+                    uploadDebugCollection(collection, auth)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Pending state survives for a later pull (including auth failures).
                 }
             }
-            DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // Best-effort passive upload; retried on the next pull while active.
+            passiveUploads[key] = job
+            job.invokeOnCompletion { synchronized(passiveUploads) { passiveUploads.remove(key, job) } }
+            job.start()
+        }
+    }
+
+    private fun debugApi(auth: DebugAuthSnapshot): PanelApi = diagnosticApiOverride
+        ?: buildRetrofit(panelEndpointOverride?.url ?: auth.panelUrl, auth).create(PanelApi::class.java)
+
+    private suspend fun uploadDebugCollection(collection: DebugCollectionDto, auth: DebugAuthSnapshot): Pair<Int, Int> = withContext(Dispatchers.IO) {
+        val uuid = collection.uuid.trim().lowercase()
+        val pinnedApi = debugApi(auth)
+        DebugUploadStore(context.filesDir).upload(uuid, collection.supportsUploadId,
+            collect = {
+                auth.requireCurrent(prefs, nowMs())
+                DebugLogUploader.collectAppBundle(context.applicationContext)
+            },
+            expiresAtMs = runCatching { Instant.parse(collection.expiresAt).toEpochMilli() }.getOrDefault(0),
+            nowMs = nowMs(), accountBinding = auth.binding,
+        ) { uploadId, sequence, sha, base64 ->
+            sendDebugChunk(pinnedApi, auth, uuid, uploadId, sequence, sha, base64)
+        }
+    }
+
+    private suspend fun sendDebugChunk(pinnedApi: PanelApi, auth: DebugAuthSnapshot,
+        uuid: String, uploadId: String, sequence: Int, sha: String, base64: String) {
+        auth.requireCurrent(prefs, nowMs())
+        val response = try {
+            pinnedApi.uploadDebugLogChunk(auth.authorization, DebugLogChunkRequest(
+                uuid, sequence, sha, base64, uploadId = uploadId,
+            ))
+        } catch (control: PanelControlException) {
+            // Keep the pending bytes. Diagnostics never turn a control refusal into completion.
+            throw DebugUploadException(403, control.code)
+        }
+        if (!response.isSuccessful || response.body()?.ok != true) {
+            val error = response.body()?.error ?: runCatching {
+                Gson().fromJson(response.errorBody()?.string(), DebugLogChunkResponse::class.java)?.error
+            }.getOrNull() ?: "HTTP ${response.code()}"
+            throw DebugUploadException(response.code(), error)
         }
     }
 
     suspend fun uploadDebugLogsNow(): DebugUploadSummary = reportingDeviceLimit {
         requireActiveSession()
-        val startResp = api.startDebugCollection(authHeader())
-        val startBody = startResp.body()
-        val uuid = startBody?.debugCollection?.uuid?.trim()?.lowercase().orEmpty()
-        if (!startResp.isSuccessful || startBody?.ok != true || !DebugLogUploader.isValidCollectionUuid(uuid)) {
-            val code = startBody?.error?.takeIf { it.isNotBlank() }
-                ?: PanelErrorParser.messageFromHttp(startResp.code(), startResp.message(), startResp.errorBody()?.string())
-            throw Exception(code)
-        }
-        val refCode = startBody.referenceCode?.takeIf { it.isNotBlank() } ?: uuid.take(8)
-        val bundle = DebugLogUploader.collectAppBundle(context)
-        val (chunks, totalBytes) = DebugLogUploader.uploadBytes(uuid, bundle) { seq, sha, b64, src ->
-            val resp = api.uploadDebugLogChunk(
-                authHeader(),
-                DebugLogChunkRequest(uuid, seq, sha, b64, src),
-            )
-            if (!resp.isSuccessful || resp.body()?.ok != true) {
-                throw Exception(resp.body()?.error ?: "HTTP ${resp.code()}")
+        val auth = DebugAuthSnapshot.capture(prefs, nowMs())
+        withContext(Dispatchers.IO) {
+            val pinnedApi = debugApi(auth)
+            val result = DebugUploadStore(context.filesDir).uploadManual(nowMs(), start = {
+                auth.requireCurrent(prefs, nowMs())
+                val startResp = pinnedApi.startDebugCollection(auth.authorization)
+                val startBody = startResp.body()
+                val collection = startBody?.debugCollection
+                val uuid = collection?.uuid?.trim()?.lowercase().orEmpty()
+                if (!startResp.isSuccessful || startBody?.ok != true || !DebugLogUploader.isValidCollectionUuid(uuid)) {
+                    val code = startBody?.error?.takeIf { it.isNotBlank() }
+                        ?: PanelErrorParser.messageFromHttp(startResp.code(), startResp.message(), startResp.errorBody()?.string())
+                    throw Exception(code)
+                }
+                if (collection?.supportsUploadId != true) throw java.io.IOException("unsupported_upload_protocol")
+                ManualDebugCollection(uuid, startBody.referenceCode?.take(256)?.takeIf { it.isNotBlank() } ?: uuid.take(8),
+                    runCatching { Instant.parse(collection.expiresAt).toEpochMilli() }.getOrDefault(nowMs() + 30 * 60_000))
+            }, collect = {
+                auth.requireCurrent(prefs, nowMs())
+                DebugLogUploader.collectAppBundle(context.applicationContext)
+            }, accountBinding = auth.binding) { uuid, uploadId, sequence, sha, base64 ->
+                sendDebugChunk(pinnedApi, auth, uuid, uploadId, sequence, sha, base64)
             }
+            DebugUploadSummary(referenceCode = result.collection.referenceCode, uuid = result.collection.uuid,
+                chunks = result.chunks, bytes = result.bytes)
         }
-        DebugLogUploader.markUploadedPassiveCollection(context.filesDir, uuid)
-        DebugUploadSummary(referenceCode = refCode, uuid = uuid, chunks = chunks, bytes = totalBytes)
     }
 
     fun isLoggedIn(): Boolean = prefs.isLoggedIn()
@@ -954,5 +1014,7 @@ class PanelRepository(
 
     private companion object {
         const val SESSION_REFRESH_MARGIN_MS = 30_000L
+        val diagnosticScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val passiveUploads = ConcurrentHashMap<String, Job>()
     }
 }

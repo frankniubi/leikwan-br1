@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "db15d10bf1e84b6975fafc98c46d3f228741cc01405f655f7353128d482c6e4d",
-    "size": 423800,
-    "size_bytes": 423800,
-    "version": "2026.11.13.2"
+    "sha256": "cea2df0e4a85eced5aa323572386a31f9802d41507797c649af2967102a38671",
+    "size": 436504,
+    "size_bytes": 436504,
+    "version": "2026.11.15.1"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -61,9 +61,9 @@
     "format": "elf-onefile-pyinstaller",
     "path": "artifacts/python-agent/leikwan-client-agent_linux_amd64",
     "runtime_mode": "frozen",
-    "sha256": "8fd21138f5a6c74c1ff3ed73fd3eb6a57303622967781184f226ce1063400611",
+    "sha256": "aa412c336bdf3168e1ac4e92429dc40dc4366d30e724bd5d26f8c1da12d2268f",
     "size_bytes": 8962352,
-    "version": "2026.11.13.1"
+    "version": "2026.11.13.2"
   },
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
@@ -299,17 +299,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-arm64.dmg",
     "runtime_sha256": {
-      "bin/leikwan-bond": "c868fe0cd3d82901590ddc8ab74c0b8e108d72da3f1bf8f4c9d1311127b555b1",
-      "bin/leikwan-ingress": "8a3ad5beba513e5c8c3585d89f2a240dc8062f65b37b41543bde95e6e028272e",
-      "bin/leikwan-uot-bond": "828be0fb7e3245a4629f049a6ca8871e26cbd9692b9652a1ab926f2ab9929177",
-      "bin/sing-box": "e709ef50471caef028ed2428c0de1d4bba0d6d7686d550d9f9920dc53c4c8fa6",
-      "bin/ultra-client": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
-      "bin/wstunnel": "2f77f3aeb4627ccb139d64ce82938c0477356ed62eeebd50e454e9b8018c78e6"
+      "bin/leikwan-bond": "aa6ab2e1c00a5e33a47865503f88a3112c703650d9ec3c53f92be743db7dbb6c",
+      "bin/leikwan-ingress": "13f062db89bb6ce0a798a012b77b76e21f0686ed3117d75ea10e45bc860a9362",
+      "bin/leikwan-uot-bond": "f0f165e374847096b56e3b1dc2d77b9b259b3e96e4d020b17ecbcc71edd41abf",
+      "bin/sing-box": "b7926931f971e21c912114ed3423529f1dcc64a04f9489c3b177f8cad8baa40a",
+      "bin/ultra-client": "c5d4accc85bfe9f8e9af47de7f446161c68fb86f59e0f366e9e35b2478332053",
+      "bin/wstunnel": "7a92c720fb643b786bccb1f55dbec7c7fe924e3902d046e893cf012c266c9720"
     },
-    "sha256": "71213dbc023cf5168583859db6da06bc1fcd0a29526a69206de8309466bfd62c",
-    "size_bytes": 79212356,
-    "version": "1.0.64",
-    "source_commit": "4827c594"
+    "sha256": "ae0c561e5440bc984627771980e6d1fefd0cf1463859d0d37e746e0b31da2b5b",
+    "size_bytes": 79714976,
+    "version": "1.0.66",
+    "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_app_x64": {
     "architecture": "x86_64",
@@ -346,17 +346,17 @@
     },
     "path": "artifacts/macos/leikwan-bridge-update-arm64.zip",
     "runtime_sha256": {
-      "bin/leikwan-bond": "c868fe0cd3d82901590ddc8ab74c0b8e108d72da3f1bf8f4c9d1311127b555b1",
-      "bin/leikwan-ingress": "8a3ad5beba513e5c8c3585d89f2a240dc8062f65b37b41543bde95e6e028272e",
-      "bin/leikwan-uot-bond": "828be0fb7e3245a4629f049a6ca8871e26cbd9692b9652a1ab926f2ab9929177",
-      "bin/sing-box": "e709ef50471caef028ed2428c0de1d4bba0d6d7686d550d9f9920dc53c4c8fa6",
-      "bin/ultra-client": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
-      "bin/wstunnel": "2f77f3aeb4627ccb139d64ce82938c0477356ed62eeebd50e454e9b8018c78e6"
+      "bin/leikwan-bond": "aa6ab2e1c00a5e33a47865503f88a3112c703650d9ec3c53f92be743db7dbb6c",
+      "bin/leikwan-ingress": "13f062db89bb6ce0a798a012b77b76e21f0686ed3117d75ea10e45bc860a9362",
+      "bin/leikwan-uot-bond": "f0f165e374847096b56e3b1dc2d77b9b259b3e96e4d020b17ecbcc71edd41abf",
+      "bin/sing-box": "b7926931f971e21c912114ed3423529f1dcc64a04f9489c3b177f8cad8baa40a",
+      "bin/ultra-client": "c5d4accc85bfe9f8e9af47de7f446161c68fb86f59e0f366e9e35b2478332053",
+      "bin/wstunnel": "7a92c720fb643b786bccb1f55dbec7c7fe924e3902d046e893cf012c266c9720"
     },
-    "sha256": "ad8863d4fca9cb266b849db00c4f2b2f392bb716a5b51493dd7fee95f8e28a71",
-    "size_bytes": 70517726,
-    "version": "1.0.64",
-    "source_commit": "4827c594"
+    "sha256": "f65c2c5ecea57a0975cae29db1e15fcb67cd416ba7788f354ff1b9ccfdc701f9",
+    "size_bytes": 70517088,
+    "version": "1.0.66",
+    "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_update_x64": {
     "architecture": "x86_64",
@@ -572,7 +572,7 @@
       "fingerprint": "2026.11.13.1.1ed417036c60",
       "self_sha256": "5ffad1ad62e2e2adfb58f17cbe3a43d8a4ff4ebdb59b9d7136c7419bb7e18d53"
     },
-    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.12.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.13.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -588,22 +588,22 @@
     "sha256": "5ffad1ad62e2e2adfb58f17cbe3a43d8a4ff4ebdb59b9d7136c7419bb7e18d53",
     "size_bytes": 19235082,
     "version": "2026.11.13.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "runtime_build_version": "2026.11.13.1.1ed417036c60",
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "1add2836",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "clients-20261113-3: first-read coalesce fix; verified embedded fingerprint 2026.11.13.1.1ed417036c60"
     }
   },
   "ultra_client_runtime_android_arm64": {
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_arm64",
     "attestation": {
-      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "fingerprint": "2026.11.13.1.1add2836",
       "self_sha256": "23aee28a42d2728e1f7b38508e565ce38261375ac147bb94092f19dcf02d619a"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.12.1",
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.13.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -619,22 +619,22 @@
     "sha256": "23aee28a42d2728e1f7b38508e565ce38261375ac147bb94092f19dcf02d619a",
     "size_bytes": 17563908,
     "version": "2026.11.13.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "runtime_build_version": "2026.11.13.1.1add2836",
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "1add2836",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "clients-20261113-3: first-read coalesce fix; verified embedded fingerprint 2026.11.13.1.1add2836"
     }
   },
   "ultra_client_runtime_android_x86_64": {
     "architecture": "x86_64",
     "artifact_url": "/artifacts/ultra/ultra-client_android_x86_64",
     "attestation": {
-      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "fingerprint": "2026.11.13.1.1add2836",
       "self_sha256": "53a74d28aadd579dfe84c274e8116b22ec34d1405dcb5af5fd3b4ef1d13a7aa8"
     },
-    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.12.1",
+    "build": "go1.26.5, garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, 2026.11.13.1",
     "hardening": [
       "pie",
       "relro",
@@ -651,12 +651,12 @@
     "sha256": "53a74d28aadd579dfe84c274e8116b22ec34d1405dcb5af5fd3b4ef1d13a7aa8",
     "size_bytes": 19320032,
     "version": "2026.11.13.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "runtime_build_version": "2026.11.13.1.1add2836",
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "1add2836",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "clients-20261113-3: first-read coalesce fix; verified embedded fingerprint 2026.11.13.1.1add2836"
     }
   },
   "ultra_client_runtime_linux_arm64": {
@@ -666,7 +666,7 @@
       "fingerprint": "2026.11.13.1.1ed417036c60",
       "self_sha256": "aedd44a84eb600b90112c992075ab3f779175e3d1c09e4f6abbd49c13602e7a4"
     },
-    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.12.1",
+    "build": "go1.26.5, CGO disabled, pie, trimpath, stripped (garble: -literals), 2026.11.13.1",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -682,28 +682,28 @@
     "sha256": "aedd44a84eb600b90112c992075ab3f779175e3d1c09e4f6abbd49c13602e7a4",
     "size_bytes": 17563914,
     "version": "2026.11.13.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "runtime_build_version": "2026.11.13.1.1ed417036c60",
     "build_provenance": {
-      "source_commit": "247beaf4",
+      "source_commit": "1add2836",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "staggered candidate setup (no more per-candidate 5s/N budget), port-forward mode reports candidate_feedback to the panel, HA health keyed per relay (candidate_key_hash is per line with up to 3 sibling relays)"
+      "reason": "clients-20261113-3: first-read coalesce fix; verified embedded fingerprint 2026.11.13.1.1ed417036c60"
     }
   },
   "ultra_client_runtime_macos_arm64": {
     "architecture": "arm64",
     "artifact_url": "/artifacts/ultra/ultra-client_macos_arm64",
     "attestation": {
-      "fingerprint": "2026.11.12.1.893ba1e57667",
-      "self_sha256": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d"
+      "fingerprint": "2026.11.13.1.1ed417036c60",
+      "self_sha256": "c5d4accc85bfe9f8e9af47de7f446161c68fb86f59e0f366e9e35b2478332053"
     },
-    "build": "go1.26.10 darwin/arm64 (GitHub Actions macos-15), garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, Developer ID signed + notarized in bundle, 2026.11.12.1",
+    "build": "go version go1.26.10 darwin/arm64 (GitHub Actions macos-15), garble-v0.17.0 -literals, CGO disabled, pie, trimpath, stripped, Developer ID signed + notarized in bundle, 2026.11.13.1",
     "obfuscator": "garble-v0.17.0",
     "path": "artifacts/ultra/ultra-client_macos_arm64",
-    "sha256": "8c3885c19c699076a45fd2193f0872410facf6ef666f52735f6eb73957564e3d",
-    "size_bytes": 16109264,
-    "version": "2026.11.12.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "sha256": "c5d4accc85bfe9f8e9af47de7f446161c68fb86f59e0f366e9e35b2478332053",
+    "size_bytes": 16092752,
+    "version": "2026.11.13.1",
+    "runtime_build_version": "2026.11.13.1.1ed417036c60",
     "hardening": [
       "cgo-disabled",
       "pie",
@@ -715,10 +715,13 @@
       "notarized"
     ],
     "build_provenance": {
-      "source_commit": "4827c594",
+      "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea",
       "compiler": "garble",
       "obfuscation": "garble-v0.17.0-literals",
-      "reason": "macOS 1.0.64 bundle: same runtime source and fingerprint, re-signed by CI"
+      "workflow_run_id": 43430547757,
+      "workflow_run_attempt": 3,
+      "workflow_job_id": 131956113104,
+      "reason": "macOS 1.0.66 runtime built from sanitized CI snapshot; signed bytes extracted from notarized update ZIP"
     }
   },
   "ultra_client_runtime_macos_x64": {
@@ -758,13 +761,13 @@
       "fingerprint": "2026.11.13.1.1ed417036c60",
       "self_sha256": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973"
     },
-    "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.11.12.1",
+    "build": "go1.26.5, CGO disabled, trimpath, stripped (no garble: Windows Defender), 2026.11.13.1",
     "obfuscator": "none",
     "path": "artifacts/ultra/ultra-client_windows_amd64.exe",
     "sha256": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973",
     "size_bytes": 7514112,
     "version": "2026.11.13.1",
-    "runtime_build_version": "2026.11.12.1.893ba1e57667",
+    "runtime_build_version": "2026.11.13.1.1ed417036c60",
     "hardening": [
       "cgo-disabled",
       "trimpath",
@@ -774,7 +777,7 @@
       "source_commit": "1add2836",
       "compiler": "go",
       "obfuscation": "none",
-      "reason": "clients-20261113-3: first-read coalesce fix"
+      "reason": "clients-20261113-3: first-read coalesce fix; verified embedded fingerprint 2026.11.13.1.1ed417036c60"
     }
   },
   "uot_bond_runtime": {
@@ -822,10 +825,10 @@
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
+      "ultra_client_runtime_windows": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973"
     },
-    "sha256": "e17c7d5b083d6b72208ca8d96c617b603df740da9c0376dc7ca15b7b5bfecd67",
-    "size_bytes": 22975194,
+    "sha256": "e3194a0a1a04eb48a8cfe93a6d62306777288b34933d7984e51ef86707233790",
+    "size_bytes": 69959500,
     "version": "0.1.20.83"
   },
   "windows_headless_client": {
@@ -834,8 +837,8 @@
     "format": "zip",
     "path": "artifacts/windows/leikwan-bridge-headless-win-x64.zip",
     "platform": "windows",
-    "sha256": "38596d5478122483642554c9b5ee76e9fbc548d2c6a0d36ce2ba67cdb16e5407",
-    "size_bytes": 30903425,
+    "sha256": "20541fa796d19aa624f3b304a7af351b62085e8314727601f596181ae277c328",
+    "size_bytes": 64062898,
     "version": "0.1.20.72",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
@@ -843,15 +846,15 @@
       "leikwan_ingress_windows_amd64": "29d8ee486d17b0ffa0fb441cdd0550cc1192e515af0131247af975ed56cb41d8",
       "leikwan_uot_bond_windows_amd64": "ba997b2e54c289888e7ac4b2d29a61b09ce66f94c02c1a45ad495bbb970a135f",
       "leikwan_mptcp_relay_windows_amd64": "6aa5000e46e31feebbfd37c2fcc8c379d7bb8e0a32bf775855558ffc1dec92f9",
-      "ultra_client_runtime_windows": "c66f5fb5f6bdf179e89b253a94e9eaad30e7761e3856da2fab1d63c0b2d12ba3"
+      "ultra_client_runtime_windows": "59edbdbbfcafe26571d9a59b67404532fd4885837836ebaa767b8a05bd1b1973"
     }
   },
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "5b3c5ceb220e130e5328ccb882cd0bbfa5e2106aa0c5b35fd8743811d424b543",
+    "sha256": "41fcd5803326516eedffccd57224fbe3dfb175d0696172fd8f691e1a0aac9749",
     "size_bytes": 16837,
-    "version": "0.1.20.72",
+    "version": "0.1.20.73",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {

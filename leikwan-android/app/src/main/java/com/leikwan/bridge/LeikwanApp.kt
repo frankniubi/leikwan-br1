@@ -8,6 +8,7 @@ import com.leikwan.bridge.net.PanelNetwork
 class LeikwanApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        com.leikwan.bridge.diagnostics.CrashJournal.install(this)
         val prefs = getSharedPreferences("locale-prefs", MODE_PRIVATE)
         if (!prefs.getBoolean("default_locale_applied", false)) {
             AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags("zh-CN"))

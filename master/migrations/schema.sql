@@ -581,12 +581,13 @@ CREATE TABLE IF NOT EXISTS client_debug_chunks (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     client_id BIGINT UNSIGNED NOT NULL,
     collection_uuid VARCHAR(64) NOT NULL,
+    upload_id VARCHAR(36) NOT NULL DEFAULT '',
     sequence BIGINT UNSIGNED NOT NULL,
     chunk_sha256 CHAR(64) NOT NULL,
     byte_length INT UNSIGNED NOT NULL,
     storage_path VARCHAR(768) NOT NULL,
     created_at DATETIME NOT NULL,
-    UNIQUE (client_id, collection_uuid, sequence)
+    UNIQUE KEY idx_client_debug_chunks_upload (client_id, collection_uuid, upload_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS client_device_sessions (

@@ -43,6 +43,17 @@ final class AppModel: ObservableObject {
     /// Transient banner text.
     @Published var notice: String?
 
+    // MARK: Modules (stored state only; logic lives in AppModel+Modules.swift)
+
+    /// Installed Surge modules: their rules, scripts and panels. Saved by `modulesChanged`.
+    @Published var moduleLibrary = ModuleLibrary()
+    /// Last run of each module script, as read from the app group.
+    @Published var scriptRuns: [String: ScriptRunRecord] = [:]
+    /// Keys of the scripts with a run in flight.
+    @Published var runningScripts: Set<String> = []
+    /// Runs scripts in the app while the VPN is off (the tunnel runs them otherwise).
+    let scriptExecutor = ScriptExecutor(log: { _ in })
+
     // MARK: Cloud nodes + bindings (stored state only; logic and the UI surface live in
     // AppModel+CloudNodes.swift). Write these through the methods there, not directly.
 
@@ -60,6 +71,19 @@ final class AppModel: ObservableObject {
     var cloudQueue: Task<Void, Never>?
 
     private(set) var client: PanelClient?
+    let debugLogUploads = DebugLogUploadCoordinator(
+        load: {
+            try await Task.detached(priority: .utility) {
+                try JSONStore.loadChecked(DebugLogUploadState.self, name: "debug_upload", maxBytes: 6 * 1024 * 1024) ?? DebugLogUploadState()
+            }.value
+        },
+        save: { state in
+            try await Task.detached(priority: .utility) {
+                try JSONStore.saveChecked(state, name: "debug_upload")
+            }.value
+        }
+    )
+    var passiveDebugLogUpload: Task<Void, Never>?
 
     var appVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
@@ -90,6 +114,7 @@ final class AppModel: ObservableObject {
         nodes = JSONStore.load([ProxyNode].self, name: "nodes") ?? []
         subscriptions = JSONStore.load([Subscription].self, name: "subscriptions") ?? []
         routing = JSONStore.load(RoutingPreferences.self, name: "routing") ?? RoutingPreferences()
+        loadModules()
         selectedForwardID = (UserDefaults.standard.object(forKey: "selected_forward_id") as? NSNumber)?.int64Value
         selectedNodeID = (UserDefaults.standard.object(forKey: "selected_node_id") as? NSNumber)?.int64Value
         loadCloudNodeCaches()
@@ -156,10 +181,12 @@ final class AppModel: ObservableObject {
         list.activeId = stored.id
         Keychain.set(agentToken, for: stored.tokenAccount)
         adoptAccount(stored)
+        passiveDebugLogUpload?.cancel()
         profiles = list
         client = candidate
         apply(result.catalog)
         scheduleCloudSync(after: result.response)
+        scheduleDebugLogUpload(after: result.response)
     }
 
     /// Signs in with a saved profile and its saved token.
@@ -178,6 +205,7 @@ final class AppModel: ObservableObject {
 
     /// Back to the profile list. The token stays saved unless the profile opted out.
     func signOut() {
+        passiveDebugLogUpload?.cancel()
         tunnel.disconnect()
         if let current = profile, !current.rememberToken {
             Keychain.set(nil, for: current.tokenAccount)
@@ -437,6 +465,12 @@ final class AppModel: ObservableObject {
     }
 
     func buildLaunch() throws -> TunnelLaunchOptions {
+        var launch = try buildRoutingLaunch()
+        launch.scripts = scriptLaunches()
+        return launch
+    }
+
+    private func buildRoutingLaunch() throws -> TunnelLaunchOptions {
         // Native outbound needs no node and has its own plan (see "MARK: Native outbound").
         if nativeOutboundPreferences.enabled {
             return try buildNativeOutboundLaunch()

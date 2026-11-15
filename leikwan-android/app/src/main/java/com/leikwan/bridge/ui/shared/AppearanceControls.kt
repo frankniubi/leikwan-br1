@@ -54,7 +54,7 @@ fun ThemeMenuButton() {
     }
 }
 
-/** Compact language picker (system / 简体中文 / English). */
+/** Compact language picker (system / 简体中文 / 繁體中文（香港） / English). */
 @Composable
 fun LanguageMenuButton() {
     var open by remember { mutableStateOf(false) }
@@ -67,10 +67,10 @@ fun LanguageMenuButton() {
             listOf(
                 "" to R.string.settings_language_system,
                 "zh-CN" to R.string.language_zh,
+                "zh-HK" to R.string.language_zh_hk,
                 "en" to R.string.language_en,
             ).forEach { (tag, label) ->
-                val selected = current.equals(tag, ignoreCase = true) ||
-                    (tag == "zh-CN" && current.startsWith("zh", ignoreCase = true))
+                val selected = current.equals(tag, ignoreCase = true)
                 DropdownMenuItem(
                     text = { Text(stringResource(label)) },
                     trailingIcon = { if (selected) Icon(Icons.Filled.Check, contentDescription = null) },

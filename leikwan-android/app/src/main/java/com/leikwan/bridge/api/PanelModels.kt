@@ -176,6 +176,7 @@ data class DebugCollectionDto(
     val uuid: String = "",
     val status: String = "",
     @SerializedName("expires_at") val expiresAt: String = "",
+    @SerializedName("supports_upload_id") val supportsUploadId: Boolean = false,
 )
 
 data class DebugCollectionStartResponse(
@@ -191,6 +192,7 @@ data class DebugLogChunkRequest(
     val sha256: String,
     @SerializedName("chunk_base64") val chunkBase64: String,
     val source: String = "android-client.log",
+    @SerializedName("upload_id") val uploadId: String? = null,
 )
 
 data class DebugLogChunkResponse(

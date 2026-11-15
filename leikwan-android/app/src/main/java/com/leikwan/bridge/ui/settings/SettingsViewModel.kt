@@ -24,8 +24,6 @@ data class SettingsUiState(
     val dnsServer: String = "1.1.1.1",
     val dnsFallback: String = "8.8.8.8",
     val dnsStrategy: String = "prefer_ipv4",
-    val bypassLan: Boolean = true,
-    val bypassChina: Boolean = false,
     val customBypassRules: String = "",
     val routingDiagnostics: RoutingDiagnosticsUiModel? = null,
     val rulePackLabel: String = "none",
@@ -53,8 +51,6 @@ class SettingsViewModel @JvmOverloads constructor(
             dnsServer = prefs.dnsServer,
             dnsFallback = prefs.dnsFallback,
             dnsStrategy = prefs.dnsStrategy,
-            bypassLan = prefs.bypassLan,
-            bypassChina = prefs.bypassChina,
             customBypassRules = prefs.customBypassRules,
             routingDiagnostics = runCatching {
                 RoutingDiagnosticsSource.from(app).latest()
@@ -78,16 +74,6 @@ class SettingsViewModel @JvmOverloads constructor(
     fun updateDnsStrategy(value: String) {
         prefs.dnsStrategy = value
         _state.value = _state.value.copy(dnsStrategy = value)
-    }
-
-    fun updateBypassLan(value: Boolean) {
-        prefs.bypassLan = value
-        _state.value = _state.value.copy(bypassLan = value)
-    }
-
-    fun updateBypassChina(value: Boolean) {
-        prefs.bypassChina = value
-        _state.value = _state.value.copy(bypassChina = value)
     }
 
     fun updateCustomBypass(value: String) {
