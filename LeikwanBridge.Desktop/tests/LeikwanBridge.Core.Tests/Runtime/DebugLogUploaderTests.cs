@@ -305,6 +305,126 @@ public sealed class DebugLogUploaderTests : IDisposable
         Assert.Equal("complete", (await Uploader().UploadNowAsync(secondApi, ["changed memory"])).Status);
     }
 
+    private static HttpResponseMessage PullResponse(string uuid) => Response(json: JsonSerializer.Serialize(new
+    {
+        ok = true,
+        client = new
+        {
+            debug_collection = new
+            {
+                uuid, status = "active", expires_at = "2999-01-01T00:00:00Z",
+                byte_limit = DebugLogUploader.ByteLimit, supports_upload_id = true,
+            },
+        },
+    }));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LatePassiveObservationPreservesPausedManualAndResumesExactBytes(bool delayPullResponse)
+    {
+        const string oldCollectionId = "aaaaaaaa-e89b-42d3-a456-426614174000";
+        await WriteLog("original manual evidence\n" + new string('b', DebugLogUploader.ChunkBytes + 20));
+        var pullStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePull = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Chunk? pending = null;
+        var oldCollectionRequests = 0;
+        var starts = 0;
+        var resume = false;
+        using var api = Api(async (request, _) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/pull"))
+            {
+                pullStarted.SetResult();
+                if (delayPullResponse) await releasePull.Task;
+                return PullResponse(oldCollectionId);
+            }
+            if (path.EndsWith("/start"))
+            {
+                starts++;
+                return StartResponse();
+            }
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            if (body.RootElement.GetProperty("collection_uuid").GetString() == oldCollectionId)
+            {
+                oldCollectionRequests++;
+                return Response(HttpStatusCode.NotFound, "{\"error\":\"debug_collection_not_found\"}");
+            }
+            var chunk = await ReadChunk(request);
+            if (chunk.Sequence == 0) return Response();
+            if (!resume)
+            {
+                pending = chunk;
+                return Response(HttpStatusCode.TooManyRequests);
+            }
+            Assert.Equal(pending!.UploadId, chunk.UploadId);
+            Assert.Equal(pending.Sequence, chunk.Sequence);
+            Assert.Equal(pending.Bytes, chunk.Bytes);
+            return Response();
+        });
+
+        // A was observed before B. Either its summary await or its HTTP response arrives late.
+        var oldPull = api.PullConfigsAsync();
+        await pullStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        if (!delayPullResponse) await oldPull;
+        try
+        {
+            Assert.Equal("retry_later", (await Uploader().UploadNowAsync(api, ["original memory"])).Status);
+        }
+        finally { releasePull.TrySetResult(); }
+        Assert.NotNull(pending);
+        var stateBefore = await File.ReadAllTextAsync(StatePath);
+        var spoolPath = Directory.GetFiles(StateDirectory, "*.spool").Single();
+        var spoolBefore = await File.ReadAllBytesAsync(spoolPath);
+        var late = await Uploader().UploadAsync((await oldPull).Client!, api);
+        Assert.Equal("stale_observation", late.Status);
+        Assert.Equal(0, oldCollectionRequests);
+        Assert.Equal(stateBefore, await File.ReadAllTextAsync(StatePath));
+        Assert.Equal(spoolBefore, await File.ReadAllBytesAsync(spoolPath));
+
+        await WriteLog("mutated logs after late A");
+        resume = true;
+        var result = await Uploader().UploadNowAsync(api, ["mutated memory"]);
+        Assert.Equal("complete", result.Status);
+        Assert.Equal(2, result.Chunks);
+        Assert.Equal(spoolBefore.Length, result.Bytes);
+        Assert.Equal(1, starts);
+    }
+
+    [Fact]
+    public async Task FreshPullCanSupersedePausedManualWithoutWaitingForExpiry()
+    {
+        const string newCollectionId = "cccccccc-e89b-42d3-a456-426614174000";
+        await WriteLog("manual log evidence");
+        string? manualId = null;
+        var passiveRequests = 0;
+        using var api = Api(async (request, _) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/start")) return StartResponse();
+            if (path.EndsWith("/pull")) return PullResponse(newCollectionId);
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var chunk = await ReadChunk(request);
+            if (body.RootElement.GetProperty("collection_uuid").GetString() == CollectionId)
+            {
+                manualId = chunk.UploadId;
+                return Response(HttpStatusCode.TooManyRequests);
+            }
+            passiveRequests++;
+            Assert.Equal(newCollectionId, body.RootElement.GetProperty("collection_uuid").GetString());
+            Assert.NotEqual(manualId, chunk.UploadId);
+            Assert.Equal(0, chunk.Sequence);
+            Assert.Contains("fresh passive evidence", Encoding.UTF8.GetString(chunk.Bytes));
+            return Response();
+        });
+        Assert.Equal("retry_later", (await Uploader().UploadNowAsync(api)).Status);
+        await WriteLog("fresh passive evidence");
+        var fresh = await api.PullConfigsAsync();
+        Assert.Equal("complete", (await Uploader().UploadAsync(fresh.Client!, api)).Status);
+        Assert.Equal(1, passiveRequests);
+    }
+
     [Fact]
     public async Task TwoInstancesShareLockAndManualDoesNotStartWhilePassiveUploads()
     {

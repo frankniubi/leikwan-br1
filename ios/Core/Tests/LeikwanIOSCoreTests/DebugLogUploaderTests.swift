@@ -346,6 +346,96 @@ final class DebugLogUploaderTests: XCTestCase {
     }
 
     @MainActor
+    func testExpiredOtherAccountPendingAllowsFreshManualAndPassiveUpload() async throws {
+        for manual in [true, false] {
+            let store = DebugUploadMemoryStore()
+            let expired = DebugCollectionMeta(uuid: collection.uuid, status: "active",
+                expiresAt: "2000-01-01T00:00:00Z", supportsUploadID: true)
+            let old = try PendingDebugLogBundle(scope: "a", collection: expired,
+                referenceCode: "old-ref", rawText: "account a evidence")
+            var state = DebugLogUploadState()
+            state.pending = old
+            state.lastFailure = .retry
+            state.nextAttemptAt = Date().addingTimeInterval(3600)
+            store.data = try JSONEncoder().encode(state)
+            let fresh = DebugCollectionMeta(uuid: UUID().uuidString, status: "active", supportsUploadID: true)
+            var starts = 0
+            var captures = 0
+            var sends = 0
+            var completions = 0
+
+            let result = try await store.coordinator().run(scope: "b", collection: manual ? nil : fresh,
+                start: {
+                    starts += 1
+                    XCTAssertNil(try store.state().pending, "retirement must be durable before starting B")
+                    return (fresh, "new-ref")
+                },
+                collect: {
+                    captures += 1
+                    let retired = try store.state()
+                    XCTAssertNil(retired.pending)
+                    XCTAssertEqual(retired.records.last?.scope, "a")
+                    XCTAssertEqual(retired.records.last?.collectionUUID, old.collection.uuid)
+                    XCTAssertEqual(retired.records.last?.reason, "expired")
+                    return "fresh account b log"
+                },
+                send: { bundle in
+                    sends += 1
+                    XCTAssertEqual(bundle.scope, "b")
+                    XCTAssertEqual(bundle.collection.uuid, fresh.uuid)
+                    XCTAssertNotEqual(bundle.uploadID, old.uploadID)
+                    XCTAssertEqual(bundle.bytes, Data("fresh account b log".utf8))
+                    XCTAssertNotEqual(bundle.bytes, old.bytes)
+                    XCTAssertEqual(try store.state().pending, bundle)
+                }, completed: { _ in completions += 1 })
+
+            XCTAssertNotNil(result)
+            XCTAssertEqual(starts, manual ? 1 : 0)
+            XCTAssertEqual(captures, 1)
+            XCTAssertEqual(sends, 1)
+            XCTAssertEqual(completions, 1)
+            XCTAssertNil(try store.state().pending)
+            XCTAssertEqual(try store.state().records.map(\.reason), ["expired", "completed"])
+            XCTAssertEqual(try store.state().records.map(\.scope), ["a", "b"])
+        }
+    }
+
+    @MainActor
+    func testExpiredSameAccountManualRequestStartsFreshWithoutExtraClick() async throws {
+        let store = DebugUploadMemoryStore()
+        let expired = DebugCollectionMeta(uuid: collection.uuid, status: "active",
+            expiresAt: "2000-01-01T00:00:00Z", supportsUploadID: true)
+        let old = try PendingDebugLogBundle(scope: "a", collection: expired,
+            referenceCode: "old-ref", rawText: "old evidence")
+        var state = DebugLogUploadState()
+        state.pending = old
+        store.data = try JSONEncoder().encode(state)
+        let fresh = DebugCollectionMeta(uuid: UUID().uuidString, status: "active", supportsUploadID: true)
+        var starts = 0
+        var sends = 0
+
+        let result = try await store.coordinator().run(scope: "a",
+            start: {
+                starts += 1
+                XCTAssertNil(try store.state().pending)
+                return (fresh, "fresh-ref")
+            }, collect: { "fresh evidence" },
+            send: { bundle in
+                sends += 1
+                XCTAssertEqual(bundle.scope, "a")
+                XCTAssertEqual(bundle.collection.uuid, fresh.uuid)
+                XCTAssertNotEqual(bundle.uploadID, old.uploadID)
+                XCTAssertEqual(bundle.bytes, Data("fresh evidence".utf8))
+            }, completed: { _ in })
+
+        XCTAssertEqual(result?.referenceCode, "fresh-ref")
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(sends, 1)
+        XCTAssertNil(try store.state().pending)
+        XCTAssertEqual(try store.state().records.map(\.reason), ["expired", "completed"])
+    }
+
+    @MainActor
     func testFailedCompletionWriteKeepsSameBundleForReplay() async throws {
         let store = DebugUploadMemoryStore()
         var writes = 0

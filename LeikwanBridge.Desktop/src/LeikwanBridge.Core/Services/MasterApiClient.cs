@@ -133,6 +133,7 @@ public sealed partial class MasterApiClient : IDisposable
 
     public async Task<PullResponse> PullConfigsAsync(string? sinceRevision = null, int waitSeconds = 0, CancellationToken ct = default)
     {
+        var observedAtUtc = DateTimeOffset.UtcNow;
         var query = new List<string>();
         if (!string.IsNullOrWhiteSpace(sinceRevision))
             query.Add($"since_revision={Uri.EscapeDataString(sinceRevision)}");
@@ -157,6 +158,8 @@ public sealed partial class MasterApiClient : IDisposable
         {
             var result = JsonSerializer.Deserialize<PullResponse>(json, JsonOptions)
                 ?? throw new MasterApiException((int) response.StatusCode, "master_api_empty_response");
+            if (result.Client?.DebugCollection is { } collection)
+                collection.ObservedAtUtc = observedAtUtc;
             if (result.Ok && !result.NotModified)
             {
                 using var document = JsonDocument.Parse(json);
@@ -803,6 +806,7 @@ public sealed partial class MasterApiClient : IDisposable
         }
         if (collection is null || string.IsNullOrWhiteSpace(collection.Uuid))
             throw new MasterApiException((int)response.StatusCode, "debug_collection_invalid");
+        collection.ObservedAtUtc = DateTimeOffset.UtcNow;
         var referenceCode = root.TryGetProperty("reference_code", out var refElement) && refElement.ValueKind == JsonValueKind.String
             ? refElement.GetString() ?? string.Empty
             : collection.Uuid[..Math.Min(8, collection.Uuid.Length)];

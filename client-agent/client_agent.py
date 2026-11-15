@@ -271,18 +271,52 @@ def _debug_fsync_directory(directory: pathlib.Path) -> None:
             os.close(fd)
 
 
-def _persist_debug_upload(state_dir: pathlib.Path, state: dict) -> None:
+def _persist_debug_upload(
+    state_dir: pathlib.Path, state: dict, *, filename: str = "debug-upload-state.json",
+) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".debug-upload-state-", suffix=".tmp", dir=state_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, state_dir / "debug-upload-state.json")
+        os.replace(temporary, state_dir / filename)
         _debug_fsync_directory(state_dir)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(temporary)
+
+
+def _is_legacy_debug_upload(state: object) -> bool:
+    """Recognize only the exact pre-upload-ID manifest, never damaged v1 data."""
+    if (
+        not isinstance(state, dict)
+        or not {"collection_uuid", "next_sequence", "files"} <= state.keys()
+        or not state.keys() <= {"collection_uuid", "next_sequence", "files", "completed"}
+        or not isinstance(state["collection_uuid"], str)
+        or not re.fullmatch(DEBUG_UPLOAD_UUID_RE, state["collection_uuid"])
+        or type(state["next_sequence"]) is not int
+        or state["next_sequence"] < 0
+        or not isinstance(state["files"], dict)
+        or ("completed" in state and type(state["completed"]) is not bool)
+    ):
+        return False
+    for source, entry in state["files"].items():
+        if (
+            not isinstance(source, str) or not source
+            or not isinstance(entry, dict) or set(entry) != {"sha256", "bytes"}
+            or not isinstance(entry["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+            or type(entry["bytes"]) is not int or entry["bytes"] <= 0
+        ):
+            return False
+    return True
+
+
+def _archive_legacy_debug_upload(state_dir: pathlib.Path, state: dict) -> None:
+    # Copy atomically, without removing the active manifest. A crash before a
+    # new schema-1 publish still leaves the recognizable old state in place.
+    _persist_debug_upload(state_dir, state, filename="debug-upload-legacy-state.json")
 
 
 def _load_debug_upload(state_dir: pathlib.Path) -> dict:
@@ -292,8 +326,10 @@ def _load_debug_upload(state_dir: pathlib.Path) -> dict:
             state = json.loads(handle.read(1024 * 1024))
     except FileNotFoundError:
         return {}
-    # Only absence permits a new snapshot. An unreadable or corrupt manifest
-    # must stop the upload, not replace a possibly partially accepted upload.
+    if _is_legacy_debug_upload(state):
+        return state
+    # Only absence or a strictly validated legacy manifest permits migration.
+    # Other unreadable/corrupt state must not replace an existing upload.
     if (
         not isinstance(state, dict)
         or state.get("schema") != 1
@@ -551,6 +587,15 @@ def _upload_debug_collection_locked(
             state.update(status="terminal", error="expired")
             _persist_debug_upload(state_dir, state)
         return {**result, "status": "expired"}
+    if _is_legacy_debug_upload(state):
+        _archive_legacy_debug_upload(state_dir, state)
+        if state["collection_uuid"] == collection_uuid and state.get("completed") is True:
+            # No identity or immutable bytes existed in the old format. Preserve
+            # its completion rather than recapturing logs on a passive call.
+            return {**result, "status": "complete"}
+        # A legacy cursor cannot recover its original bytes. The advertised
+        # upload-ID protocol isolates a fresh snapshot at sequence zero from
+        # every previously accepted legacy chunk in this collection.
     if not matches:
         state = _create_debug_snapshot(state_dir, collection, identity, device_id, config or {})
     result["upload_id"] = state["upload_id"]
@@ -9074,6 +9119,8 @@ class ClientAgent:
             selector = ControlPlaneEndpointState(getattr(self, "endpoint_state_path", None))
             errors: list[str] = []
             state = _load_debug_upload(state_dir)
+            if _is_legacy_debug_upload(state):
+                _archive_legacy_debug_upload(state_dir, state)
             for endpoint in selector.ordered(control_plane_endpoints(config)):
                 try:
                     identity = _debug_identity(endpoint, token, config)
@@ -9083,7 +9130,7 @@ class ClientAgent:
                         _debug_upload_matches(state, identity, dev_id)
                         and isinstance(previous_collection, dict)
                         and state.get("status") != "complete"
-                        and (state.get("status") in {"terminal", "paused"} or expires is None or expires > time.time())
+                        and (expires is None or expires > time.time())
                     ):
                         # Retry an interrupted command without replacing its
                         # collection. A completed/expired manual collection can

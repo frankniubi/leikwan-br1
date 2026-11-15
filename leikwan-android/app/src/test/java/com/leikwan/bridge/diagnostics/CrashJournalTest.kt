@@ -2,6 +2,7 @@ package com.leikwan.bridge.diagnostics
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.leikwan.bridge.BuildConfig
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -68,8 +69,10 @@ class CrashJournalTest {
             assertEquals(1, calls)
             val text = File(dir, CrashJournal.FILE_NAME).readText()
             assertEquals(1, Regex("=== uncaught exception").findAll(text).count())
-            assertTrue(text.contains("version=0.2.52"))
-            assertTrue(text.contains("build=54 pid="))
+            assertTrue("Expected version=${BuildConfig.VERSION_NAME} in crash journal:\n$text",
+                text.contains("version=${BuildConfig.VERSION_NAME}"))
+            assertTrue("Expected build=${BuildConfig.VERSION_CODE} and pid in crash journal:\n$text",
+                text.contains("build=${BuildConfig.VERSION_CODE} pid="))
         } finally { dir.deleteRecursively() }
     }
 

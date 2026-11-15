@@ -185,6 +185,149 @@ class DebugLogUploadTests(unittest.TestCase):
                 with mock.patch.object(MODULE, "start_debug_collection", side_effect=AssertionError("terminal reopened")):
                     self.assertEqual("terminal", self.agent().upload_logs_now()["status"])
 
+    def test_legacy_completed_upgrade_preserves_completion_and_allows_new_manual_capture(self):
+        legacy = {
+            "collection_uuid": COLLECTION["uuid"], "next_sequence": 3,
+            "files": {str(self.log): {"sha256": "a" * 64, "bytes": 180}}, "completed": True,
+        }
+        state_path = self.root / "debug-upload-state.json"
+        state_path.write_text(json.dumps(legacy), encoding="utf-8")
+        with mock.patch.object(MODULE, "debug_log_paths", side_effect=AssertionError("legacy completed recollected")):
+            for _ in range(2):
+                result = self.upload(lambda p: self.fail("legacy completed replayed"))
+                self.assertEqual("complete", result["status"])
+        self.assertEqual(legacy, self.state())
+        self.assertEqual(legacy, json.loads((self.root / "debug-upload-legacy-state.json").read_text()))
+        self.assertEqual([], list(self.root.glob("debug-upload-*.bin")))
+        fresh = {**COLLECTION, "uuid": str(uuid.uuid4())}
+        with mock.patch.object(MODULE, "start_debug_collection", return_value={
+            "debug_collection": fresh, "reference_code": fresh["uuid"][:8],
+        }) as start, mock.patch.object(MODULE, "http_json_with_headers", return_value=({"ok": True}, {})):
+            self.assertTrue(self.agent().upload_logs_now()["ok"])
+        start.assert_called_once()
+        self.assertEqual(fresh["uuid"], self.state()["collection_uuid"])
+        self.assertEqual(1, self.state()["schema"])
+        self.assertEqual(legacy, json.loads((self.root / "debug-upload-legacy-state.json").read_text()))
+
+    def test_legacy_pending_upgrade_uses_fresh_id_zero_cursor_and_immutable_retry(self):
+        for completed in (None, False):
+            with self.subTest(completed=completed):
+                legacy = {
+                    "collection_uuid": COLLECTION["uuid"], "next_sequence": 7,
+                    "files": {str(self.log): {"sha256": "b" * 64, "bytes": 300}},
+                }
+                if completed is not None:
+                    legacy["completed"] = completed
+                (self.root / "debug-upload-state.json").write_text(json.dumps(legacy), encoding="utf-8")
+                self.log.write_text("fresh upgrade snapshot\n" * 10, encoding="utf-8")
+                calls = []
+                def lost_ack(payload):
+                    calls.append(dict(payload))
+                    raise TimeoutError("lost upgrade ACK")
+                first = self.upload(lost_ack)
+                self.assertEqual("retry_later", first["status"])
+                self.assertEqual(0, calls[0]["sequence"])
+                self.assertEqual(4, uuid.UUID(first["upload_id"]).version)
+                self.assertEqual(1, self.state()["schema"])
+                self.assertEqual(legacy, json.loads((self.root / "debug-upload-legacy-state.json").read_text()))
+                self.log.write_text("changed after migration", encoding="utf-8")
+                resumed = []
+                with mock.patch.object(MODULE.time, "time", return_value=self.state()["retry_at"] + 1), mock.patch.object(
+                    MODULE, "debug_log_paths", side_effect=AssertionError("legacy retry recollected"),
+                ):
+                    final = self.upload(lambda p: resumed.append(dict(p)) or {"ok": True})
+                self.assertEqual("complete", final["status"])
+                self.assertEqual(first["upload_id"], final["upload_id"])
+                self.assertEqual(calls[0], resumed[0])
+
+    def test_manual_upgrade_of_legacy_pending_archives_before_start(self):
+        legacy = {"collection_uuid": COLLECTION["uuid"], "next_sequence": 2, "files": {}}
+        (self.root / "debug-upload-state.json").write_text(json.dumps(legacy), encoding="utf-8")
+        fresh = {**COLLECTION, "uuid": str(uuid.uuid4())}
+        def start(*args, **kwargs):
+            self.assertEqual(legacy, self.state())
+            self.assertEqual(legacy, json.loads((self.root / "debug-upload-legacy-state.json").read_text()))
+            return {"debug_collection": fresh, "reference_code": fresh["uuid"][:8]}
+        with mock.patch.object(MODULE, "start_debug_collection", side_effect=start) as started, mock.patch.object(
+            MODULE, "http_json_with_headers", return_value=({"ok": True}, {}),
+        ) as post:
+            result = self.agent().upload_logs_now()
+        self.assertTrue(result["ok"])
+        started.assert_called_once()
+        self.assertEqual(0, post.call_args_list[0].args[3]["sequence"])
+        self.assertEqual(fresh["uuid"], self.state()["collection_uuid"])
+        self.assertEqual(legacy, json.loads((self.root / "debug-upload-legacy-state.json").read_text()))
+
+    def test_legacy_upgrade_requires_upload_id_capability(self):
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                legacy = {
+                    "collection_uuid": COLLECTION["uuid"], "next_sequence": 2,
+                    "files": {}, "completed": completed,
+                }
+                (self.root / "debug-upload-state.json").write_text(json.dumps(legacy), encoding="utf-8")
+                self.metadata["debug_collection"]["supports_upload_id"] = False
+                with mock.patch.object(MODULE, "debug_log_paths", side_effect=AssertionError("unsupported legacy recaptured")):
+                    self.assertEqual("unsupported_upload_protocol", self.upload(lambda p: self.fail("legacy uploaded without capability"))["status"])
+                self.assertEqual(legacy, self.state())
+                self.assertFalse((self.root / "debug-upload-legacy-state.json").exists())
+
+    def test_malformed_legacy_manifest_still_fails_closed(self):
+        valid = {"collection_uuid": COLLECTION["uuid"], "next_sequence": 2, "files": {}}
+        for damaged in (
+            {**valid, "next_sequence": -1}, {**valid, "next_sequence": True},
+            {**valid, "completed": "true"}, {**valid, "files": []},
+            {**valid, "files": {str(self.log): {"sha256": "not-a-digest", "bytes": 1}}},
+            {**valid, "files": {str(self.log): {"sha256": "a" * 64, "bytes": True}}},
+            {**valid, "files": {str(self.log): {"sha256": "a" * 64, "bytes": -1}}},
+            {**valid, "schema": 1}, {**valid, "upload_id": str(uuid.uuid4())},
+            {**valid, "unknown": "not-produced-by-legacy"},
+        ):
+            with self.subTest(manifest=damaged):
+                (self.root / "debug-upload-state.json").write_text(json.dumps(damaged), encoding="utf-8")
+                with mock.patch.object(MODULE, "debug_log_paths", side_effect=AssertionError("corrupt legacy recaptured")), mock.patch.object(
+                    MODULE, "start_debug_collection", side_effect=AssertionError("corrupt legacy reopened"),
+                ):
+                    with self.assertRaises(ValueError):
+                        self.upload(lambda p: self.fail("corrupt legacy sent"))
+                    with self.assertRaises(ValueError):
+                        self.agent().upload_logs_now()
+                self.assertEqual(damaged, self.state())
+                self.assertFalse((self.root / "debug-upload-legacy-state.json").exists())
+
+    def test_expired_terminal_and_paused_permit_fresh_manual_capture_only(self):
+        for status in (410, 401, 403):
+            for passive_first in (False, True):
+                with self.subTest(status=status, passive_first=passive_first):
+                    self.metadata["debug_collection"].update(
+                        uuid=str(uuid.uuid4()), expires_at=MODULE.format_rfc3339(1100),
+                    )
+                    old = self.upload(mock.Mock(side_effect=http_error(status)))
+                    self.assertEqual("terminal" if status == 410 else "paused", old["status"])
+                    fresh = {**COLLECTION, "uuid": str(uuid.uuid4())}
+                    self.log.write_text("fresh manual capture after expiry", encoding="utf-8")
+                    calls = []
+                    with mock.patch.object(MODULE.time, "time", return_value=2000):
+                        if passive_first:
+                            with mock.patch.object(MODULE, "debug_log_paths", side_effect=AssertionError("expired passive recaptured")):
+                                self.assertEqual("expired", self.upload(lambda p: self.fail("expired passive sent"))["status"])
+                            self.assertEqual(old["upload_id"], self.state()["upload_id"])
+                        with mock.patch.object(MODULE, "start_debug_collection", return_value={
+                            "debug_collection": fresh, "reference_code": fresh["uuid"][:8],
+                        }) as start, mock.patch.object(MODULE, "http_json_with_headers", side_effect=lambda method, url, token, payload, **kw: (
+                            calls.append(dict(payload)) or {"ok": True}, {},
+                        )):
+                            result = self.agent().upload_logs_now()
+                        start.assert_called_once()
+                        self.assertTrue(result["ok"])
+                        self.assertNotEqual(old["upload_id"], result["upload_id"])
+                        self.assertEqual(fresh["uuid"], calls[0]["collection_uuid"])
+                        self.assertEqual(0, calls[0]["sequence"])
+                        self.assertEqual(b"fresh manual capture after expiry", base64.b64decode(calls[0]["chunk_base64"]))
+                        final_state = self.state()
+                        self.assertEqual("expired", self.upload(lambda p: self.fail("stale expired passive sent"))["status"])
+                        self.assertEqual(final_state, self.state())
+
     def test_http_helper_wrapped_errors_are_classified_without_changing_transport(self):
         with mock.patch.object(MODULE, "_urlopen_for_request", side_effect=http_error(410, "debug_collection_expired")):
             result = MODULE.upload_debug_collection(

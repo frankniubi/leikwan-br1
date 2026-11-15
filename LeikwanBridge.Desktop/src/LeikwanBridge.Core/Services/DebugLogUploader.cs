@@ -58,6 +58,13 @@ public sealed class DebugLogUploader
             return new("busy", 0, 0);
         var state = LoadState();
         var uuid = Guid.Parse(collection.Uuid).ToString();
+        // The file lock serializes writes, not observations. A pull made before /start
+        // can arrive after a newer manual upload paused; never replace its durable spool.
+        // A genuinely later pull still supersedes immediately, without waiting for expiry.
+        if (state is { Version: 1 } && state.ScopeBinding == api.DebugUploadScopeBinding
+            && !string.Equals(state.CollectionUuid, uuid, StringComparison.OrdinalIgnoreCase)
+            && collection.ObservedAtUtc <= state.ObservedAtUtc)
+            return new("stale_observation", 0, 0);
         if (state is null || !string.Equals(state.CollectionUuid, uuid, StringComparison.OrdinalIgnoreCase)
             || (state.Version != 0 && state.ScopeBinding != api.DebugUploadScopeBinding))
             state = await CreateSnapshotAsync(collection, null, "", api.DebugUploadScopeBinding, ct).ConfigureAwait(false);
@@ -103,6 +110,7 @@ public sealed class DebugLogUploader
         {
             Version = 1,
             ScopeBinding = scopeBinding,
+            ObservedAtUtc = collection.ObservedAtUtc,
             CollectionUuid = Guid.Parse(collection.Uuid).ToString(),
             UploadId = Guid.NewGuid().ToString(),
             ReferenceCode = referenceCode,
@@ -339,6 +347,7 @@ public sealed class DebugLogUploader
     {
         public int Version { get; set; }
         public string ScopeBinding { get; set; } = "";
+        public DateTimeOffset ObservedAtUtc { get; set; }
         public string CollectionUuid { get; set; } = "";
         public string UploadId { get; set; } = "";
         public string ReferenceCode { get; set; } = "";

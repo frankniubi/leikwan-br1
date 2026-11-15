@@ -4,8 +4,8 @@
     "path": "artifacts/android/leikwan-android-client.apk",
     "sha256": "94de28ed79b7c3e77411bb5a2f2c2940825880735be57508acbbb565fe802789",
     "size_bytes": 74797185,
-    "version": "0.2.51",
-    "version_code": 53
+    "version": "0.2.53",
+    "version_code": 55
   },
   "bond_sidecar_installer": {
     "install_url": "/artifacts/install-bond-sidecar.sh",
@@ -31,9 +31,9 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "cea2df0e4a85eced5aa323572386a31f9802d41507797c649af2967102a38671",
-    "size": 436504,
-    "size_bytes": 436504,
+    "sha256": "3565d2818c56a325cd6ee1f4bf2fdd677c7f8c5b3edc4e6c1657e7ae43a28dd5",
+    "size": 438756,
+    "size_bytes": 438756,
     "version": "2026.11.15.1"
   },
   "client_agent_installer": {
@@ -308,7 +308,7 @@
     },
     "sha256": "ae0c561e5440bc984627771980e6d1fefd0cf1463859d0d37e746e0b31da2b5b",
     "size_bytes": 79714976,
-    "version": "1.0.66",
+    "version": "1.0.67",
     "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_app_x64": {
@@ -355,7 +355,7 @@
     },
     "sha256": "f65c2c5ecea57a0975cae29db1e15fcb67cd416ba7788f354ff1b9ccfdc701f9",
     "size_bytes": 70517088,
-    "version": "1.0.66",
+    "version": "1.0.67",
     "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_update_x64": {
@@ -829,7 +829,7 @@
     },
     "sha256": "e3194a0a1a04eb48a8cfe93a6d62306777288b34933d7984e51ef86707233790",
     "size_bytes": 69959500,
-    "version": "0.1.20.83"
+    "version": "0.1.20.84"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -839,7 +839,7 @@
     "platform": "windows",
     "sha256": "20541fa796d19aa624f3b304a7af351b62085e8314727601f596181ae277c328",
     "size_bytes": 64062898,
-    "version": "0.1.20.72",
+    "version": "0.1.20.73",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",

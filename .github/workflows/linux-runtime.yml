@@ -52,6 +52,44 @@ jobs:
           extensions: ":mbstring, pdo_mysql, pdo_sqlite, sqlite3, curl, openssl, sodium"
           coverage: none
 
+      - name: Repeat unchanged carrier failover regression with host diagnostics
+        id: carrier_regression
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p out/carrier-diagnostics
+          {
+            uname -a
+            go version
+            cat /proc/sys/net/ipv4/tcp_wmem /proc/sys/net/ipv4/tcp_rmem
+            cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat 2>/dev/null || true
+            nstat -az 2>/dev/null || true
+          } >out/carrier-diagnostics/host-before.txt
+          (
+            while true; do
+              date -u +%Y-%m-%dT%H:%M:%SZ
+              ss -tinm '( dst 127.0.0.1 )' 2>/dev/null || true
+              cat /sys/fs/cgroup/cpu.stat 2>/dev/null || true
+              sleep 2
+            done
+          ) >out/carrier-diagnostics/socket-samples.txt &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
+          (cd tools/ultra-client && go test -mod=readonly -run '^TestExternalUoTLaggingCarrierFailsOverWithoutLoss$' -count=3 -v -timeout=180s) 2>&1 | tee out/carrier-diagnostics/test.log
+          result=${PIPESTATUS[0]}
+          nstat -az >out/carrier-diagnostics/host-after.txt 2>/dev/null || true
+          exit "$result"
+
+      - name: Upload carrier regression diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: carrier-regression-diagnostics
+          path: out/carrier-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Run Go tests
         id: go_tests
         continue-on-error: true
@@ -168,6 +206,7 @@ jobs:
         shell: bash
         env:
           OUTCOMES: >-
+            carrier_regression=${{ steps.carrier_regression.outcome }}
             go_tests=${{ steps.go_tests.outcome }}
             diagnostic_race=${{ steps.diagnostic_race.outcome }}
             debug_migration=${{ steps.debug_migration.outcome }}

@@ -323,6 +323,14 @@ public final class DebugLogUploadCoordinator {
         try Task.checkCancellation()
         var state = try await load()
         try Task.checkCancellation()
+        // Expiry belongs to the saved collection, not the current account. Retire it
+        // before checking scope so a removed/signed-out account cannot hold this slot
+        // forever. No current-account metadata is used to retire another account's bundle.
+        if let pending = state.pending, pending.collection.hasExpired() {
+            state.finish(pending, reason: "expired")
+            try await save(state)
+            try Task.checkCancellation()
+        }
         if let pending = state.pending {
             guard pending.scope == scope else {
                 if manual { throw DebugLogUploadError.pendingForAnotherAccount }
@@ -330,10 +338,9 @@ public final class DebugLogUploadCoordinator {
             }
             let superseded = collection.map { $0.uuid != pending.collection.uuid } ?? false
             let inactive = collection.map { !$0.isActive || $0.hasExpired() } ?? false
-            if pending.collection.hasExpired() || superseded || inactive {
+            if superseded || inactive {
                 state.finish(pending, reason: superseded ? "superseded" : "expired")
                 try await save(state)
-                if manual { throw DebugLogUploadError.terminal("expired") }
             }
         }
         // An old panel must never receive the new protocol, even for a saved bundle.

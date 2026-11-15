@@ -60,6 +60,11 @@ public sealed class ClientMeta
 
 public sealed class DebugCollectionMeta
 {
+    // Local ordering only: old pull responses must not replace a newer manual snapshot.
+    // MasterApiClient stamps request start, before any HTTP/summary diagnostics await.
+    [JsonIgnore]
+    public DateTimeOffset ObservedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
     [JsonPropertyName("uuid")]
     public string Uuid { get; set; } = "";
 
