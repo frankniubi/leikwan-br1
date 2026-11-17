@@ -25,6 +25,20 @@ class PrefsRoutingStateTest {
     }
 
     @Test
+    fun `direct dns defaults to a mainland resolver and maps the old google default`() {
+        // Fresh install: the bypass-mainland resolver is a mainland one.
+        assertEquals("223.5.5.5", prefs.dnsFallback)
+        // The settings screen echoed the old default back into storage; it is not a choice.
+        prefs.dnsFallback = "8.8.8.8"
+        assertEquals("223.5.5.5", prefs.dnsFallback)
+        // A resolver the user really picked is kept.
+        prefs.dnsFallback = "119.29.29.29"
+        assertEquals("119.29.29.29", prefs.dnsFallback)
+        prefs.dnsFallback = "  "
+        assertEquals("223.5.5.5", prefs.dnsFallback)
+    }
+
+    @Test
     fun `routing default outcome defaults to tunnel and round-trips`() {
         assertEquals(UserTrafficOutcome.TUNNEL, prefs.routingDefaultOutcome)
         prefs.routingDefaultOutcome = UserTrafficOutcome.DIRECT

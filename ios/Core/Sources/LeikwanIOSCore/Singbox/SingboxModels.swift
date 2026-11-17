@@ -14,6 +14,12 @@ public enum ProxyConnectionMode: String, Codable, Equatable {
 
 /// User-tunable sing-box settings (Android `SingboxSettings` + iOS TUN/log/cache knobs).
 public struct SingboxSettings: Equatable {
+    /// Resolver for domains routed direct (bypass-mainland list, app hosts). It is queried from the
+    /// device's own network, so it must be a mainland resolver: Google's 8.8.8.8 (the former
+    /// default) is lossy or hijacked on Chinese carriers and answers with CDN nodes mapped for its
+    /// own location, which intermittently broke mainland apps such as JD payment.
+    public static let mainlandDirectDNS = "223.5.5.5"
+
     public var dnsServer: String
     public var dnsFallback: String
     public var dnsStrategy: String
@@ -36,7 +42,7 @@ public struct SingboxSettings: Equatable {
 
     public init(
         dnsServer: String = "1.1.1.1",
-        dnsFallback: String = "8.8.8.8",
+        dnsFallback: String = SingboxSettings.mainlandDirectDNS,
         dnsStrategy: String = "prefer_ipv4",
         bypassChina: Bool = false,
         customBypassRules: String = "",

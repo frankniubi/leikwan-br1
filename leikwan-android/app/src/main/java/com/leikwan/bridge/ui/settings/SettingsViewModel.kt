@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val clientId: Long = 0L,
     val dnsServer: String = "1.1.1.1",
-    val dnsFallback: String = "8.8.8.8",
+    val dnsFallback: String = Prefs.DEFAULT_DIRECT_DNS,
     val dnsStrategy: String = "prefer_ipv4",
     val customBypassRules: String = "",
     val routingDiagnostics: RoutingDiagnosticsUiModel? = null,

@@ -136,8 +136,18 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getString("dns_server", "1.1.1.1") ?: "1.1.1.1"
         set(v) = prefs.edit().putString("dns_server", v).apply()
 
+    /**
+     * Resolver for domains routed direct (the bypass-mainland list and the app's own hosts).
+     * It is queried straight from the device's network, so it must be a mainland resolver:
+     * the former default, Google's 8.8.8.8, is lossy or hijacked on Chinese carriers and returns
+     * answers mapped for its own location, which broke mainland apps (JD payment) intermittently.
+     * A stored 8.8.8.8 is that old default echoed back by the settings screen, so it maps to the
+     * new one.
+     */
     var dnsFallback: String
-        get() = prefs.getString("dns_fallback", "8.8.8.8") ?: "8.8.8.8"
+        get() = prefs.getString("dns_fallback", null)
+            ?.takeIf { it.isNotBlank() && it != LEGACY_DIRECT_DNS }
+            ?: DEFAULT_DIRECT_DNS
         set(v) = prefs.edit().putString("dns_fallback", v).apply()
 
     var dnsStrategy: String
@@ -299,6 +309,9 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
     }
 
     companion object {
+        const val DEFAULT_DIRECT_DNS = "223.5.5.5"
+        internal const val LEGACY_DIRECT_DNS = "8.8.8.8"
+
         @Volatile private var INSTANCE: Prefs? = null
 
         fun get(context: Context): Prefs =

@@ -91,7 +91,7 @@ struct PrivacyDisclosureView: View {
 
                     section(
                         title: L("Lookups and logs"),
-                        text: L("Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 8.8.8.8 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device.")
+                        text: L("Domain lookups go to the DNS servers set in Tools (default 1.1.1.1; 223.5.5.5 for domains sent direct). Node latency tests and subscription imports connect only to the addresses you enter. Tunnel logs can include the hostnames you connect to and stay on this device.")
                     )
 
                     Link(destination: Self.policyURL) {
