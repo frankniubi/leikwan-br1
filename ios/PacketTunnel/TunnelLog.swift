@@ -48,10 +48,29 @@ final class TunnelLog {
 
     private func flush() {
         flushScheduled = false
+        flushPending()
+    }
+
+    private func flushPending() {
         guard !pending.isEmpty else { return }
         let data = Data(pending.joined(separator: "\n").appending("\n").utf8)
         pending.removeAll()
         Self.append(data, handle: &fileHandle)
+    }
+
+    /// Writes everything buffered so far and syncs it to disk.
+    ///
+    /// The regular flush batches lines: up to two seconds of them sit in memory. The extension
+    /// can be killed by jetsam without warning, and a stop reason written just before that used
+    /// to be lost exactly when it mattered. Callers that are about to exit, or that hand the
+    /// process back to the system, use this instead.
+    func flushNow() {
+        queue.sync {
+            flushPending()
+            if let handle = fileHandle {
+                _ = try? handle.synchronize()
+            }
+        }
     }
 
     /// Appends to the shared log file so the app can show what happened even when the

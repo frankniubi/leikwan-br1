@@ -134,7 +134,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func stopTunnel(with reason: NEProviderStopReason) async {
-        TunnelLog.shared.write("tunnel stopping, reason \(reason.rawValue)")
+        // The extension is often killed right after this returns; the batched flush would lose
+        // this line (and any following one) with it.
+        let footprint = MemoryGuard.physFootprint().map { " footprint=\($0 / (1024 * 1024))MB" } ?? ""
+        TunnelLog.shared.write("tunnel stopping, reason \(reason.rawValue)\(footprint)")
+        TunnelLog.shared.flushNow()
         watchdogTask?.cancel()
         watchdogTask = nil
         scripts.stop()
@@ -154,6 +158,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         runtimes.stopAll()
         UltraLeaseManager.settleRuntimeFiles(launch?.ultra ?? [], ledger: usageLedger)
         NativeOutboundLeaseManager.settleRuntimeFiles(launch?.nativeOutbound, ledger: usageLedger)
+        TunnelLog.shared.write("tunnel stopped")
+        TunnelLog.shared.flushNow()
     }
 
     override func handleAppMessage(_ messageData: Data) async -> Data? {

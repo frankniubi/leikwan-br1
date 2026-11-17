@@ -44,6 +44,25 @@ public sealed partial class MasterApiClient : IDisposable
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
+    /// <summary>
+    /// A forward the panel lists without a lease is skipped on every sync for as long as the
+    /// condition lasts; keep the first line per forward and window, demote the repeats.
+    /// </summary>
+    private static readonly TimeSpan RepetitiveWarningInterval = TimeSpan.FromMinutes(5);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> RepetitiveWarningAt = new();
+
+    private static void LogRepetitiveWarning(string key, string template, params object?[] args)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (RepetitiveWarningAt.TryGetValue(key, out var last) && now - last < RepetitiveWarningInterval)
+        {
+            Log.Debug(template, args);
+            return;
+        }
+        RepetitiveWarningAt[key] = now;
+        Log.Warning(template, args);
+    }
+
     public MasterApiClient(
         string masterUrl,
         string agentToken,
@@ -443,7 +462,10 @@ public sealed partial class MasterApiClient : IDisposable
         var policy = forward.UltraAccess;
         if (policy is null)
         {
-            Log.Warning("Ultra lease skipped for forward {ForwardId}; policy missing", forward.ForwardId);
+            LogRepetitiveWarning(
+                $"ultra-lease-skipped:{forward.ForwardId}",
+                "Ultra lease skipped for forward {ForwardId}; policy missing",
+                forward.ForwardId);
             return [];
         }
 

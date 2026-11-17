@@ -47,6 +47,26 @@ public sealed class ConfigPollingService
     private static readonly TimeSpan RecoveryTriggerThrottle = TimeSpan.FromSeconds(10);
 
     /// <summary>
+    /// A forward the panel keeps handing out without a usable lease fails on every sync for
+    /// days. One warning per forward and reason per window keeps that visible without
+    /// drowning the log; the repeat goes to Debug.
+    /// </summary>
+    private static readonly TimeSpan RepetitiveWarningInterval = TimeSpan.FromMinutes(5);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _repetitiveWarningAt = new();
+
+    private void LogRepetitiveWarning(string key, string template, params object?[] args)
+    {
+        var now = _timeProvider.GetUtcNow();
+        if (_repetitiveWarningAt.TryGetValue(key, out var last) && now - last < RepetitiveWarningInterval)
+        {
+            Log.Debug(template, args);
+            return;
+        }
+        _repetitiveWarningAt[key] = now;
+        Log.Warning(template, args);
+    }
+
+    /// <summary>
     /// Steady retry cadence while the panel refuses this device because the
     /// client's online device limit is full. A slot frees when another device
     /// has been silent for 180 s, is kicked, or the limit is raised, so a
@@ -1100,7 +1120,8 @@ public sealed class ConfigPollingService
             return false;
 
         QueueConfigRefreshSoon(targetedForwardId);
-        Log.Warning(
+        LogRepetitiveWarning(
+            $"ultra-preserve:{forwardId}:{reason}:{targetedForwardId}",
             "Ultra lease unavailable for forward {ForwardId}; preserving current runtime and retrying config sync (reason={Reason})",
             forwardId,
             reason);
@@ -1139,7 +1160,8 @@ public sealed class ConfigPollingService
 
             forward.UltraAccess = previousPolicy;
             QueueConfigRefreshSoon(forward.ForwardId);
-            Log.Warning(
+            LogRepetitiveWarning(
+                $"ultra-policy-missing:{forward.ForwardId}",
                 "Ultra policy missing for running forward {ForwardId}; reusing last valid policy until {ExpiresAt} and forcing full config refresh",
                 forward.ForwardId,
                 previousPolicy.ExpiresAt);
