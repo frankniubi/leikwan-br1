@@ -991,6 +991,16 @@ class TunnelOrchestrator internal constructor(
     }
 
     /**
+     * The device's network is usable again after an outage (a call ended, a switch probed OK).
+     * Polls the panel now even inside a retry backoff; the poll renews any Ultra lease that is
+     * due, including one that lapsed while the network was gone.
+     */
+    fun onNetworkRestored() {
+        val woke = controlLoop.requestPollAfterNetworkRestored()
+        if (woke) Log.i(TAG, "Network restored; polling the control plane now")
+    }
+
+    /**
      * Runtime output hook. When the source host re-acquires a line it invalidates the credential
      * the runtime holds and uploads the new one within seconds; the relay then resets or aborts
      * every stream on that line. Waiting for `renew_after` kept a dead credential for minutes, so a

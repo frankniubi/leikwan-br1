@@ -50,6 +50,14 @@ internal object VpnRecovery {
     const val SWITCH_PROBE_MAX_RESOLVERS = 3
 
     /**
+     * A data suspension at least this long (a voice call) leaves the tunnel's TCP flows in
+     * exponential retransmit backoff: a 30 s outage is followed by up to ~30 s more before a flow
+     * retries, which is the "slow after a call" users see. Past this length the flows are closed
+     * on resume so apps reconnect at once; shorter blips keep them (they usually survive).
+     */
+    const val RESUME_RESET_AFTER_MS = 5_000L
+
+    /**
      * A sticky restart (null intent), an always-on start or the boot receiver's start rebuilds the
      * tunnel the user left connected. Any other start without a config is a failed handoff.
      */

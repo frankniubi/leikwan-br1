@@ -6,8 +6,10 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import io.nekohasekai.libbox.InterfaceUpdateListener
 import java.net.NetworkInterface
@@ -20,6 +22,8 @@ internal class AndroidNetworkMonitor(
     private val refreshScheduler: (Runnable, Long) -> Unit = { task, delayMs ->
         mainHandler.postDelayed(task, delayMs)
     },
+    /** Monotonic clock for suspension durations (test seam). */
+    private val nowMs: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val listeners = linkedSetOf<InterfaceUpdateListener>()
@@ -36,6 +40,14 @@ internal class AndroidNetworkMonitor(
     private var refreshPending = false
     /** Fired when the picked physical network changes (Wi-Fi <-> cellular switch, loss of all). */
     private val defaultInterfaceListeners = mutableListOf<(String?) -> Unit>()
+    /**
+     * Fired with the suspension length when the picked network's data resumes without the
+     * network changing: a voice call on a phone whose modem cannot carry data during the call
+     * (no VoLTE, or the call on the other SIM of a dual-SIM phone) suspends cellular data, and
+     * nothing else in the callback stream tells the tunnel it is usable again.
+     */
+    private val dataResumedListeners = mutableListOf<(Long) -> Unit>()
+    private var suspendedSinceMs: Long? = null
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) = requestRefresh()
         override fun onLost(network: Network) = requestRefresh()
@@ -107,6 +119,8 @@ internal class AndroidNetworkMonitor(
         synchronized(lock) {
             listeners.clear()
             defaultInterfaceListeners.clear()
+            dataResumedListeners.clear()
+            suspendedSinceMs = null
             if (registered) runCatching { connectivity.unregisterNetworkCallback(callback) }
             registered = false
             refreshPending = false
@@ -120,6 +134,20 @@ internal class AndroidNetworkMonitor(
             defaultInterfaceListeners.add(listener)
             listener(selectedNetwork?.let { interfaceNameOf(it) })
         }
+    }
+
+    /** Observes data resuming on the same network after a suspension, with its length in ms. */
+    fun addOnDataResumed(listener: (Long) -> Unit) {
+        synchronized(lock) {
+            dataResumedListeners.add(listener)
+        }
+    }
+
+    /** Cellular data held by the modem during a call; Android reports it from API 28. */
+    private fun isSuspended(network: Network): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
     }
 
     private fun interfaceNameOf(network: Network): String? =
@@ -165,6 +193,23 @@ internal class AndroidNetworkMonitor(
         val currentListeners = listeners.toList()
         val changed = selectedNetwork != physical?.network
         selectedNetwork = physical?.network
+        val now = nowMs()
+        val suspended = physical?.let { isSuspended(it.network) } ?: false
+        val resumedAfterMs: Long? = when {
+            // A different network is handled by the switch path; start its suspension anew.
+            changed -> {
+                suspendedSinceMs = if (suspended) now else null
+                null
+            }
+            suspended -> {
+                if (suspendedSinceMs == null) suspendedSinceMs = now
+                null
+            }
+            else -> suspendedSinceMs?.let { since ->
+                suspendedSinceMs = null
+                (now - since).coerceAtLeast(0L)
+            }
+        }
         if (changed) runCatching { onUnderlyingNetwork(physical?.network) }
             .onFailure { Log.w("AndroidNetworkMonitor", "Unable to update underlying VPN network", it) }
         if (changed) {
@@ -178,6 +223,12 @@ internal class AndroidNetworkMonitor(
             if (registered && listener in listeners) {
                 runCatching { listener.updateDefaultInterface(physical?.name.orEmpty(), physical?.index ?: -1, physical?.metered ?: false, false) }
                     .onFailure { Log.w("AndroidNetworkMonitor", "Unable to publish default interface", it) }
+            }
+        }
+        resumedAfterMs?.let { suspendedMs ->
+            dataResumedListeners.toList().forEach { listener ->
+                runCatching { listener(suspendedMs) }
+                    .onFailure { Log.w("AndroidNetworkMonitor", "Data-resumed listener failed", it) }
             }
         }
     }

@@ -534,6 +534,7 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         if (listener != null) {
             networkMonitor.start(listener)
             networkMonitor.addOnDefaultInterfaceChanged(::onDefaultInterfaceChanged)
+            networkMonitor.addOnDataResumed(::onDataResumed)
         }
     }
 
@@ -774,13 +775,43 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             // Let the new network validate and libbox rebind before judging the tunnel.
             delay(VpnRecovery.SWITCH_PROBE_DELAY_MS)
             if (!isRunning || recovering) return@launch
-            if (probeSwitchedNetwork()) return@launch
+            if (probeSwitchedNetwork()) {
+                // The new network answers: renew now rather than when a retry backoff that grew
+                // while the old network was gone happens to expire.
+                wakeControlPlane()
+                return@launch
+            }
             // The probe blocks in socket reads; a newer switch or a stop may have cancelled us.
             ensureActive()
             Log.w(TAG, "Tunnel still unusable after the interface switch; rebuilding it")
             // Not from this job: the rebuild's stop of the old tunnel cancels it.
             mainHandler.post { rebuildAfterSwitch() }
         }
+    }
+
+    /**
+     * Cellular data came back on the same network after [suspendedMs] (see
+     * [AndroidNetworkMonitor.addOnDataResumed]). Flows opened before the suspension sit in TCP
+     * retransmit backoff, so after a long one they are closed and apps reconnect at once; the
+     * control plane is polled now so a lease that lapsed during the call is renewed immediately.
+     */
+    private fun onDataResumed(suspendedMs: Long) {
+        if (!isRunning || recovering) return
+        Log.i(TAG, "Cellular data resumed after ${suspendedMs}ms")
+        VpnEventJournal.record(this, "data resumed after ${suspendedMs / 1000}s suspended")
+        if (suspendedMs >= VpnRecovery.RESUME_RESET_AFTER_MS) {
+            try {
+                commandServer?.resetNetwork()
+            } catch (e: Exception) {
+                Log.w(TAG, "resetNetwork after data resumed failed", e)
+            }
+        }
+        wakeControlPlane()
+    }
+
+    private fun wakeControlPlane() {
+        runCatching { TunnelOrchestrator.forApplication(applicationContext).onNetworkRestored() }
+            .onFailure { Log.w(TAG, "Unable to wake the control plane after a network change", it) }
     }
 
     private fun rebuildAfterSwitch() {

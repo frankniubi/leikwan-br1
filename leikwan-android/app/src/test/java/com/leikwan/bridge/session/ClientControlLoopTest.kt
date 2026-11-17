@@ -118,6 +118,62 @@ class ClientControlLoopTest {
     }
 
     @Test
+    fun `a restored network ends a retry backoff once per spacing window`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val polls = AtomicInteger(0)
+        var clock = 0L
+        val loop = ClientControlLoop(
+            scope = scope,
+            intervalMs = 60_000,
+            poll = {
+                polls.incrementAndGet()
+                throw IOException("panel unreachable during the call")
+            },
+            onTerminal = {},
+            retryBackoff = ControlPlaneBackoff(baseMs = 60_000, capMs = 60_000, randomUpTo = { it }),
+            networkWakeSpacingMs = 5_000,
+            nowMs = { clock },
+        )
+        loop.start()
+        waitUntil { polls.get() == 1 && loop.state == ControlPlaneState.RECONNECTING }
+
+        // A failure-driven renewal request still waits out the backoff.
+        assertFalse(loop.requestPollSoon())
+        // The call ended and data came back: poll now despite the 60 s backoff.
+        assertTrue(loop.requestPollAfterNetworkRestored())
+        waitUntil { polls.get() == 2 }
+        // A flapping network inside the spacing window cannot hammer the panel.
+        clock += 1_000
+        assertFalse(loop.requestPollAfterNetworkRestored())
+        Thread.sleep(300)
+        assertEquals(2, polls.get())
+        // After the window another restoration is honoured again.
+        clock += 5_000
+        assertTrue(loop.requestPollAfterNetworkRestored())
+        waitUntil { polls.get() == 3 }
+        loop.stop()
+        assertFalse(loop.requestPollAfterNetworkRestored())
+    }
+
+    @Test
+    fun `a restored network also cuts a healthy interval short`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val polls = AtomicInteger(0)
+        val loop = ClientControlLoop(
+            scope = scope,
+            intervalMs = 60_000,
+            poll = { polls.incrementAndGet() },
+            onTerminal = {},
+        )
+        loop.start()
+        waitUntil { polls.get() == 1 && loop.state == ControlPlaneState.READY }
+
+        assertTrue(loop.requestPollAfterNetworkRestored())
+        waitUntil { polls.get() == 2 }
+        loop.stop()
+    }
+
+    @Test
     fun `device limit keeps polling at the steady cadence without revoking`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         var terminal: PanelControlException? = null

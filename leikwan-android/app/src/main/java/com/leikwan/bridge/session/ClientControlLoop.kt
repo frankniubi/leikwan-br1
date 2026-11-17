@@ -5,8 +5,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 
 enum class ControlPlaneState {
@@ -37,10 +37,15 @@ class ClientControlLoop(
     private val deviceLimitRetryMs: Long = 60_000L,
     /** Called with the refusal when the limit is hit and with null when a poll succeeds again. */
     private val onDeviceLimitChanged: (DeviceLimitReachedException?) -> Unit = {},
+    /** Minimum spacing of [requestPollAfterNetworkRestored] wakes, so a flapping network cannot hammer the panel. */
+    private val networkWakeSpacingMs: Long = 5_000L,
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     private val lock = Any()
     private var job: Job? = null
     private val wake = Channel<Unit>(Channel.CONFLATED)
+    private val networkWake = Channel<Unit>(Channel.CONFLATED)
+    private var lastNetworkWakeAtMs: Long? = null
 
     var startCount: Int = 0
         private set
@@ -61,6 +66,7 @@ class ClientControlLoop(
                 while (shouldContinue()) {
                     // This poll serves every wake requested before it starts.
                     wake.tryReceive()
+                    networkWake.tryReceive()
                     var healthy = false
                     val waitMs = try {
                         poll()
@@ -93,10 +99,17 @@ class ClientControlLoop(
                     }
                     if (healthy) {
                         // requestPollSoon() may cut a healthy interval short; a retry backoff
-                        // is never shortened, so a dead panel is not hammered.
-                        withTimeoutOrNull(waitMs) { wake.receive() }
+                        // is never shortened by it, so a dead panel is not hammered.
+                        withTimeoutOrNull(waitMs) {
+                            select<Unit> {
+                                wake.onReceive {}
+                                networkWake.onReceive {}
+                            }
+                        }
                     } else {
-                        delay(waitMs)
+                        // Only a restored network ends a retry backoff early: it is new evidence
+                        // that the panel may answer now (see requestPollAfterNetworkRestored).
+                        withTimeoutOrNull(waitMs) { networkWake.receive() }
                     }
                 }
                 updateState(ControlPlaneState.STOPPED)
@@ -117,6 +130,25 @@ class ClientControlLoop(
     fun requestPollSoon(): Boolean {
         if (!isRunning || state != ControlPlaneState.READY) return false
         return wake.trySend(Unit).isSuccess
+    }
+
+    /**
+     * The device's network came back (a voice call ended and cellular data resumed, Wi-Fi
+     * rejoined): poll now, even inside a retry backoff. The backoff only exists so an unreachable
+     * panel is not hammered; heartbeats that failed during the outage had grown it to up to a
+     * minute of jittered wait, which kept a lease that lapsed during the call unrenewed after the
+     * user was already back online. At most one wake per [networkWakeSpacingMs]. Returns true
+     * when the wake was accepted.
+     */
+    fun requestPollAfterNetworkRestored(): Boolean {
+        if (!isRunning) return false
+        val now = nowMs()
+        synchronized(lock) {
+            val last = lastNetworkWakeAtMs
+            if (last != null && now - last < networkWakeSpacingMs) return false
+            lastNetworkWakeAtMs = now
+        }
+        return networkWake.trySend(Unit).isSuccess
     }
 
     fun stop() {

@@ -171,4 +171,66 @@ class AndroidNetworkMonitorTest {
         monitor.remove(listener)
         monitor.close()
     }
+
+    @Test
+    fun `cellular data resuming after a call fires once with the suspension length`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val shadow = shadowOf(cm)
+        val physical = NetworkInterface.getNetworkInterfaces().toList().first { it.index > 0 }
+        val network = org.robolectric.shadows.ShadowNetwork.newInstance(304)
+        val properties = LinkProperties().apply {
+            interfaceName = physical.name
+            val address = LinkAddress::class.java.getDeclaredConstructor(String::class.java)
+                .apply { isAccessible = true }.newInstance("192.0.2.5/24")
+            LinkProperties::class.java.getDeclaredMethod("addLinkAddress", LinkAddress::class.java)
+                .apply { isAccessible = true }.invoke(this, address)
+        }
+        shadow.clearAllNetworks()
+        val caps = org.robolectric.shadows.ShadowNetworkCapabilities.newInstance()
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+        shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        shadow.addNetwork(network, null)
+        shadow.setNetworkCapabilities(network, caps)
+        shadow.setLinkProperties(network, properties)
+        var clock = 10_000L
+        val resumed = mutableListOf<Long>()
+        val switched = mutableListOf<String?>()
+        val monitor = AndroidNetworkMonitor(
+            context,
+            onUnderlyingNetwork = {},
+            refreshScheduler = { task, _ -> task.run() },
+            nowMs = { clock },
+        )
+        monitor.addOnDataResumed { resumed += it }
+        val listener = object : InterfaceUpdateListener {
+            override fun updateDefaultInterface(name: String?, index: Int, expensive: Boolean, constrained: Boolean) {}
+        }
+        monitor.start(listener)
+        monitor.addOnDefaultInterfaceChanged { switched += it }
+        val switchesAtStart = switched.size
+
+        // The call starts: the modem holds cellular data, the network itself stays.
+        shadowOf(caps).removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+        shadow.networkCallbacks.toList().forEach { it.onCapabilitiesChanged(network, caps) }
+        clock += 42_000
+        shadow.networkCallbacks.toList().forEach { it.onCapabilitiesChanged(network, caps) }
+        assertTrue(resumed.isEmpty())
+
+        // The call ends: data resumes on the same network.
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+        clock += 3_000
+        shadow.networkCallbacks.toList().forEach { it.onCapabilitiesChanged(network, caps) }
+        assertEquals(listOf(45_000L), resumed)
+        // Same network: the interface-switch path stays out of it.
+        assertEquals(switchesAtStart, switched.size)
+
+        // Later callbacks without a new suspension fire nothing.
+        shadow.networkCallbacks.toList().forEach { it.onCapabilitiesChanged(network, caps) }
+        assertEquals(1, resumed.size)
+        monitor.remove(listener)
+        monitor.close()
+    }
 }
