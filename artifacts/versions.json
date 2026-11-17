@@ -24,16 +24,16 @@
   "cfwg_latency_watchdog": {
     "artifact_url": "/artifacts/cfwg-latency-watchdog.py",
     "path": "client-agent/cfwg_latency_watchdog.py",
-    "sha256": "749eb27aa835cabc14eb8067cbc77f0c4e87c5c10b92157737791d9051373694",
-    "size_bytes": 32373,
+    "sha256": "6c55816de366f6a72d10416d93ab7c854244108b1c1f543afc508418da4cd209",
+    "size_bytes": 35495,
     "version": "2026.09.27.1"
   },
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "3565d2818c56a325cd6ee1f4bf2fdd677c7f8c5b3edc4e6c1657e7ae43a28dd5",
+    "sha256": "33112e9c063d20cbeb3951cc8246be2d5fba2cf03bc1e1261609feb31b32f7ce",
     "size": 438756,
-    "size_bytes": 438756,
+    "size_bytes": 443563,
     "version": "2026.11.15.1"
   },
   "client_agent_installer": {

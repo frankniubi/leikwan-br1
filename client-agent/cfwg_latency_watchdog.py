@@ -150,6 +150,10 @@ class CfwgForwardState:
     last_restart_at: float = 0.0
     last_event: str = ""
     best_rtt_ms: float | None = None
+    # Restarts performed since the last window that was not critical. A peer that never
+    # answers cannot be fixed by restarting its service, so the cooldown doubles and then
+    # gives up instead of restarting every few minutes forever.
+    consecutive_restarts: int = 0
 
 
 class CfwgLatencyWatchdog:
@@ -249,6 +253,10 @@ class CfwgLatencyWatchdog:
             "critical_loss_pct": min(1.0, max(0.0, float(config.get("critical_loss_pct", 0.20) if config.get("critical_loss_pct") is not None else 0.20))),
             "dwell_windows": max(1, int(config.get("dwell_windows", config.get("escalation_dwell_windows", 2)) or 2)),
             "cooldown_seconds": max(0.0, float(config.get("cooldown_seconds", 300.0) if config.get("cooldown_seconds") is not None else 300.0)),
+            # A peer that never answers cannot be fixed by restarting its service: the
+            # cooldown doubles per consecutive restart, then the watchdog stops.
+            "restart_backoff_cap_seconds": max(0.0, float(config.get("restart_backoff_cap_seconds", 3600.0) if config.get("restart_backoff_cap_seconds") is not None else 3600.0)),
+            "max_restarts_without_recovery": max(0, int(config.get("max_restarts_without_recovery", 6) if config.get("max_restarts_without_recovery") is not None else 6)),
             "ping_timeout_seconds": max(1, int(config.get("ping_timeout_seconds", 1) or 1)),
             "state_write_interval_seconds": max(5.0, float(config.get("state_write_interval_seconds", 30.0) or 30.0)),
             "relative_degradation_factor": max(1.0, float(config.get("relative_degradation_factor", 1.35) if config.get("relative_degradation_factor") is not None else 1.35)),
@@ -279,13 +287,23 @@ class CfwgLatencyWatchdog:
                 self._latest_forwards_by_id[forward_id] = dict(forward)
         desired_forward_ids = self.configured_forward_ids(forward_list)
         configured_forward_ids = set(self.config.get("forward_ids", []) or [])
-        # C.7f: surface the resolved watched-forward set at INFO so operators can
-        # confirm scope from the journal without flipping on DEBUG logging.
-        logging.info(
-            "cfwg latency watchdog resolved forwards=%s configured=%s",
-            sorted(desired_forward_ids),
-            sorted(configured_forward_ids),
-        )
+        # C.7f: surface the resolved watched-forward set when it changes; per-tick INFO
+        # filled the journal (1048 lines in under three hours) with an identical line.
+        scope = (tuple(sorted(desired_forward_ids)), tuple(sorted(configured_forward_ids)))
+        previous_scope = getattr(self, "_last_resolved_scope", None)
+        if scope != previous_scope:
+            self._last_resolved_scope = scope
+            logging.info(
+                "cfwg latency watchdog resolved forwards=%s configured=%s",
+                list(scope[0]),
+                list(scope[1]),
+            )
+        else:
+            logging.debug(
+                "cfwg latency watchdog resolved forwards=%s configured=%s",
+                list(scope[0]),
+                list(scope[1]),
+            )
         for forward_id in sorted(desired_forward_ids):
             forward = self._latest_forwards_by_id.get(forward_id, {})
             if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra":
@@ -573,6 +591,7 @@ class CfwgLatencyWatchdog:
                     f"{baseline:.1f}" if baseline is not None else "none",
                 )
             state.bad_windows = 0
+            state.consecutive_restarts = 0
             self.maybe_write_state_snapshot()
             return
         state.bad_windows += 1
@@ -581,7 +600,37 @@ class CfwgLatencyWatchdog:
             return
         now = self.time_fn()
         cooldown_seconds = float(self.config.get("cooldown_seconds", 300.0) if self.config.get("cooldown_seconds") is not None else 300.0)
-        if now - state.last_restart_at < cooldown_seconds:
+        backoff_cap_seconds = float(
+            self.config.get("restart_backoff_cap_seconds", 3600.0)
+            if self.config.get("restart_backoff_cap_seconds") is not None
+            else 3600.0
+        )
+        max_restarts = int(
+            self.config.get("max_restarts_without_recovery", 6)
+            if self.config.get("max_restarts_without_recovery") is not None
+            else 6
+        )
+        # Evaluated before the cooldown: once the budget is spent the doubled cooldown would
+        # otherwise hide the verdict forever, and the operator learns nothing.
+        if state.consecutive_restarts >= max_restarts:
+            # Restarting again cannot help: no window has been healthy since the peer was
+            # first sampled. Surface it once and leave the state for the operator; a single
+            # successful probe resets consecutive_restarts and re-enables restarts.
+            if state.last_event != "restart_suppressed:exhausted":
+                state.last_event = "restart_suppressed:exhausted"
+                self.write_state_snapshot()
+                logging.error(
+                    "cfwg latency watchdog giving up on %s: peer=%s has not answered since the first sample (restarts=%s); not restarting it again until a probe succeeds",
+                    interface_name,
+                    peer_address,
+                    state.consecutive_restarts,
+                )
+            return
+        effective_cooldown = min(
+            cooldown_seconds * (2 ** min(max(state.consecutive_restarts, 0), 6)),
+            max(backoff_cap_seconds, cooldown_seconds),
+        )
+        if now - state.last_restart_at < effective_cooldown:
             return
         # C.7a: consult the shared restart-ledger circuit breaker before
         # restarting. If too many restarts have occurred within the window the
@@ -597,6 +646,7 @@ class CfwgLatencyWatchdog:
         restarted = self.restart_runtime(forward_id, interface_name)
         state.last_restart_at = now
         state.bad_windows = 0
+        state.consecutive_restarts += 1
         state.last_event = "restart:" + ",".join(restarted)
         logging.warning(
             "cfwg latency watchdog restarted %s: interface=%s peer=%s avg=%.1fms p95=%.1fms loss=%.0f%% threshold_rtt=%.1f baseline=%s threshold_delta=%.1f relative_factor=%.2f min_relative_delta=%.1f threshold_loss=%.0f%%",
@@ -656,6 +706,7 @@ class CfwgLatencyWatchdog:
                         state.best_rtt_ms = min(legacy_rtts)
                 state.last_restart_at = float(raw_state.get("last_restart_at", 0.0) or 0.0)
                 state.bad_windows = max(0, int(raw_state.get("bad_windows", 0) or 0))
+                state.consecutive_restarts = max(0, int(raw_state.get("consecutive_restarts", 0) or 0))
                 state.last_event = str(raw_state.get("last_event", "") or "")
             except (TypeError, ValueError):
                 pass
@@ -678,6 +729,7 @@ class CfwgLatencyWatchdog:
                     "bad_windows": state.bad_windows,
                     "last_event": state.last_event,
                     "best_rtt_ms": state.best_rtt_ms,
+                    "consecutive_restarts": state.consecutive_restarts,
                     "samples": [
                         {"at": sample.at, "ok": sample.ok, "rtt_ms": sample.rtt_ms}
                         for sample in state.samples[-int(self.config.get("window_samples", 12) or 12):]

@@ -752,6 +752,63 @@ class CfwgLatencyWatchdogTests(unittest.TestCase):
             cleanup.assert_not_called()
             self.assertIn("systemctl restart leikwan-client-47.service", commands)
 
+    def test_peer_that_never_answers_backs_off_and_stops_restarting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            runtime_dir = base / "etc" / "leikwan"
+            self._write_runtime(runtime_dir)
+            clock = FakeClock()
+            # Every probe times out: the peer has never answered since the first sample.
+            runner = FakeRunner([None] * 5000)
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=base / "state",
+                config={
+                    "enabled": True,
+                    "forward_ids": [47],
+                    "probe_interval_seconds": 0,
+                    "window_samples": 3,
+                    "critical_rtt_ms": 45,
+                    "critical_loss_pct": 0.2,
+                    "dwell_windows": 1,
+                    "cooldown_seconds": 300,
+                    "max_restarts_without_recovery": 2,
+                },
+                command_runner=runner,
+                time_fn=clock.now,
+                runtime_config_dir=runtime_dir,
+            )
+
+            with self.assertLogs(level="ERROR") as logs:
+                for _ in range(2400):
+                    watchdog.tick([{"forward_id": 47, "service_status": "active"}])
+                    clock.advance(1)
+
+            restarts = [
+                command
+                for command in runner.commands
+                if command == ["systemctl", "restart", "leikwan-client-47.service"]
+            ]
+            self.assertEqual(2, len(restarts), "restart loop must stop after the escalation budget")
+            self.assertTrue(any("giving up on lw-cfwg-47" in line for line in logs.output), logs.output)
+
+    def test_resolved_scope_is_logged_only_when_it_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            watchdog = watchdog_module.CfwgLatencyWatchdog(
+                state_dir=pathlib.Path(tmp) / "state",
+                config={"enabled": True, "forward_ids": []},
+                runtime_config_dir=pathlib.Path(tmp) / "runtime",
+            )
+            forwards = [{"forward_id": 47, "service_status": "active"}]
+            with self.assertLogs(level="INFO") as logs:
+                for _ in range(5):
+                    watchdog.tick(forwards)
+
+        resolved = [line for line in logs.output if "resolved forwards=" in line]
+        self.assertEqual(1, len(resolved), resolved)
+
+
+
+
 class ClientAgentCfwgLatencyWatchdogIntegrationTests(unittest.TestCase):
 
     def test_client_manifest_includes_latency_watchdog_module(self) -> None:
@@ -853,6 +910,68 @@ class ClientAgentCfwgLatencyWatchdogIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(FakeWatchdog.last)
         self.assertEqual({"enabled": True, "forward_ids": [47]}, FakeWatchdog.last.config)
         self.assertEqual([{"forward_id": 47, "service_status": "active"}], FakeWatchdog.last.ticked)
+
+class OrphanForwardPruningTests(unittest.TestCase):
+    def test_prunes_units_whose_forward_left_snapshot_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            unit_dir = pathlib.Path(tmp) / "systemd"
+            unit_dir.mkdir()
+            for name in ("leikwan-client-47.service", "leikwan-client-159.service", "ultra-forward-288.service"):
+                (unit_dir / name).write_text("[Unit]\n", encoding="utf-8")
+            commands: list[str] = []
+            nft: list[int] = []
+
+            removed = client_agent_module.prune_orphan_forward_units(
+                unit_dir,
+                desired_forward_ids={159, 288},
+                applied_keys={"159", "288"},
+                delete_nft_rules=nft.append,
+                run_command=commands.append,
+                start_script_dir=pathlib.Path(tmp) / "bin",
+            )
+
+        self.assertEqual(["leikwan-client-47"], removed)
+        self.assertIn("systemctl stop leikwan-client-47.service", commands)
+        self.assertIn("systemctl disable leikwan-client-47.service", commands)
+        self.assertIn("systemctl daemon-reload", commands)
+        self.assertEqual([47], nft)
+
+    def test_manifest_entries_are_left_to_snapshot_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            unit_dir = pathlib.Path(tmp) / "systemd"
+            unit_dir.mkdir()
+            (unit_dir / "leikwan-client-47.service").write_text("[Unit]\n", encoding="utf-8")
+            commands: list[str] = []
+
+            removed = client_agent_module.prune_orphan_forward_units(
+                unit_dir,
+                desired_forward_ids=set(),
+                applied_keys={"47"},
+                delete_nft_rules=lambda forward_id: None,
+                run_command=commands.append,
+            )
+
+        self.assertEqual([], removed)
+        self.assertEqual([], commands)
+
+    def test_unrelated_units_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            unit_dir = pathlib.Path(tmp) / "systemd"
+            unit_dir.mkdir()
+            for name in ("leikwan-client-agent.service", "leikwan-client-update-1.service"):
+                (unit_dir / name).write_text("[Unit]\n", encoding="utf-8")
+            commands: list[str] = []
+
+            removed = client_agent_module.prune_orphan_forward_units(
+                unit_dir,
+                desired_forward_ids=set(),
+                applied_keys=set(),
+                delete_nft_rules=lambda forward_id: None,
+                run_command=commands.append,
+            )
+
+        self.assertEqual([], removed)
+        self.assertEqual([], commands)
 
 
 if __name__ == "__main__":

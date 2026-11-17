@@ -38,6 +38,8 @@ import urllib.request
 import uuid
 
 AGENT_VERSION = "2026.11.15.1"
+# See log_ultra_apply_failure: one line per forward and reason per ten minutes.
+ULTRA_APPLY_FAILURE_LOG_INTERVAL_SECONDS = 600.0
 
 # Last content written to each managed runtime file. The restart decision needs
 # it to distinguish a real contract change from a volatile-field rotation: a new
@@ -769,6 +771,81 @@ def forward_requires_panel_endpoints(forward: dict, mode: str) -> bool:
 def unsupported_client_backend_mode(forward: dict) -> str:
     backend = str(forward.get("backend_mode", "") or "").strip().lower()
     return "cf_mode" if backend == "cf_mode" else ""
+
+
+def repetition_due(
+    store: dict,
+    key: str,
+    now: float,
+    interval_seconds: float,
+) -> bool:
+    """True when a repeating condition should be logged again, then arms the next window.
+
+    A line the panel keeps handing out without a lease fails on every sync for days; the
+    first line per key and window is the evidence an operator acts on, the rest is noise.
+    """
+    last = store.get(key)
+    if last is not None and now - float(last) < max(0.0, float(interval_seconds)):
+        return False
+    store[key] = now
+    return True
+
+
+def prune_orphan_forward_units(
+    unit_dir: pathlib.Path,
+    desired_forward_ids: set[int],
+    applied_keys: set[str],
+    delete_nft_rules,
+    run_command=None,
+    start_script_dir: pathlib.Path | None = None,
+) -> list[str]:
+    """Removes per-forward units whose forward is gone from the snapshot and the manifest.
+
+    A forward deleted from the panel (or dropped from applied.json by a state migration)
+    used to leave its systemd unit behind; the CFWG latency watchdog then restarted that
+    ghost service every few minutes forever, with nothing able to report why. Unit file
+    names are the only remaining evidence, so sweep them by name. Forwards still present in
+    the manifest are handled by the snapshot reconciliation (including its
+    preserve-on-one-missing-revision grace for Ultra runtimes).
+
+    Returns the unit names that were removed.
+    """
+    runner = run_command or (lambda command: subprocess.run(command, shell=True, check=False))
+    desired = {int(item) for item in desired_forward_ids if int(item or 0) > 0}
+    removed: list[str] = []
+    for pattern in ("leikwan-client-*.service", "ultra-forward-*.service"):
+        for path in sorted(pathlib.Path(unit_dir).glob(pattern)):
+            stem = path.name[: -len(".service")]
+            prefix, _, raw_id = stem.rpartition("-")
+            if prefix not in ("leikwan-client", "ultra-forward") or str(raw_id) in applied_keys:
+                continue
+            try:
+                forward_id = int(raw_id)
+            except ValueError:
+                continue
+            if forward_id in desired:
+                continue
+            logging.warning("pruning orphan service %s: forward %s is no longer configured", stem, forward_id)
+            runner(f"systemctl stop {stem}.service")
+            runner(f"systemctl disable {stem}.service")
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            start_script = pathlib.Path(start_script_dir or "/usr/local/bin") / f"leikwan-client-start-{forward_id}.sh"
+            if start_script.exists():
+                try:
+                    start_script.unlink()
+                except OSError:
+                    pass
+            try:
+                delete_nft_rules(forward_id)
+            except Exception:  # noqa: BLE001 - pruning never fails the sync
+                logging.debug("failed to delete nft rules for pruned forward %s", forward_id)
+            removed.append(stem)
+    if removed:
+        runner("systemctl daemon-reload")
+    return removed
 
 
 def forward_runtime_service_name(forward: dict) -> str:
@@ -2460,6 +2537,9 @@ class ClientAgent:
         self.health_reorder_after: dict[int, float] = {}
         self.invalid_forward_log_after: dict[int, float] = {}
         self.missing_forward_observations: dict[int, dict[str, object]] = {}
+        # Lease delivery failures repeat every sync for a line the panel keeps handing out
+        # without a healthy candidate; one line per reason per window is enough evidence.
+        self._ultra_apply_failure_logged: dict[str, float] = {}
         self.last_ultra_leases: dict[int, list[dict]] = {}
         self.self_leg_probe_cache: dict[str, dict] = {}
         self._cfwg_latency_watchdog = None
@@ -4405,16 +4485,11 @@ class ClientAgent:
                 try:
                     future.result()
                     self._ultra_apply_failures.pop(forward_id, None)
+                    for stale_key in [key for key in self._ultra_apply_failure_logged if key.startswith(f"{forward_id}|")]:
+                        self._ultra_apply_failure_logged.pop(stale_key, None)
                 except UltraLeaseDeliveryError as exc:
                     self._ultra_apply_failures[forward_id] = "lease_delivery_failed"
-                    logging.exception(
-                        "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
-                        forward_id,
-                        mode,
-                        transport,
-                        endpoint_count,
-                        exc,
-                    )
+                    self.log_ultra_apply_failure(forward_id, mode, transport, endpoint_count, exc)
                 except Exception as exc:  # noqa: BLE001
                     logging.exception(
                         "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
@@ -4442,6 +4517,7 @@ class ClientAgent:
                 applied.pop(str(forward_id), None)
 
         self.write_applied_state(applied)
+        self.prune_orphan_forward_units(desired_ids)
         self.reconcile_global_mptcp_state(self.latest_forwards)
         # This metadata came from a successful authenticated fresh pull, not a
         # cached request. Permit one probe of an auth-paused immutable upload.
@@ -5700,6 +5776,45 @@ class ClientAgent:
                 endpoint.clear()
                 credential.clear()
         return False
+
+    def log_ultra_apply_failure(
+        self,
+        forward_id: int,
+        mode: str,
+        transport: str,
+        endpoint_count: int,
+        exc: Exception,
+    ) -> None:
+        """One warning per forward and failure reason per interval, without a traceback.
+
+        A delivery failure is a line-side condition the agent retries every sync; a full
+        Python traceback per retry buried the real errors (49 of 90 log lines in one sample).
+        """
+        reason = str(exc) or exc.__class__.__name__
+        key = f"{int(forward_id)}|{reason}"
+        if not repetition_due(
+            self._ultra_apply_failure_logged,
+            key,
+            time.time(),
+            ULTRA_APPLY_FAILURE_LOG_INTERVAL_SECONDS,
+        ):
+            return
+        logging.warning(
+            "failed to apply forward %s mode=%s transport=%s endpoints=%s: %s",
+            forward_id,
+            mode,
+            transport,
+            endpoint_count,
+            reason,
+        )
+
+    def prune_orphan_forward_units(self, desired_forward_ids: set[int]) -> None:
+        prune_orphan_forward_units(
+            pathlib.Path("/etc/systemd/system"),
+            desired_forward_ids,
+            set(self.load_applied().keys()),
+            self.delete_nft_rules,
+        )
 
     def stop_forward(self, forward_id: int, delete_files: bool = False) -> None:
         applied = self.load_applied()
