@@ -87,6 +87,10 @@ object DebugLogUploader {
             "=== leikwan-android version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) " +
                 "sdk=${Build.VERSION.SDK_INT} vpnRunning=${LeikwanVpnService.isRunning} utc=${Instant.now()} ===",
         )
+        // A native abort from fd exhaustion surfaces as a binder -12 and a Conscrypt
+        // "Unable to create application data"; only the fd table tells the two apart.
+        sb.appendLine("=== process resources ===")
+        sb.appendLine(runCatching { ResourceSnapshot.render() }.getOrDefault("unavailable"))
         runCatching {
             context.filesDir.listFiles { f -> f.isFile && f.name.endsWith(".status.json") }
                 ?.sortedBy { it.name }

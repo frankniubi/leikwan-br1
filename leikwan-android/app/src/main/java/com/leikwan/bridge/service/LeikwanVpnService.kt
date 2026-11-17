@@ -21,6 +21,7 @@ import com.leikwan.bridge.R
 import com.leikwan.bridge.data.Prefs
 import com.leikwan.bridge.diagnostics.VpnEventJournal
 import com.leikwan.bridge.diagnostics.DiagnosticLogBudget
+import com.leikwan.bridge.diagnostics.ResourceSnapshot
 import com.leikwan.bridge.session.DeviceLimitNotice
 import com.leikwan.bridge.ui.MainActivity
 import com.leikwan.bridge.ui.shared.deviceLimitMessage
@@ -49,6 +50,7 @@ import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.TunOptions
 import io.nekohasekai.libbox.WIFIState
 import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,6 +64,12 @@ private const val TAG = "LeikwanVpnService"
 private const val CHANNEL_ID = "leikwan_vpn"
 private const val NOTIFICATION_ID = 1
 private const val RECOVERY_FAILED_NOTIFICATION_ID = 2
+/** Resource journal cadence: one short line, cheap enough for every running tunnel. */
+private const val RESOURCE_SAMPLE_INTERVAL_MS = 60_000L
+/** Journal every fifth sample (5 min) so lifecycle history survives the 64 KiB rotation. */
+private const val RESOURCE_JOURNAL_EVERY = 5
+/** App fd ceiling on Android 9+ is 32768; used only when /proc/self/limits is unreadable. */
+private const val DEFAULT_FD_LIMIT = 32_768
 
 class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler {
 
@@ -69,6 +77,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private var commandServer: CommandServer? = null
     private var commandClient: CommandClient? = null
     private var relayLatencyJob: Job? = null
+    private var resourceJournalJob: Job? = null
+    /** One self-heal attempt per process: a rebuild cannot fix a leak that outlives it. */
+    private val fdGuardTripped = AtomicBoolean(false)
     private val networkMonitor by lazy {
         AndroidNetworkMonitor(this, onUnderlyingNetwork = { network ->
             applyUnderlyingNetworks(network)
@@ -248,6 +259,9 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             Libbox.setup(options)
             Libbox.checkConfig(config)
 
+            // A rebuild can reach here while an earlier server object is still referenced;
+            // replacing it without closing leaks the native service and its gRPC streams.
+            closeCommandChannel()
             val server = CommandServer(this, this)
             commandServer = server
             server.start()
@@ -266,6 +280,8 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
             updateNotification(getString(R.string.vpn_notification_connected))
             Log.i(TAG, "VPN service started with libbox")
             VpnEventJournal.record(this, "vpn started")
+            journalResources("vpn started")
+            startResourceJournal()
         } catch (e: Exception) {
             startupState = VpnStartupState.FAILED
             lastStartError = e.message ?: "Failed to start VPN"
@@ -278,6 +294,19 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private fun closeRuntime() {
         relayLatencyJob?.cancel()
         relayLatencyJob = null
+        resourceJournalJob?.cancel()
+        resourceJournalJob = null
+        closeCommandChannel()
+        networkMonitor.close()
+        try {
+            tunFd?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing TUN", e)
+        }
+        tunFd = null
+    }
+
+    private fun closeCommandChannel() {
         try {
             commandClient?.disconnect()
         } catch (e: Exception) {
@@ -292,13 +321,56 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         runCatching { commandServer?.close() }
             .onFailure { Log.e(TAG, "Error closing CommandServer", it) }
         commandServer = null
-        networkMonitor.close()
-        try {
-            tunFd?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing TUN", e)
+    }
+
+    /**
+     * Records the process fd/memory footprint. An abort caused by an exhausted fd table leaves
+     * no trace of the resource itself, so one short line is the only cross-process record of
+     * whether it was growing before the crash.
+     */
+    private fun journalResources(label: String) {
+        runCatching { ResourceSnapshot.capture() }.getOrNull()?.let { snapshot ->
+            VpnEventJournal.record(this, "$label resources: ${snapshot.summary()}")
         }
-        tunFd = null
+    }
+
+    /**
+     * Samples the fd table while the tunnel runs and rebuilds once per process when it nears the
+     * ceiling. Rebuilding is a best-effort self-heal: if the leak outlives the runtime it only
+     * buys the diagnostics upload that names the leaking fd family.
+     */
+    private fun startResourceJournal() {
+        resourceJournalJob?.cancel()
+        resourceJournalJob = recoveryScope.launch {
+            var samples = 0
+            while (true) {
+                delay(RESOURCE_SAMPLE_INTERVAL_MS)
+                val snapshot = runCatching { ResourceSnapshot.capture() }.getOrNull() ?: continue
+                samples += 1
+                if (samples % RESOURCE_JOURNAL_EVERY == 0) {
+                    VpnEventJournal.record(
+                        this@LeikwanVpnService,
+                        "resources: ${snapshot.summary()}",
+                    )
+                }
+                if (isRunning && !recovering && underFdPressure(snapshot)
+                    && fdGuardTripped.compareAndSet(false, true)
+                ) {
+                    Log.w(TAG, "fd pressure ${snapshot.summary()}; rebuilding the tunnel")
+                    VpnEventJournal.record(
+                        this@LeikwanVpnService,
+                        "fd pressure: ${snapshot.summary()}",
+                    )
+                    mainHandler.post { rebuildInPlace("fd pressure") }
+                }
+            }
+        }
+    }
+
+    private fun underFdPressure(snapshot: ResourceSnapshot.Value): Boolean {
+        if (snapshot.fdCount < 0) return false
+        val limit = if (snapshot.fdLimit > 0) snapshot.fdLimit else DEFAULT_FD_LIMIT
+        return snapshot.fdCount >= limit * 3 / 4
     }
 
     /** [reason] only labels the lifecycle journal; every external caller is the orchestrator. */

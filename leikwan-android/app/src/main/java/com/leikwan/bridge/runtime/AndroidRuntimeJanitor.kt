@@ -16,17 +16,33 @@ object AndroidRuntimeJanitor {
 
     fun cleanupStaleRuntimeProcesses(currentPid: Int = Process.myPid()) {
         val psOutput = runCatching {
-            ProcessBuilder("sh", "-c", "ps -A").redirectErrorStream(true).start()
-                .inputStream.bufferedReader().readText()
+            // One child per forward start; leaving it unreaped (and its three pipe fds open)
+            // accumulates across the frequent rebuilds a backgrounded tunnel performs.
+            runChild("ps -A") { process ->
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
         }.getOrNull() ?: return
 
         parseRuntimePids(psOutput, currentPid).forEach { pid ->
-            runCatching {
-                ProcessBuilder("sh", "-c", "kill -9 $pid")
-                    .redirectErrorStream(true)
-                    .start()
-                    .waitFor()
-            }
+            runCatching { runChild("kill -9 $pid") { _ -> } }
+        }
+    }
+
+    /**
+     * Runs a shell command to completion and always closes its streams and reaps the child.
+     * Returns null when the command could not be run; [read]'s result otherwise.
+     */
+    private fun <T> runChild(script: String, read: (java.lang.Process) -> T): T? {
+        val process = ProcessBuilder("sh", "-c", script)
+            .redirectErrorStream(true)
+            .start()
+        return try {
+            read(process)
+        } finally {
+            runCatching { process.inputStream.close() }
+            runCatching { process.errorStream.close() }
+            runCatching { process.outputStream.close() }
+            runCatching { process.waitFor() }.onFailure { runCatching { process.destroy() } }
         }
     }
 
