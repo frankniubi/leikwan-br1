@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.11.15.1"
+AGENT_VERSION = "2026.11.18.1"
 # See log_ultra_apply_failure: one line per forward and reason per ten minutes.
 ULTRA_APPLY_FAILURE_LOG_INTERVAL_SECONDS = 600.0
 

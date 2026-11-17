@@ -36,7 +36,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$InstallerVersion = "0.1.20.73"
+$InstallerVersion = "0.1.20.74"
 $KeepBackups = 3
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
