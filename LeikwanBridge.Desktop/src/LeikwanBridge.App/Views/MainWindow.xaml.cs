@@ -1675,7 +1675,7 @@ public partial class MainWindow : Window
             var artifact = _vm.AvailableUpdateArtifact;
             var installerPath = await PrepareCachedInstallerAsync(artifact, CreateUpdateProgress());
             var sha = WindowsAppUpdateService.ComputeSha256(installerPath);
-            _vm.DeferUpdateForRestartForTests(artifact.Version, installerPath, sha);
+            _vm.DeferUpdateForRestartForTests(_vm.AvailableUpdateArtifact!.Version, installerPath, sha);
             SaveCurrentConfig();
         }
         catch (Exception ex)
@@ -1818,6 +1818,11 @@ public partial class MainWindow : Window
         WindowsClientAppArtifact artifact,
         IProgress<UpdateProgress>? progress = null)
     {
+        // The offer can have sat in the prompt for days while this URL now
+        // serves a newer setup. Refresh its hash, size and version together.
+        artifact = await _updateService.FetchWindowsClientArtifactAsync(
+            App.Config.MasterUrl, progress, _lifecycleCts.Token);
+        _vm.PresentUpdatePrompt(artifact);
         var installRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LeiKwan Bridge");
         var installerPath = WindowsAppUpdateService.BuildCachedInstallerPath(installRoot, artifact.Version);
 

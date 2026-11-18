@@ -31,10 +31,10 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "373baea7ac7ae48c4d4cbd081b781d83a56da3e06f489040480e85d6419dbae4",
-    "size": 443563,
-    "size_bytes": 443563,
-    "version": "2026.11.18.1"
+    "sha256": "47d26c5e85bf52bfb9987a03739e761347d051586847a8b85d0443037821ba0a",
+    "size": 446782,
+    "size_bytes": 446782,
+    "version": "2026.11.18.2"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -63,7 +63,7 @@
     "runtime_mode": "frozen",
     "sha256": "aa412c336bdf3168e1ac4e92429dc40dc4366d30e724bd5d26f8c1da12d2268f",
     "size_bytes": 8962352,
-    "version": "2026.11.13.2"
+    "version": "2026.11.18.2"
   },
   "client_agent_update": {
     "artifact_url": "/artifacts/client-agent-update.sh",
@@ -829,7 +829,7 @@
     },
     "sha256": "e3194a0a1a04eb48a8cfe93a6d62306777288b34933d7984e51ef86707233790",
     "size_bytes": 69959500,
-    "version": "0.1.20.85"
+    "version": "0.1.20.86"
   },
   "windows_headless_client": {
     "architecture": "x86_64",
@@ -839,7 +839,7 @@
     "platform": "windows",
     "sha256": "20541fa796d19aa624f3b304a7af351b62085e8314727601f596181ae277c328",
     "size_bytes": 64062898,
-    "version": "0.1.20.74",
+    "version": "0.1.20.75",
     "runtime_sha256": {
       "wstunnel_windows_amd64": "e60f08b5ad626f16759f337536f7de41d3103ccc4084a369eb82bba2d61fb5c1",
       "leikwan_bond_windows_amd64": "2411858729357fef395706e58edd601b0b0ef2a13456fc4f3b242b69e1580697",
@@ -852,9 +852,9 @@
   "windows_headless_installer": {
     "install_url": "/artifacts/install-windows-headless.ps1",
     "path": "install/install-windows-headless.ps1",
-    "sha256": "0f22d3f11127da6032b949726fb29b19b9faf10163d0c6cc2b19466413aab303",
+    "sha256": "22297ab7e91b50f6ef5f1576dc1dd7c285ca4ab9af640385456bb8dc70bea30f",
     "size_bytes": 16837,
-    "version": "0.1.20.74",
+    "version": "0.1.20.75",
     "artifact_url": "/artifacts/install-windows-headless.ps1"
   },
   "windows_headless_uninstaller": {

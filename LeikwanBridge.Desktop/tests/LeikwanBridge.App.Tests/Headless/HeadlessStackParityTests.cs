@@ -21,6 +21,7 @@ public sealed class HeadlessStackParityTests
         "new HealthCheckService(",
         "new WireGuardManager(",
         "new HeartbeatService(",
+        "installedRuntimeIdentity: new LeikwanBridge.Core.Services.Ultra.InstalledRuntimeIdentity(",
         "MasterApiClient.BuildWindowsDeviceId(",
         "\"windows-desktop\"",
         "additionalRuntimeDirectories: [Path.Combine(",
@@ -74,6 +75,20 @@ public sealed class HeadlessStackParityTests
         Assert.Contains("() => HeadlessUpdateRequestSignal.Shared.Current", update, StringComparison.Ordinal);
         Assert.Contains("new ConfigPollingService(api, runtime, stateManager)", stack, StringComparison.Ordinal);
         Assert.DoesNotContain("UpdateRequests =", stack, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EveryInstallerDownloadRefreshesTheOfferBeforeSelectingCacheAndExpectedHash()
+    {
+        var source = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "LeikwanBridge.Desktop", "src",
+            "LeikwanBridge.App", "Views", "MainWindow.xaml.cs"));
+        var prepare = source[source.IndexOf("private async Task<string> PrepareCachedInstallerAsync(", StringComparison.Ordinal)..];
+        prepare = prepare[..prepare.IndexOf("// ERROR_CANCELLED", StringComparison.Ordinal)];
+        Assert.True(prepare.IndexOf("FetchWindowsClientArtifactAsync(", StringComparison.Ordinal)
+            < prepare.IndexOf("BuildCachedInstallerPath(", StringComparison.Ordinal));
+        Assert.Contains("_vm.PresentUpdatePrompt(artifact)", prepare);
+        Assert.Contains("artifact.Sha256, artifact.SizeBytes", prepare);
+        Assert.Contains("DeferUpdateForRestartForTests(_vm.AvailableUpdateArtifact!.Version", source);
     }
 
     private static string FindRepositoryRoot()

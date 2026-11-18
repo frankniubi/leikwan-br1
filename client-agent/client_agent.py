@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.11.18.1"
+AGENT_VERSION = "2026.11.18.2"
 # See log_ultra_apply_failure: one line per forward and reason per ten minutes.
 ULTRA_APPLY_FAILURE_LOG_INTERVAL_SECONDS = 600.0
 
@@ -2913,6 +2913,66 @@ class ClientAgent:
         raw = str(self.config.get("ultra_bin", "/usr/local/bin/ultra-client") or "/usr/local/bin/ultra-client")
         return pathlib.Path(raw)
 
+    def installed_ultra_runtime_identity(self) -> dict | None:
+        """Read the next runtime's build stamp without needing its first lease."""
+        try:
+            path = self.ultra_binary_path()
+            info = path.stat()
+            if not path.is_file() or info.st_size <= 0:
+                return None
+            stamp = (str(path.resolve()), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+            now = time.monotonic()
+            cached = getattr(self, "_installed_ultra_identity", None)
+            if cached and cached[0] == stamp and (cached[1] is not None or now - cached[2] < 600):
+                return dict(cached[1]) if cached[1] is not None else None
+            identity = None
+            try:
+                result = subprocess.run(
+                    [str(path), "--version"], text=True, capture_output=True, check=False, timeout=5,
+                )
+                fingerprint = result.stdout.strip().lower()
+                if result.returncode == 0 and len(result.stdout) <= 256 and _RUNTIME_FINGERPRINT_RE.fullmatch(fingerprint):
+                    identity = _normalize_runtime_attestation({
+                        "fingerprint": fingerprint, "self_sha256": file_sha256(path),
+                    })
+            except (OSError, UnicodeError, subprocess.TimeoutExpired):
+                pass
+            self._installed_ultra_identity = (stamp, identity, now)
+            return dict(identity) if identity is not None else None
+        except OSError:
+            return None
+
+    def heartbeat_runtime_attestation(self, statuses: list[dict]) -> dict:
+        """Never identify an old active process as the newly installed binary."""
+        active_statuses = []
+        active_runtime = False
+        ids = {int(entry.get("forward_id", 0) or 0) for entry in statuses if isinstance(entry, dict)}
+        ids.update(int(forward.get("forward_id", 0) or 0) for forward in getattr(self, "latest_forwards", [])
+                   if str(forward.get("backend_mode", "") or "").strip().lower() == "ultra")
+        for forward_id in sorted(ids):
+            if forward_id <= 0:
+                continue
+            try:
+                running = self.systemd_main_pid(f"ultra-forward-{forward_id}") > 0
+            except OSError:
+                return {}
+            if not running:
+                # The server also extracts identity from status entries. A dead
+                # process's file must not reintroduce the stale identity there.
+                for entry in statuses:
+                    if entry.get("forward_id") == forward_id:
+                        entry.pop("runtime_attestation", None)
+                continue
+            active_runtime = True
+            active_statuses.extend(entry for entry in statuses if entry.get("forward_id") == forward_id)
+        for entry in active_statuses:
+            identity = _normalize_runtime_attestation(entry.get("runtime_attestation"))
+            if identity is not None:
+                return identity
+        if active_runtime:
+            return {}
+        return self.installed_ultra_runtime_identity() or {}
+
     def bond_ingress_binary_path(self) -> pathlib.Path:
         raw = str(self.config.get("bond_ingress_bin", "/usr/local/bin/leikwan-ingress") or "/usr/local/bin/leikwan-ingress")
         return pathlib.Path(raw)
@@ -4565,6 +4625,7 @@ class ClientAgent:
                     "forwards": self.load_bond_leg_reputation_snapshots(),
                 },
                 "ultra_status": ultra_status,
+                "runtime_attestation": self.heartbeat_runtime_attestation(ultra_status),
                 "ultra_policy_states": {
                     str(entry["forward_id"]): entry["policy_state"]
                     for entry in ultra_status
