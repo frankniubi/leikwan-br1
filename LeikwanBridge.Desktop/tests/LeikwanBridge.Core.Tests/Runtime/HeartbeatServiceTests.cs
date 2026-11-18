@@ -87,6 +87,118 @@ public sealed class HeartbeatServiceTests
     }
 
     [Fact]
+    public async Task SendHeartbeatAsync_ReportsInstalledRuntimeIdentityWhileNothingRuns()
+    {
+        // After an app update nothing runs yet; the panel must be told which
+        // binary the next start launches, not keep judging the replaced one.
+        using var tempDir = new TempStateDirectory();
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var installed = new RuntimeAttestationSnapshot
+        {
+            Fingerprint = "2026.11.13.1.1ed417036c60",
+            SelfSha256 = new string('c', 64),
+        };
+        var service = new HeartbeatService(
+            api,
+            new StateManager(tempDir.Path),
+            installedRuntimeIdentity: () => installed);
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var attestation = document.RootElement.GetProperty("runtime_attestation");
+        Assert.Equal("2026.11.13.1.1ed417036c60", attestation.GetProperty("fingerprint").GetString());
+        Assert.Equal(new string('c', 64), attestation.GetProperty("self_sha256").GetString());
+        Assert.False(attestation.TryGetProperty("debugger", out _));
+        Assert.Empty(document.RootElement.GetProperty("ultra_status").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_RunningRuntimeIdentityWinsOverInstalledBinary()
+    {
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-42.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        {
+          "forward_id": 42,
+          "policy_generation": "{{new string('a', 64)}}",
+          "bytes_in": 0,
+          "bytes_out": 0,
+          "runtime_attestation": { "fingerprint": "2026.09.13.3.452c8fe8", "self_sha256": "{{new string('b', 64)}}" }
+        }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var installedReads = 0;
+        var service = new HeartbeatService(
+            api,
+            new StateManager(tempDir.Path),
+            installedRuntimeIdentity: () =>
+            {
+                installedReads++;
+                return new RuntimeAttestationSnapshot { Fingerprint = "2026.11.13.1.1ed417036c60", SelfSha256 = new string('c', 64) };
+            });
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        Assert.Equal("2026.09.13.3.452c8fe8",
+            document.RootElement.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+        Assert.Equal(0, installedReads);
+    }
+
+    [Fact]
+    public async Task SendHeartbeatAsync_RunningRuntimeWithoutIdentityNeverBorrowsTheInstalledOne()
+    {
+        // A runtime is running but publishes no identity: the installed binary may
+        // not be what is running, so the identity stays explicitly empty.
+        using var tempDir = new TempStateDirectory();
+        var statusPath = Path.Combine(tempDir.Path, "runtime", "ultra-forward-42.status.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(statusPath)!);
+        File.WriteAllText(statusPath, $$"""
+        { "forward_id": 42, "policy_generation": "{{new string('a', 64)}}", "bytes_in": 0, "bytes_out": 0 }
+        """);
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var service = new HeartbeatService(
+            api,
+            new StateManager(tempDir.Path),
+            installedRuntimeIdentity: () => new RuntimeAttestationSnapshot { Fingerprint = "2026.11.13.1.1ed417036c60" });
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        Assert.Single(document.RootElement.GetProperty("ultra_status").EnumerateArray());
+        Assert.Equal("", document.RootElement.GetProperty("runtime_attestation").GetProperty("fingerprint").GetString());
+    }
+
+    [Theory]
+    [InlineData("NOT-A-FINGERPRINT", false)]
+    [InlineData("", false)]
+    [InlineData(null, true)]
+    public async Task SendHeartbeatAsync_UnusableInstalledIdentityFallsBackToExplicitEmpty(string? fingerprint, bool throws)
+    {
+        using var tempDir = new TempStateDirectory();
+        using var server = new HeartbeatCaptureServer();
+        using var api = new MasterApiClient(server.BaseUrl, "agent-token");
+        var service = new HeartbeatService(
+            api,
+            new StateManager(tempDir.Path),
+            installedRuntimeIdentity: () => throws
+                ? throw new IOException("unreadable")
+                : new RuntimeAttestationSnapshot { Fingerprint = fingerprint! });
+
+        await service.SendHeartbeatAsync();
+
+        using var document = JsonDocument.Parse(server.LastRequestBody);
+        var attestation = document.RootElement.GetProperty("runtime_attestation");
+        Assert.Equal("", attestation.GetProperty("fingerprint").GetString());
+        Assert.False(attestation.TryGetProperty("self_sha256", out _));
+    }
+
+    [Fact]
     public async Task SendHeartbeatAsync_ReportsPortableWindowsMptcpSupport()
     {
         using var tempDir = new TempStateDirectory();

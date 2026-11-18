@@ -5,6 +5,7 @@ using LeikwanBridge.Core.Models;
 using LeikwanBridge.Core.Nodes;
 using LeikwanBridge.Core.Services;
 using LeikwanBridge.Core.Services.Platform;
+using LeikwanBridge.Core.Services.Ultra;
 using Serilog;
 
 namespace LeikwanBridge.Mac.Services;
@@ -182,11 +183,14 @@ public static class MacAppBootstrap
             leaseKeyStore: UltraLeaseKeyStore.ForDirectory(paths.Root));
         var polling = new ConfigPollingService(api, runtime, state, MacForwardPolicy.Instance);
         hostedNodes.Attach(api, polling);
+        // The same binary MacUltraRuntimeHost launches.
+        var installedRuntime = new InstalledRuntimeIdentity(config.GetEffectiveUltraBin);
         var heartbeat = new HeartbeatService(
             api,
             state,
             platformIdentity: identity,
-            additionalRuntimeDirectories: [paths.RuntimeDirectory]);
+            additionalRuntimeDirectories: [paths.RuntimeDirectory],
+            installedRuntimeIdentity: installedRuntime.Read);
         var health = new HealthCheckService(supervisor, runtime, state, config: config);
         var diagnostics = new ClientDiagnosticsService(supervisor, config, logDirectory: paths.LogDirectory);
         return new DesktopRuntimeSession(

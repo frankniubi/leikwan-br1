@@ -87,7 +87,9 @@ internal sealed class WindowsClientStack : IHeadlessClientStack
             config.GetEffectiveWireguardListenPort(),
             config.GetEffectiveWireguardFallbackTcpPort(),
             actions => ApplyUltraPolicyActions(polling, runtime, actions, log),
-            additionalRuntimeDirectories: [Path.Combine(config.GetEffectiveStateDir(), "proxy-runtime")]);
+            additionalRuntimeDirectories: [Path.Combine(config.GetEffectiveStateDir(), "proxy-runtime")],
+            installedRuntimeIdentity: new LeikwanBridge.Core.Services.Ultra.InstalledRuntimeIdentity(
+                config.GetEffectiveUltraBin).Read);
 
         var session = new DesktopRuntimeSession(
             api,

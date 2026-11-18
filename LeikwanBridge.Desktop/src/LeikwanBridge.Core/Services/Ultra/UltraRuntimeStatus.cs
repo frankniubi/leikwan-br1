@@ -89,7 +89,7 @@ public static class UltraRuntimeStatus
             || fingerprintElement.ValueKind != JsonValueKind.String)
             return null;
         var fingerprint = fingerprintElement.GetString() ?? "";
-        if (fingerprint != DevelopmentFingerprint && !IsBuildFingerprint(fingerprint))
+        if (!IsRuntimeFingerprint(fingerprint))
             return null;
 
         var result = new RuntimeAttestationSnapshot { Fingerprint = fingerprint };
@@ -354,6 +354,13 @@ public static class UltraRuntimeStatus
     private static bool IsLowerHex(string value, int minimum, int maximum)
         => value.Length >= minimum && value.Length <= maximum
             && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    /// <summary>
+    /// Whether a value is a runtime identity the panel can compare: a build
+    /// fingerprint or the "development" stamp of a local build.
+    /// </summary>
+    public static bool IsRuntimeFingerprint(string value)
+        => value == DevelopmentFingerprint || IsBuildFingerprint(value);
 
     /// <summary>
     /// Accepts the released build fingerprint shape "2026.09.12.1.4b106b02" (the

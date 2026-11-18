@@ -334,25 +334,7 @@ public sealed partial class App : Application
             return;
         try
         {
-            // Prefer the live view-model selection so an endpoint change made
-            // moments ago applies even before the config write settles.
-            // Avalonia controls are thread-affine. Startup calls this method
-            // after the bootstrap continuation has deliberately left the UI
-            // thread, so reading DataContext here used to throw
-            // `Call from invalid thread` and abort every automatic update check.
-            var panelUrl = await Dispatcher.UIThread.InvokeAsync(() =>
-            {
-                var selected = UpdateViewModel?.PanelUrl;
-                return string.IsNullOrWhiteSpace(selected)
-                    ? _services.Config.MasterUrl
-                    : selected!;
-            });
-            var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
-            _availableUpdate = await _services.Updater.CheckAsync(
-                panelUrl,
-                currentVersion,
-                progress,
-                ct);
+            _availableUpdate = await FetchAvailableUpdateAsync(_services, progress, ct);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 if (_availableUpdate is null)
@@ -380,6 +362,32 @@ public sealed partial class App : Application
         }
     }
 
+    private async Task<ClientAppArtifact?> FetchAvailableUpdateAsync(
+        MacAppServices services,
+        IProgress<UpdateProgress>? progress,
+        CancellationToken ct)
+    {
+        // Prefer the live view-model selection so an endpoint change made
+        // moments ago applies even before the config write settles.
+        // Avalonia controls are thread-affine. Startup calls this method
+        // after the bootstrap continuation has deliberately left the UI
+        // thread, so reading DataContext here used to throw
+        // `Call from invalid thread` and abort every automatic update check.
+        var panelUrl = await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            var selected = UpdateViewModel?.PanelUrl;
+            return string.IsNullOrWhiteSpace(selected)
+                ? services.Config.MasterUrl
+                : selected!;
+        });
+        var currentVersion = typeof(App).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        return await services.Updater.CheckAsync(
+            panelUrl,
+            currentVersion,
+            progress,
+            ct);
+    }
+
     private static string BoundErrorCode(Exception exception)
     {
         var message = exception.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
@@ -397,7 +405,23 @@ public sealed partial class App : Application
             return;
         try
         {
-            var prepared = await _services.Updater.PrepareAsync(_availableUpdate, progress, ct);
+            // The remembered offer can be days old while the app keeps running,
+            // and the update URL always serves the current package, so installing
+            // it failed the size check until the user checked again by hand
+            // (field 2026-11-18: a 1.0.63 offer fetched the 1.0.68 package,
+            // update_size_mismatch three times). Re-read the manifest first.
+            var update = await FetchAvailableUpdateAsync(_services, progress, ct);
+            _availableUpdate = update;
+            if (update is null)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    _services.Controller.PublishNotice(L.T("NoticeUpToDate", "LeiKwan Bridge is up to date."));
+                    UpdateViewModel?.ReportUpdateFinished();
+                });
+                return;
+            }
+            var prepared = await _services.Updater.PrepareAsync(update, progress, ct);
             var result = await _services.Updater.ApplyAsync(prepared, deferUntilRestart: false, progress, ct);
             if (result.RequiresManualInstall)
             {

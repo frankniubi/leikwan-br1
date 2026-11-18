@@ -1603,7 +1603,9 @@ public partial class MainViewModel : ObservableObject
             _config.GetEffectiveWireguardListenPort(),
             _config.GetEffectiveWireguardFallbackTcpPort(),
             ApplyUltraPolicyActions,
-            additionalRuntimeDirectories: [Path.Combine(_config.GetEffectiveStateDir(), "proxy-runtime")]);
+            additionalRuntimeDirectories: [Path.Combine(_config.GetEffectiveStateDir(), "proxy-runtime")],
+            installedRuntimeIdentity: new LeikwanBridge.Core.Services.Ultra.InstalledRuntimeIdentity(
+                () => _config.GetEffectiveUltraBin()).Read);
 
         _pollingService.ForwardsUpdated += OnForwardsUpdated;
         _pollingService.NativeOutboundUpdated += OnNativeOutboundUpdated;

@@ -18,6 +18,7 @@ public sealed class HeartbeatService
     private readonly Action<IReadOnlyList<UltraPolicyAction>>? _onUltraActions;
     private readonly ClientPlatformIdentity _platformIdentity;
     private readonly IReadOnlyList<string> _additionalRuntimeDirectories;
+    private readonly Func<RuntimeAttestationSnapshot?>? _installedRuntimeIdentity;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     // The panel reads the runtime identity out of the usage rows, so a forward
@@ -34,9 +35,11 @@ public sealed class HeartbeatService
         int wireguardFallbackTcpPort = 0,
         Action<IReadOnlyList<UltraPolicyAction>>? onUltraActions = null,
         ClientPlatformIdentity? platformIdentity = null,
-        IReadOnlyList<string>? additionalRuntimeDirectories = null)
+        IReadOnlyList<string>? additionalRuntimeDirectories = null,
+        Func<RuntimeAttestationSnapshot?>? installedRuntimeIdentity = null)
     {
         _api = api;
+        _installedRuntimeIdentity = installedRuntimeIdentity;
         _stateManager = stateManager;
         _wireguardPublicKey = wireguardPublicKey;
         _wireguardListenPort = wireguardListenPort;
@@ -111,6 +114,10 @@ public sealed class HeartbeatService
         var runtimeAttestation = ultraStatus
             .Select(UltraRuntimeStatus.ReadAttestation)
             .FirstOrDefault(item => item is not null)
+            // With nothing running, name the binary the next start launches: the
+            // panel's runtime version cutoff otherwise keeps judging the runtime
+            // that ran before an app update and refuses the new one its first lease.
+            ?? (ultraStatus.Count == 0 ? ReadInstalledRuntimeIdentity() : null)
             // Explicitly empty suppresses the legacy server fallback to usage
             // batches, which may belong to an already stopped, older binary.
             ?? new RuntimeAttestationSnapshot();
@@ -370,6 +377,28 @@ public sealed class HeartbeatService
         }
         _attestationReports[forwardId] = (fingerprint, now);
         return true;
+    }
+
+    /// <summary>
+    /// Identity of the runtime binary the next start launches, or null when the
+    /// host did not supply one or it cannot be read. Never fails the heartbeat.
+    /// </summary>
+    private RuntimeAttestationSnapshot? ReadInstalledRuntimeIdentity()
+    {
+        if (_installedRuntimeIdentity is null)
+            return null;
+        try
+        {
+            var identity = _installedRuntimeIdentity();
+            return identity is not null && UltraRuntimeStatus.IsRuntimeFingerprint(identity.Fingerprint)
+                ? identity
+                : null;
+        }
+        catch (Exception exception)
+        {
+            Log.Debug("installed_runtime_identity_failed type={ErrorType}", exception.GetType().Name);
+            return null;
+        }
     }
 
     private IEnumerable<(string Path, bool Legacy)> EnumerateUltraStatusFiles()
