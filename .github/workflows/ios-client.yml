@@ -45,7 +45,8 @@ env:
 jobs:
   core-tests:
     name: Core package tests
-    runs-on: macos-15
+    # Host-only tests also run on Intel; avoid the constrained arm64 runner pool.
+    runs-on: macos-15-intel
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +58,7 @@ jobs:
 
   runtime-tests:
     name: Runtime host tests (Rust + Go)
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
