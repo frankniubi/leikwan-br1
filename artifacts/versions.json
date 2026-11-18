@@ -308,7 +308,7 @@
     },
     "sha256": "ae0c561e5440bc984627771980e6d1fefd0cf1463859d0d37e746e0b31da2b5b",
     "size_bytes": 79714976,
-    "version": "1.0.68",
+    "version": "1.0.69",
     "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_app_x64": {
@@ -355,7 +355,7 @@
     },
     "sha256": "f65c2c5ecea57a0975cae29db1e15fcb67cd416ba7788f354ff1b9ccfdc701f9",
     "size_bytes": 70517088,
-    "version": "1.0.68",
+    "version": "1.0.69",
     "source_commit": "651f6ffc6666cda2b2567ea792158ef44b8207ea"
   },
   "macos_client_update_x64": {
