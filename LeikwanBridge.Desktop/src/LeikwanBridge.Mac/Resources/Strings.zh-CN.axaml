@@ -297,8 +297,8 @@
   <x:String x:Key="StartupSection">启动和窗口</x:String>
   <x:String x:Key="OpenAtLogin">登录时打开</x:String>
   <x:String x:Key="OpenAtLoginHint">为当前 macOS 用户自动启动此客户端。</x:String>
-  <x:String x:Key="KeepInMenuBar">保留在菜单栏</x:String>
-  <x:String x:Key="KeepInMenuBarHint">关闭窗口后，活动的转发会继续运行。</x:String>
+  <x:String x:Key="KeepInMenuBar">保留在菜单栏（不占用程序坞）</x:String>
+  <x:String x:Key="KeepInMenuBarHint">关闭或最小化窗口后自动隐藏到菜单栏，不占用程序坞；活动的转发会继续运行。</x:String>
   <x:String x:Key="ActivityLog">活动日志</x:String>
   <x:String x:Key="UploadLogs">上传日志</x:String>
   <x:String x:Key="UploadLogsSuccess">已上传诊断日志（编号 {0}）。</x:String>

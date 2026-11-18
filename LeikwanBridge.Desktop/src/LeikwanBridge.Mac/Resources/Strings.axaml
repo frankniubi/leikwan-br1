@@ -297,8 +297,8 @@
   <x:String x:Key="StartupSection">Startup and window</x:String>
   <x:String x:Key="OpenAtLogin">Open at login</x:String>
   <x:String x:Key="OpenAtLoginHint">Start this client for the current macOS user.</x:String>
-  <x:String x:Key="KeepInMenuBar">Keep in menu bar</x:String>
-  <x:String x:Key="KeepInMenuBarHint">Closing the window keeps active forwards running.</x:String>
+  <x:String x:Key="KeepInMenuBar">Keep in menu bar (no Dock icon)</x:String>
+  <x:String x:Key="KeepInMenuBarHint">Closing or minimizing the window hides the app to the menu bar and removes its Dock icon; active forwards keep running.</x:String>
   <x:String x:Key="ActivityLog">Activity log</x:String>
   <x:String x:Key="UploadLogs">Upload logs</x:String>
   <x:String x:Key="UploadLogsSuccess">Uploaded diagnostic logs (ref {0}).</x:String>

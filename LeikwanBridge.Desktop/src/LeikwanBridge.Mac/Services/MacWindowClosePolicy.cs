@@ -40,4 +40,12 @@ public static class MacWindowClosePolicy
     /// </summary>
     public static bool ShowInDockWhileHidden(bool keepInMenuBar, bool menuBarIconAvailable)
         => !(keepInMenuBar && menuBarIconAvailable);
+
+    /// <summary>
+    /// Whether minimizing hides the window to the menu bar like closing does. An
+    /// app that lives in the menu bar drops its Dock icon while hidden, so a
+    /// window minimized into the Dock would keep occupying it.
+    /// </summary>
+    public static bool MinimizeHidesToMenuBar(bool keepInMenuBar, bool menuBarIconAvailable)
+        => !ShowInDockWhileHidden(keepInMenuBar, menuBarIconAvailable);
 }

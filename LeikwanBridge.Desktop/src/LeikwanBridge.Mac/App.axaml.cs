@@ -189,7 +189,7 @@ public sealed partial class App : Application
             nodeLibrary: services.NodeLibrary,
             themeMode: themeMode,
             saveThemeMode: (mode, ct) => uiPreferences.SaveThemeModeAsync(mode, ct));
-        _window = new MainWindow { DataContext = viewModel };
+        _window = new MainWindow { DataContext = viewModel, MinimizeHidesToMenuBar = ShouldMinimizeToMenuBar };
         _window.ExitRequested += (_, _) => _ = QuitAsync(desktop);
         _window.Hidden += (_, _) => ApplyDockVisibility(windowVisible: false);
         desktop.MainWindow = _window;
@@ -255,13 +255,20 @@ public sealed partial class App : Application
             return;
         var dock = windowVisible
             || MacWindowClosePolicy.ShowInDockWhileHidden(viewModel.CloseToTray, viewModel.TrayAvailable);
-        if (TryGetFeature(typeof(IActivatableLifetime)) is not IActivatableLifetime activatable)
-            return;
-        if (dock)
+        // The activation policy is what adds or removes the Dock icon; the
+        // background calls only hid and unhid the app and left the icon in place.
+        MacDockIcon.TrySetVisible(dock);
+        if (dock && TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activatable)
             activatable.TryLeaveBackground();
-        else
-            activatable.TryEnterBackground();
     }
+
+    /// <summary>
+    /// Whether the minimize button hides the window to the menu bar: an app
+    /// living in the menu bar has no Dock icon for the window to minimize into.
+    /// </summary>
+    private bool ShouldMinimizeToMenuBar()
+        => UpdateViewModel is { } viewModel
+            && MacWindowClosePolicy.MinimizeHidesToMenuBar(viewModel.CloseToTray, viewModel.TrayAvailable);
 
     private static void ShowStartupError(IClassicDesktopStyleApplicationLifetime desktop)
     {

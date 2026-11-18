@@ -121,8 +121,9 @@
                           OnContent="" OffContent="" />
           </Grid>
           <Grid ColumnDefinitions="*,Auto">
-            <StackPanel>
+            <StackPanel Spacing="2">
               <TextBlock Text="{DynamicResource KeepInMenuBar}" FontWeight="SemiBold" />
+              <TextBlock Text="{DynamicResource KeepInMenuBarHint}" Classes="muted" FontSize="11" TextWrapping="Wrap" />
             </StackPanel>
             <ToggleSwitch Grid.Column="1" IsChecked="{Binding CloseToTray, Mode=TwoWay}" OnContent="" OffContent="" />
           </Grid>

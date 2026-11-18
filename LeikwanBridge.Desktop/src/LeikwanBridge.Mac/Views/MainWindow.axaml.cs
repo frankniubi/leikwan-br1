@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
@@ -30,8 +31,33 @@ public sealed partial class MainWindow : Window
 
     public event EventHandler? ExitRequested;
 
-    /// <summary>Raised after the close button hid the window.</summary>
+    /// <summary>Raised after the close button (or minimizing to the menu bar) hid the window.</summary>
     public event EventHandler? Hidden;
+
+    /// <summary>
+    /// Whether the minimize button hides the window to the menu bar instead of the
+    /// Dock. Unset leaves minimizing alone.
+    /// </summary>
+    public Func<bool>? MinimizeHidesToMenuBar { get; set; }
+
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property != WindowStateProperty
+            || change.GetNewValue<WindowState>() != WindowState.Minimized
+            || DataContext is not MainWindowViewModel
+            || MinimizeHidesToMenuBar?.Invoke() != true)
+            return;
+        // Posted: hiding from inside the state change would re-enter the native
+        // window while it is still miniaturizing.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (WindowState != WindowState.Minimized || !IsVisible)
+                return;
+            Hide();
+            Hidden?.Invoke(this, EventArgs.Empty);
+        });
+    }
 
     protected override void OnClosing(WindowClosingEventArgs e)
     {
