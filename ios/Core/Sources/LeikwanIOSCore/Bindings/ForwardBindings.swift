@@ -111,6 +111,17 @@ public struct BindingPreferences: Codable, Equatable {
         }
     }
 
+    /// Forgets only explicitly deleted forwards, not temporarily absent/paused/platform-filtered ones.
+    /// Node choices and routing targets independent of the forward remain intact.
+    public mutating func forgetForwards(_ ids: Set<Int64>, selectedForwardId: inout Int64?) {
+        let deleted = ids.filter { $0 > 0 }
+        if deleted.isEmpty { return }
+        nodeByForward.removeAll { deleted.contains($0.forwardId) }
+        enabled.removeAll { $0.forwardId.map(deleted.contains) ?? false }
+        if let current = defaultBinding?.forwardId, deleted.contains(current) { defaultBinding = nil }
+        if let current = selectedForwardId, deleted.contains(current) { selectedForwardId = nil }
+    }
+
     /// Drops every reference to deleted nodes (assignments, direct bindings, rule targets).
     public mutating func forgetNodes(_ ids: Set<Int64>) {
         if ids.isEmpty { return }

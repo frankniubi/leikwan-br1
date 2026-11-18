@@ -12,6 +12,18 @@ import org.junit.Test
 class PanelModelsContractParsingTest {
 
     @Test
+    fun `permanent deletion receipts are optional and malformed IDs are ignored not truncated`() {
+        for (field in listOf("", ",\"deleted_forward_ids\":null", ",\"deleted_forward_ids\":\"12\"")) {
+            val body = """{"ok":true,"client":{},"forwards":[]$field}"""
+            assertEquals(emptySet<Long>(), permanentDeletedForwardIds(Gson().fromJson(body, PullConfigsResponse::class.java).deletedForwardIds))
+            assertEquals(emptySet<Long>(), permanentDeletedForwardIds(Gson().fromJson(body, HostedNodesResponse::class.java).deletedForwardIds))
+        }
+        val body = """{"ok":true,"client":{},"forwards":[],"deleted_forward_ids":[12,12,"13",0,-1,null,true,"bad",12.9,{},[14],9223372036854775808]}"""
+        assertEquals(setOf(12L, 13L), permanentDeletedForwardIds(Gson().fromJson(body, PullConfigsResponse::class.java).deletedForwardIds))
+        assertEquals(setOf(12L, 13L), permanentDeletedForwardIds(Gson().fromJson(body, HostedNodesResponse::class.java).deletedForwardIds))
+    }
+
+    @Test
     fun `device control envelope parses terminal command without transport material`() {
         val parsed = Gson().fromJson(
             """{"ok":false,"error":"device_kicked","command":{"version":9,"action":"kick","reason":"tenant"},"endpoint":"secret"}""",

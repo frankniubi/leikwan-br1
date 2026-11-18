@@ -478,7 +478,7 @@ class PanelRepository(
         cachedForwardContracts.clear()
         cachedEffectiveForwards.clear()
         cachedNativeOutbound = NativeOutboundCapability.from(resp.nativeOutbound)
-        syncHostedNodesAfterPull(resp.client)
+        syncHostedNodesAfterPull(resp.client, permanentDeletedForwardIds(resp.deletedForwardIds))
         if (diagnosticAuth != null) uploadDebugLogsIfRequested(resp.client, diagnosticAuth)
         val contracts = mutableListOf<ForwardContract>()
         for (raw in resp.forwards) {
@@ -504,13 +504,13 @@ class PanelRepository(
      * (client.hosted_nodes_revision); the nodes are fetched when it moves. Best effort: a failure
      * keeps the last synced nodes and never fails the pull.
      */
-    private suspend fun syncHostedNodesAfterPull(client: JsonElement?) {
+    private suspend fun syncHostedNodesAfterPull(client: JsonElement?, deletedForwardIds: Set<Long>) {
         val revision = runCatching {
             client?.takeIf { it.isJsonObject }?.asJsonObject?.get("hosted_nodes_revision")
                 ?.takeIf { it.isJsonPrimitive }?.asString
-        }.getOrNull() ?: return
+        }.getOrNull()
         try {
-            hostedNodes.syncIfRevisionChanged(revision)
+            hostedNodes.syncIfRevisionChanged(revision, deletedForwardIds)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

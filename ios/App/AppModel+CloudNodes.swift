@@ -511,6 +511,7 @@ extension AppModel {
     /// Materializes a panel listing into `nodes`, `cloudNodeState` and the per-forward choices.
     func applyCloudListing(_ listing: HostedNodesListing) {
         guard let clientID = profile?.clientId else { return }
+        forgetDeletedForwards(listing.deletedForwardIds)
         let result = CloudNodeMerge.apply(listing, to: nodes, previous: cloudNodeState, clientId: clientID)
         nodes = result.nodes
         cloudNodeState = result.state

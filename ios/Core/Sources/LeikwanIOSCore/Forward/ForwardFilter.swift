@@ -94,10 +94,28 @@ public struct IOSForwardCatalog {
     public let selectedForwardId: Int64?
     /// The pull's `native_outbound` entitlement (nil when the plan has none or it is unusable).
     public var nativeOutbound: NativeOutboundAvailability? = nil
+    /// Only an explicit permanent-deletion receipt authorizes forgetting device choices.
+    public var deletedForwardIds: Set<Int64> = []
 
     /// Count for "N forwards hidden (unsupported on iOS)".
     public var unsupportedHiddenCount: Int {
         return hidden.filter { $0.reason.isUnsupportedOnIOS }.count
+    }
+
+    public func excludingForwards(_ ids: Set<Int64>) -> IOSForwardCatalog {
+        var result = IOSForwardCatalog(
+            supported: supported.filter { !ids.contains($0.forwardId) },
+            hidden: hidden.filter { !($0.forwardId.map(ids.contains) ?? false) },
+            selectedForwardId: selectedForwardId.flatMap { ids.contains($0) ? nil : $0 }
+        )
+        if var native = nativeOutbound {
+            native.forwards.removeAll { ids.contains($0.forwardId) }
+            native.forwardIds.removeAll { ids.contains($0) }
+            if let selected = native.defaultForwardId, ids.contains(selected) { native.defaultForwardId = nil }
+            result.nativeOutbound = native.forwards.isEmpty ? nil : native
+        }
+        result.deletedForwardIds = deletedForwardIds.union(ids)
+        return result
     }
 
     public func supportedForward(id: Int64) -> IOSSupportedForward? {

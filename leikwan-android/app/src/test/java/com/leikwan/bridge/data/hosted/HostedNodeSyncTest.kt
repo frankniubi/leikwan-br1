@@ -235,6 +235,53 @@ class HostedNodeSyncTest {
         assertEquals(1, api.pairCalls)
     }
 
+    @Test
+    fun `permanent deletion unlinks local and hosted nodes and pairings without removing nodes`() = runBlocking {
+        val dao = db.proxyNodeDao()
+        val localId = dao.insert(ProxyUriParser.parse("socks5://local.example:1080")!!.copy(forwardId = 101, enabled = false))
+        val independentId = dao.insert(ProxyUriParser.parse("socks5://other.example:1080")!!.copy(forwardId = 102))
+        val listing = listing("rev", listOf(dto(11, socksUri, "Home")), listOf(pairing(101, 11), pairing(102, 11)))
+        sync.apply(listing)
+        val hosted = dao.getHosted().single()
+        dao.update(hosted.copy(forwardId = 101))
+        val localBefore = dao.getById(localId)!!
+
+        sync.apply(listing.copy(deletedForwardIds = com.google.gson.JsonParser.parseString("[101,101,0,-1,null,{},12.9]")))
+
+        assertEquals(3, dao.getAllList().size)
+        assertEquals(localBefore.copy(forwardId = null), dao.getById(localId))
+        assertNull(dao.getById(hosted.id)!!.forwardId)
+        assertEquals(102L, dao.getById(independentId)!!.forwardId)
+        assertEquals(mapOf(102L to hosted.id), store.pairings.value)
+    }
+
+    @Test
+    fun `absent paused forward without deletion receipt keeps device local assignment`() = runBlocking {
+        val dao = db.proxyNodeDao()
+        val id = dao.insert(ProxyUriParser.parse(socksUri)!!.copy(forwardId = 101))
+        val listing = listing("rev", listOf(dto(11, socksUri, "Home")), emptyList())
+        sync.apply(listing)
+        assertEquals(101L, dao.getById(id)!!.forwardId)
+        sync.apply(listing)
+        assertEquals(101L, dao.getById(id)!!.forwardId)
+        sync.syncIfRevisionChanged("rev", setOf(0, -1))
+        assertEquals(101L, dao.getById(id)!!.forwardId)
+    }
+
+    @Test
+    fun `pull deletion is applied with unchanged or missing revision and no hosted fetch`() = runBlocking {
+        val dao = db.proxyNodeDao()
+        val id = dao.insert(ProxyUriParser.parse(socksUri)!!.copy(forwardId = 101))
+        store.save(clientId, "rev", mapOf(101L to id))
+        assertFalse(sync.syncIfRevisionChanged("rev", setOf(101L)))
+        assertNull(dao.getById(id)!!.forwardId)
+        assertTrue(store.pairings.value.isEmpty())
+        dao.update(dao.getById(id)!!.copy(forwardId = 102))
+        assertFalse(sync.syncIfRevisionChanged(null, setOf(102L)))
+        assertNull(dao.getById(id)!!.forwardId)
+        assertEquals(0, api.listCalls)
+    }
+
     private fun dto(id: Long, uri: String, name: String) = HostedNodeDto(id = id, name = name, uri = uri, version = 1)
 
     private fun pairing(forwardId: Long, nodeId: Long) = HostedNodePairingDto(forwardId = forwardId, nodeId = nodeId, source = "explicit")

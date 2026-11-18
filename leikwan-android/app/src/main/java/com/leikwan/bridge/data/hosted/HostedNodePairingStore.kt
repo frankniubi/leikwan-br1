@@ -52,6 +52,13 @@ class HostedNodePairingStore(
         _pairings.value = kept
     }
 
+    /** Explicit forward deletion drops the pairing, not the user's node or suppression choice. */
+    fun forgetForwards(ids: Set<Long>) {
+        val kept = _pairings.value.filterKeys { it !in ids }
+        if (kept == _pairings.value) return
+        save(clientId, revision, kept)
+    }
+
     fun suppress(hostedId: Long, name: String) = saveSuppressed(_suppressed.value + (hostedId to name))
 
     fun unsuppress(hostedIds: Collection<Long>) {

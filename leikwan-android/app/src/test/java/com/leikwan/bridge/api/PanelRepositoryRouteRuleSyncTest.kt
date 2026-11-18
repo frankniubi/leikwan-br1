@@ -607,10 +607,19 @@ class PanelRepositoryRouteRuleSyncTest {
 
         hostedRepo.pullCatalog()
         assertEquals("same revision: no fetch", 1, hostedApi.listCalls)
+        val row = db.proxyNodeDao().getHosted().single()
+        db.proxyNodeDao().update(row.copy(forwardId = 77L))
+        api.pullResponse = api.pullResponse.copy(deletedForwardIds = JsonParser.parseString("[77]"))
+        hostedRepo.pullCatalog()
+        assertNull("deletion receipt propagates even at unchanged revision", db.proxyNodeDao().getById(row.id)!!.forwardId)
+        assertEquals(1, hostedApi.listCalls)
 
-        api.pullResponse = PullConfigsResponse(ok = true, client = JsonObject(), forwards = emptyList())
+        db.proxyNodeDao().update(row.copy(forwardId = 78L))
+        api.pullResponse = PullConfigsResponse(ok = true, client = JsonObject(), forwards = emptyList(),
+                                             deletedForwardIds = JsonParser.parseString("[78]"))
         hostedRepo.pullCatalog()
         assertEquals("older panel without the field: no fetch", 1, hostedApi.listCalls)
+        assertNull("deletion receipt propagates without a revision field", db.proxyNodeDao().getById(row.id)!!.forwardId)
 
         hostedApi.fail = true
         api.pullResponse = PullConfigsResponse(

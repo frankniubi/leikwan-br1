@@ -213,6 +213,45 @@ final class CloudNodeTests: XCTestCase {
         XCTAssertEqual(revision(#"{"ok":true,"client":{"id":1,"hosted_nodes_revision":"abc"}}"#), "abc")
     }
 
+    func testPermanentDeletionReceiptsAreOptionalAndPropagateToCatalog() throws {
+        for body in [#"{"ok":true}"#, #"{"ok":true,"deleted_forward_ids":null}"#,
+                     #"{"ok":true,"deleted_forward_ids":"12"}"#] {
+            let response = try XCTUnwrap(PullConfigsResponse.parse(Data(body.utf8)))
+            XCTAssertTrue(response.deletedForwardIds.isEmpty)
+            XCTAssertTrue(response.catalog(selectedForwardId: 12).deletedForwardIds.isEmpty)
+            XCTAssertTrue(HostedNodesListing.parse(try XCTUnwrap(JSONLenient.parseObject(body))).deletedForwardIds.isEmpty)
+        }
+        let body = #"{"ok":true,"deleted_forward_ids":[12,12,"13",0,-1,null,true,"bad",12.9,{},[14],9223372036854775808]}"#
+        let response = try XCTUnwrap(PullConfigsResponse.parse(Data(body.utf8)))
+        XCTAssertEqual(response.deletedForwardIds, [12, 13])
+        XCTAssertEqual(response.catalog(selectedForwardId: 12).deletedForwardIds, [12, 13])
+        XCTAssertEqual(HostedNodesListing.parse(try XCTUnwrap(JSONLenient.parseObject(body))).deletedForwardIds, [12, 13])
+    }
+
+    func testDeletedForwardUnlinksNodesAndPairingsWithoutDeletingNodes() throws {
+        var local = ss(1, server: "local.example")
+        local.forwardId = 12
+        local.enabled = false
+        var hosted = ss(2, hostedId: 20)
+        hosted.forwardId = 13
+        var listing = HostedNodesListing(revision: "rev", nodes: [
+            HostedNodeDTO(id: 20, name: hosted.name, nodeProtocol: "shadowsocks", server: hosted.server,
+                          port: hosted.port, uri: try XCTUnwrap(ProxyShareLink.format(hosted)))
+        ], pairings: [HostedNodePairingDTO(forwardId: 12, nodeId: 20, source: "explicit"),
+                      HostedNodePairingDTO(forwardId: 13, nodeId: 20, source: "explicit")])
+        let untouched = CloudNodeMerge.apply(listing, to: [local, hosted], previous: .empty, clientId: 7)
+        XCTAssertEqual(untouched.nodes.first?.forwardId, 12, "no receipt: absent/paused forward reference stays")
+        listing.deletedForwardIds = [12, 13]
+        let result = CloudNodeMerge.apply(listing, to: [local, hosted], previous: .empty, clientId: 7)
+        XCTAssertEqual(result.nodes.map { $0.id }, [1, 2])
+        XCTAssertTrue(result.nodes.allSatisfy { $0.forwardId == nil })
+        XCTAssertEqual(result.nodes.first?.enabled, false)
+        XCTAssertEqual(result.nodes.first?.settings, local.settings)
+        XCTAssertTrue(result.removedLocalIds.isEmpty)
+        XCTAssertTrue(result.state.pairings.isEmpty)
+        XCTAssertTrue(result.changedPairings.isEmpty, "a conflicting pairing must not recreate a deleted forward")
+    }
+
     func testStateAndPreferencesDecodeOldFiles() throws {
         let state = try JSONDecoder().decode(CloudNodeSyncState.self, from: Data(#"{"clientId":3}"#.utf8))
         XCTAssertEqual(state, CloudNodeSyncState(clientId: 3))

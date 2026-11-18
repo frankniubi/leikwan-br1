@@ -20,7 +20,17 @@ data class PullConfigsResponse(
     @SerializedName("native_outbound") val nativeOutbound: NativeOutboundCapabilityDto? = null,
     /** `{"minimum_version": "0.2.45"}` when the panel enforces a minimum; read by ClientUpdatePolicy. */
     @SerializedName("client_update") val clientUpdate: JsonElement? = null,
+    /** Explicit permanent deletions, scoped to the authenticated account/client; missing = no cleanup. */
+    @SerializedName("deleted_forward_ids") val deletedForwardIds: JsonElement? = null,
 )
+
+/** Lenient envelope, strict positive IDs: malformed entries never truncate into another forward ID. */
+internal fun permanentDeletedForwardIds(raw: JsonElement?): Set<Long> = raw
+    ?.takeIf { it.isJsonArray }?.asJsonArray
+    ?.mapNotNull { value ->
+        value.takeIf { it.isJsonPrimitive && !it.asJsonPrimitive.isBoolean }
+            ?.asString?.trim()?.toLongOrNull()?.takeIf { it > 0L }
+    }?.toSet().orEmpty()
 
 data class HeartbeatRequest(
     @SerializedName("client_platform") val clientPlatform: String = "android",

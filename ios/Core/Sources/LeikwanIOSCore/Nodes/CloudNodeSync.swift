@@ -118,7 +118,12 @@ public enum CloudNodeMerge {
         clientId: Int64,
         now: Date = Date()
     ) -> CloudMergeResult {
-        var result = nodes
+        let deleted = listing.deletedForwardIds
+        var result = nodes.map { node -> ProxyNode in
+            var node = node
+            if let forwardId = node.forwardId, deleted.contains(forwardId) { node.forwardId = nil }
+            return node
+        }
         var removed: [Int64] = []
 
         // One row per hosted id: the oldest (lowest id) row wins, later copies are duplicates.
@@ -186,7 +191,7 @@ public enum CloudNodeMerge {
         let unsupportedIds = Set(unsupported.map { $0.id })
         var pairings: [CloudPairing] = []
         var pairedForwards = Set<Int64>()
-        for pairing in listing.pairings where pairing.forwardId > 0 {
+        for pairing in listing.pairings where pairing.forwardId > 0 && !deleted.contains(pairing.forwardId) {
             guard !pairedForwards.contains(pairing.forwardId) else { continue }
             if let local = serverToLocal[pairing.nodeId] {
                 pairings.append(CloudPairing(forwardId: pairing.forwardId, hostedNodeId: pairing.nodeId, localNodeId: local, source: pairing.source))

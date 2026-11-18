@@ -164,6 +164,57 @@ final class MultiBindingTests: XCTestCase {
         XCTAssertEqual(last?["override_port"] as? Int, 31000, "lone node-less Ultra keeps the runtime bridge")
     }
 
+    func testForgetForwardsClearsOnlyPermanentlyDeletedReferences() throws {
+        var preferences = BindingPreferences(
+            nodeByForward: [ForwardNodeAssignment(forwardId: 12, nodeId: 1), ForwardNodeAssignment(forwardId: 13, nodeId: 2)],
+            enabled: [.forward(12), .direct(nodeId: 1), .forward(13)], defaultBinding: .forward(12),
+            appPresetTargets: ["telegram": 1], countryTargets: ["JP": 1]
+        )
+        var selection: Int64? = 12
+        preferences.forgetForwards([12, 12, 0, -1], selectedForwardId: &selection)
+        XCTAssertNil(selection)
+        XCTAssertNil(preferences.defaultBinding)
+        XCTAssertEqual(preferences.enabled, [.direct(nodeId: 1), .forward(13)])
+        XCTAssertEqual(preferences.nodeByForward, [ForwardNodeAssignment(forwardId: 13, nodeId: 2)])
+        XCTAssertEqual(preferences.appPresetTargets, ["telegram": 1], "independent node targets stay")
+        XCTAssertEqual(preferences.countryTargets, ["JP": 1])
+        XCTAssertEqual(try JSONDecoder().decode(BindingPreferences.self, from: JSONEncoder().encode(preferences)), preferences)
+    }
+
+    func testAbsentPausedForwardIsNotADeletion() {
+        var preferences = BindingPreferences(nodeByForward: [ForwardNodeAssignment(forwardId: 12, nodeId: 1)],
+                                             enabled: [.forward(12)], defaultBinding: .forward(12))
+        let before = preferences
+        var selection: Int64? = 12
+        let catalog = IOSForwardFilter.buildCatalog(contracts: [], selectedForwardId: selection)
+        XCTAssertNil(catalog.selectedForwardId, "not in this snapshot; may be paused or platform-filtered")
+        preferences.forgetForwards(catalog.deletedForwardIds, selectedForwardId: &selection)
+        XCTAssertEqual(selection, 12)
+        XCTAssertEqual(preferences, before)
+        preferences.forgetForwards([0, -1], selectedForwardId: &selection)
+        XCTAssertEqual(preferences, before)
+        XCTAssertEqual(selection, 12)
+    }
+
+    func testPermanentDeletionRemovesStaleCatalogRowsWithoutPruningOthers() {
+        let catalog = IOSForwardFilter.buildCatalog(contracts: [bondForward.contract, ultraForward.contract], selectedForwardId: 12)
+        let cleaned = catalog.excludingForwards([12])
+        XCTAssertNil(cleaned.supportedForward(id: 12))
+        XCTAssertEqual(cleaned.supported.map { $0.forwardId }, [13])
+        XCTAssertNil(cleaned.selectedForwardId)
+        XCTAssertEqual(cleaned.deletedForwardIds, [12])
+        XCTAssertEqual(catalog.excludingForwards([]).supported.map { $0.forwardId }, [12, 13])
+    }
+
+    func testForgetForwardsPreservesUnrelatedSelectionAndDirectDefault() {
+        var preferences = BindingPreferences(enabled: [.forward(12), .direct(nodeId: 1)], defaultBinding: .direct(nodeId: 1))
+        var selection: Int64? = 13
+        preferences.forgetForwards([12], selectedForwardId: &selection)
+        XCTAssertEqual(selection, 13)
+        XCTAssertEqual(preferences.defaultBinding, .direct(nodeId: 1))
+        XCTAssertEqual(preferences.enabled, [.direct(nodeId: 1)])
+    }
+
     func testPortPlannerAndForgetNodes() throws {
         let ports = LoopbackPortPlanner(reserved: [40000])
         XCTAssertEqual(try ports.claim(preferred: 40000), 40001)

@@ -78,6 +78,14 @@ public enum JSONLenient {
         return (value as? [Any]) ?? []
     }
 
+    /// Positive integral IDs only. Malformed entries are ignored, never truncated into another ID.
+    public static func positiveInt64Set(_ value: Any?) -> Set<Int64> {
+        return Set(array(value).compactMap { raw in
+            guard let text = string(raw), let id = Int64(text), id > 0 else { return nil }
+            return id
+        })
+    }
+
     /// Strict Ultra reader: JSON primitive only, trimmed, non-empty.
     public static func requiredString(_ value: Any?) -> String? {
         guard let value = value else { return nil }

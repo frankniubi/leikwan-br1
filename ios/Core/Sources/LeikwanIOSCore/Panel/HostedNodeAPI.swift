@@ -99,20 +99,24 @@ public struct HostedNodesListing: Equatable {
     public var nodeId: Int64?
     public var created: Bool?
     public var results: [HostedNodeBatchResult]
+    public var deletedForwardIds: Set<Int64>
 
     public init(revision: String = "", nodes: [HostedNodeDTO] = [], pairings: [HostedNodePairingDTO] = [],
-                nodeId: Int64? = nil, created: Bool? = nil, results: [HostedNodeBatchResult] = []) {
+                nodeId: Int64? = nil, created: Bool? = nil, results: [HostedNodeBatchResult] = [],
+                deletedForwardIds: Set<Int64> = []) {
         self.revision = revision
         self.nodes = nodes
         self.pairings = pairings
         self.nodeId = nodeId
         self.created = created
         self.results = results
+        self.deletedForwardIds = deletedForwardIds
     }
 
     public static func parse(_ obj: [String: Any]) -> HostedNodesListing {
         var listing = HostedNodesListing()
         listing.revision = JSONLenient.stringOrEmpty(obj["revision"])
+        listing.deletedForwardIds = JSONLenient.positiveInt64Set(obj["deleted_forward_ids"])
         listing.nodes = JSONLenient.array(obj["nodes"]).compactMap { HostedNodeDTO.parse($0) }
         for raw in JSONLenient.array(obj["pairings"]) {
             guard let item = raw as? [String: Any],

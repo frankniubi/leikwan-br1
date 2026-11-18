@@ -135,9 +135,15 @@ public struct PullConfigsResponse {
         )
     }
 
+    /// Explicit permanent deletions scoped by the panel to this account/client. Absence is not deletion.
+    public var deletedForwardIds: Set<Int64> {
+        return JSONLenient.positiveInt64Set(raw["deleted_forward_ids"])
+    }
+
     public func catalog(selectedForwardId: Int64?) -> IOSForwardCatalog {
         var catalog = IOSForwardFilter.buildCatalog(rawForwards: forwards, selectedForwardId: selectedForwardId)
         catalog.nativeOutbound = nativeOutbound
+        catalog.deletedForwardIds = deletedForwardIds
         return catalog
     }
 }

@@ -9,6 +9,7 @@ import com.leikwan.bridge.api.HostedNodePairingRequest
 import com.leikwan.bridge.api.HostedNodeUpdateRequest
 import com.leikwan.bridge.api.HostedNodeUploadRequest
 import com.leikwan.bridge.api.HostedNodesResponse
+import com.leikwan.bridge.api.permanentDeletedForwardIds
 import com.leikwan.bridge.data.AppDatabase
 import com.leikwan.bridge.data.ProxyNode
 import com.leikwan.bridge.data.ProxyNodeDao
@@ -54,9 +55,11 @@ class HostedNodeSync(
 ) {
     /**
      * Called after every config pull with client.hosted_nodes_revision. Null means the panel
-     * predates hosted nodes: nothing happens. Returns true when a sync ran.
+     * predates hosted nodes: no listing fetch. Explicit deletions still apply. Returns true when a fetch ran.
      */
-    suspend fun syncIfRevisionChanged(revision: String?): Boolean {
+    suspend fun syncIfRevisionChanged(revision: String?, deletedForwardIds: Set<Long> = emptySet()): Boolean {
+        // Deletions are authoritative even when no hosted-node fetch is needed or available.
+        forgetForwards(deletedForwardIds)
         if (revision == null) return false
         val clientId = clientIdProvider()
         if (store.clientId == clientId && store.revision == revision) return false
@@ -169,6 +172,18 @@ class HostedNodeSync(
         return true
     }
 
+    /** Clears only references explicitly declared permanently deleted, never the nodes themselves. */
+    suspend fun forgetForwards(ids: Set<Long>) {
+        val deleted = ids.filterTo(mutableSetOf()) { it > 0L }
+        if (deleted.isEmpty()) return
+        transaction {
+            dao.getAllList().filter { it.forwardId in deleted }.forEach {
+                dao.update(it.copy(forwardId = null))
+            }
+        }
+        if (store.clientId == clientIdProvider()) store.forgetForwards(deleted)
+    }
+
     /** Materializes a listing from the panel into Room and the pairing store. */
     suspend fun apply(listing: HostedNodesResponse) {
         val serverToLocal = mutableMapOf<Long, Long>()
@@ -215,6 +230,7 @@ class HostedNodeSync(
             .mapNotNull { pairing -> serverToLocal[pairing.nodeId]?.let { pairing.forwardId to it } }
             .toMap()
         store.save(clientId, listing.revision.orEmpty(), pairings)
+        forgetForwards(permanentDeletedForwardIds(listing.deletedForwardIds))
         // A node deleted everywhere drops out of the listing, and with it its suppression entry.
         val listedNames = listing.nodes.orEmpty().associate { it.id to (it.name ?: "") }
         store.replaceSuppressed(

@@ -286,13 +286,50 @@ final class AppModel: ObservableObject {
     }
 
     private func apply(_ catalog: IOSForwardCatalog) {
-        self.catalog = catalog
-        // A chosen forward that is no longer offered stays chosen, so Connect reports it
-        // instead of silently exiting through another forward; only a first choice is made here.
-        if selectedForwardID == nil {
-            selectedForwardID = catalog.bindableForwards.first?.forwardId
+        let hadSelection = selectedForwardID != nil
+        self.catalog = catalog.excludingForwards(catalog.deletedForwardIds)
+        forgetDeletedForwards(catalog.deletedForwardIds)
+        // Missing/paused/unsupported forwards stay chosen; only explicit deletion clears them.
+        // Do not silently choose another forward in place of a permanently deleted selection.
+        if !hadSelection, selectedForwardID == nil {
+            selectedForwardID = self.catalog?.bindableForwards.first?.forwardId
         }
         dropNativeOutboundBindings(catalog)
+    }
+
+    /// Only explicit permanent-deletion receipts may clear local forward references.
+    /// The user's nodes and their independent direct/routing choices are not deleted.
+    func forgetDeletedForwards(_ ids: Set<Int64>) {
+        guard !ids.isEmpty else { return }
+        var preferences = bindingPreferences
+        var selection = selectedForwardID
+        preferences.forgetForwards(ids, selectedForwardId: &selection)
+        var changed = preferences != bindingPreferences || selection != selectedForwardID
+        if preferences != bindingPreferences { bindingPreferences = preferences }
+        if selection != selectedForwardID { selectedForwardID = selection }
+        if let forward = nativeOutboundPreferences.forwardID, ids.contains(forward) {
+            nativeOutboundPreferences.forwardID = nil
+            changed = true
+        }
+        let keptPairings = cloudNodeState.pairings.filter { !ids.contains($0.forwardId) }
+        if keptPairings != cloudNodeState.pairings {
+            cloudNodeState.pairings = keptPairings
+            changed = true
+        }
+        let updatedNodes = nodes.map { node -> ProxyNode in
+            var node = node
+            if let forward = node.forwardId, ids.contains(forward) { node.forwardId = nil }
+            return node
+        }
+        if updatedNodes != nodes { nodes = updatedNodes; changed = true }
+        if let current = catalog {
+            let updated = current.excludingForwards(ids)
+            if updated.supported.count != current.supported.count || updated.hidden.count != current.hidden.count {
+                catalog = updated
+                changed = true
+            }
+        }
+        if changed { scheduleTunnelReload() }
     }
 
     private func makeClient(_ profile: PanelProfile, token: String) -> PanelClient {

@@ -67,6 +67,8 @@ data class HostedNodesResponse(
     val created: Boolean? = null,
     /** Per-entry outcome of a batch upload. */
     val results: List<HostedNodeBatchResult>? = null,
+    /** Permanent forward deletions, independent of the hosted-node revision. */
+    @SerializedName("deleted_forward_ids") val deletedForwardIds: com.google.gson.JsonElement? = null,
 )
 
 data class HostedNodeBatchResult(
