@@ -9,7 +9,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=leikwand
-PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.2.11)
+PKG_VERSION:=$(if $(LEIKWAND_VERSION),$(LEIKWAND_VERSION),1.3.0)
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
@@ -34,6 +34,11 @@ define Package/leikwand/description
  runtime control socket, and exposes the panel's native outbound as a local
  SOCKS5 relay on 127.0.0.1:2080 when the plan grants it. Managed from LuCI
  (luci-app-leikwan); onboarding is the panel-issued client id + agent token.
+
+ Opt-in gateway mode (mode=gateway) routes the LAN, or selected destination
+ prefixes, over the native outbound through a sing-box TUN, with optional
+ split carriers for listed prefixes. Gateway mode additionally needs sing-box
+ and kmod-tun.
 endef
 
 define Package/leikwand/conffiles
@@ -64,6 +69,14 @@ define Package/leikwand/install
 	$(INSTALL_DIR) $(1)/etc/leikwan
 	$(INSTALL_DIR) $(1)/var/run/leikwand
 	$(INSTALL_DIR) $(1)/usr/libexec/leikwan
+
+	# China rule-sets for gateway mode, so sing-box never waits on GitHub.
+	$(INSTALL_DIR) $(1)/usr/share/leikwan/rule-set
+	$(INSTALL_DATA) ./files/rule-set/geoip-cn.srs ./files/rule-set/geosite-cn.srs $(1)/usr/share/leikwan/rule-set/
+	$(INSTALL_DATA) ./files/rule-set/NOTICE.txt ./files/rule-set/LICENSE.txt ./files/rule-set/COPYING.txt $(1)/usr/share/leikwan/rule-set/
+	# Destination lists for the gateway split carriers (SHIXP members).
+	$(INSTALL_DIR) $(1)/usr/share/leikwan/split
+	$(INSTALL_DATA) ./files/split/shixp-v4.txt $(1)/usr/share/leikwan/split/
 endef
 
 define Package/leikwand/postinst
@@ -80,6 +93,13 @@ define Package/leikwand/prerm
 [ -n "$${IPKG_INSTROOT}" ] || {
 	/etc/init.d/leikwand stop >/dev/null 2>&1
 	/etc/init.d/leikwand disable >/dev/null 2>&1
+	# Remove the gateway firewall zone only on a real removal, not an upgrade.
+	if [ "$${PKG_UPGRADE:-0}" != "1" ] && uci -q get firewall.leikwan >/dev/null 2>&1; then
+		uci -q delete firewall.leikwan
+		uci -q delete firewall.leikwan_lan
+		uci -q commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
 }
 exit 0
 endef

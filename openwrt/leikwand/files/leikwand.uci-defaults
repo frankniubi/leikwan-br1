@@ -17,53 +17,108 @@ uci -q get leikwan.main.panel_egress_interface >/dev/null 2>&1 || {
 	uci -q commit leikwan
 }
 
-# Router edition schema 3: the transparent gateway (sing-box TUN), the split
-# carrier and the multi-WAN manager are gone. The native outbound relay is
-# started by the daemon whenever the Panel grants it; only the scope and the
-# policy remain operator-configurable. Old keys are dropped so a leftover
-# mode=gateway cannot suggest a feature this edition does not have.
-if [ "$(uci -q get leikwan.main.schema)" != "3" ]; then
-	uci -q set leikwan.main.gateway_forward_id='0'
-	uci -q set leikwan.main.gateway_route_scope='auto'
-	uci -q set leikwan.main.gateway_route_policy='auto'
-	uci -q delete leikwan.main.mode
-	uci -q delete leikwan.main.gateway_enabled
-	uci -q delete leikwan.main.gateway_tun_address
-	uci -q delete leikwan.main.gateway_tun_address6
-	uci -q delete leikwan.main.gateway_tun_mtu
-	uci -q delete leikwan.main.gateway_dns_mode
-	uci -q delete leikwan.main.gateway_dns_servers
-	uci -q delete leikwan.main.gateway_bypass_cn
-	uci -q delete leikwan.main.gateway_singbox_bin
-	uci -q delete leikwan.main.gateway_rule_set_dir
-	uci -q delete leikwan.main.gateway_split_forward_id
-	uci -q delete leikwan.main.gateway_split_route_policy
-	uci -q delete leikwan.main.gateway_split_cidr_file
-	uci -q delete leikwan.main.gateway_capture
-	uci -q delete leikwan.main.gateway_schema
-	uci -q delete leikwan.main.uplink_enabled
-	uci -q delete leikwan.main.uplink_scope
-	uci -q delete leikwan.main.uplink_interfaces
-	uci -q delete leikwan.main.uplink_probe
-	uci -q delete leikwan.main.uplink_interval
-	uci -q delete leikwan.main.uplink_timeout_ms
-	uci -q delete leikwan.main.uplink_fail_threshold
-	uci -q delete leikwan.main.uplink_recover_threshold
-	uci -q delete leikwan.main.uplink_min_improve_pct
-	uci -q delete leikwan.main.uplink_route_table
-	uci -q delete leikwan.main.uplink_fwmark
-	uci -q set leikwan.main.schema='3'
-	uci -q commit leikwan
-fi
+# Schema 4 (leikwand 1.3): the transparent gateway is back as an opt-in
+# (mode=gateway). A device that carries any trace of it -- mode gateway or
+# hybrid, a gateway-only key, or a 'config split' section -- is a gateway
+# install (the legacy 1.1.x gateway routers in particular) and keeps every
+# key and its fw4 zone exactly as they are. gateway_forward_id,
+# gateway_route_scope and gateway_route_policy are not markers: the router
+# edition uses them for its native relay. Everything else gets the schema-3
+# router-edition cleanup once, as in 1.2.x.
+leikwand_gateway_install() {
+	case "$(uci -q get leikwan.main.mode)" in
+		gateway|hybrid) return 0 ;;
+	esac
+	for key in gateway_enabled gateway_tun_address gateway_tun_address6 \
+		gateway_tun_mtu gateway_dns_mode gateway_dns_servers gateway_bypass_cn \
+		gateway_singbox_bin gateway_rule_set_dir gateway_split_forward_id \
+		gateway_split_route_policy gateway_split_cidr_file gateway_capture \
+		gateway_schema; do
+		uci -q get "leikwan.main.$key" >/dev/null 2>&1 && return 0
+	done
+	uci -q show leikwan 2>/dev/null | grep -q '=split$' && return 0
+	return 1
+}
 
-# The transparent gateway's firewall zone is inert without sing-box and is
-# removed like the rest of that feature. lan->leikwan forwarding disappears
-# with it; ordinary routing is untouched.
-if uci -q get firewall.leikwan >/dev/null 2>&1; then
-	uci -q delete firewall.leikwan
-	uci -q delete firewall.leikwan_lan
-	uci -q commit firewall
-	/etc/init.d/firewall reload >/dev/null 2>&1
+if leikwand_gateway_install; then
+	# Gateway schema 2 (leikwand 1.1): moves pre-1.1 defaults to the 1.1 ones
+	# once; values an operator chose that are still meaningful are kept. A
+	# 1.1.x install is already at gateway schema 2 and is left untouched.
+	if [ "$(uci -q get leikwan.main.gateway_schema)" != "2" ]; then
+		[ "$(uci -q get leikwan.main.gateway_route_scope)" = "global" ] && uci -q set leikwan.main.gateway_route_scope='auto'
+		[ "$(uci -q get leikwan.main.gateway_route_policy)" = "restricted" ] && uci -q set leikwan.main.gateway_route_policy='auto'
+		case "$(uci -q get leikwan.main.gateway_dns_mode)" in
+			remote|local) uci -q set leikwan.main.gateway_dns_mode='auto' ;;
+		esac
+		[ "$(uci -q get leikwan.main.gateway_dns_servers)" = "1.1.1.1" ] && uci -q set leikwan.main.gateway_dns_servers=''
+		[ "$(uci -q get leikwan.main.gateway_tun_mtu)" = "1420" ] && uci -q set leikwan.main.gateway_tun_mtu='1280'
+		uci -q delete leikwan.main.gateway_redirect_lan
+		uci -q set leikwan.main.gateway_schema='2'
+	fi
+	[ "$(uci -q get leikwan.main.schema)" = "4" ] || uci -q set leikwan.main.schema='4'
+	uci -q commit leikwan
+
+	# Firewall zone for the gateway TUN: sing-box routes forwarded LAN traffic
+	# into lkwtun0 and re-injects it locally, so fw4 must accept lan -> lkwtun0
+	# forwarding and input from lkwtun0. An existing zone is never touched; a
+	# missing one is created only when the gateway is switched on. The zone is
+	# inert while sing-box is not running.
+	case "$(uci -q get leikwan.main.mode)" in
+		gateway|hybrid) leikwand_mode_gateway=1 ;;
+		*) leikwand_mode_gateway=0 ;;
+	esac
+	if [ "$leikwand_mode_gateway" = "1" ] && [ "$(uci -q get leikwan.main.gateway_enabled)" = "1" ] && \
+		[ -f /etc/config/firewall ] && ! uci -q get firewall.leikwan >/dev/null 2>&1; then
+		uci -q batch <<-EOF
+			set firewall.leikwan=zone
+			set firewall.leikwan.name='leikwan'
+			add_list firewall.leikwan.device='lkwtun0'
+			set firewall.leikwan.input='ACCEPT'
+			set firewall.leikwan.output='ACCEPT'
+			set firewall.leikwan.forward='REJECT'
+			set firewall.leikwan.mtu_fix='1'
+			set firewall.leikwan_lan=forwarding
+			set firewall.leikwan_lan.src='lan'
+			set firewall.leikwan_lan.dest='leikwan'
+			commit firewall
+		EOF
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+else
+	# Router edition schema 3: the transparent gateway (sing-box TUN), the
+	# split carrier and the multi-WAN manager are not configured. Leftover
+	# uplink keys are dropped; only the native relay's scope and policy remain
+	# operator-configurable. An install already at schema 3 is not reset.
+	case "$(uci -q get leikwan.main.schema)" in
+		3|4) ;;
+		*)
+			uci -q set leikwan.main.gateway_forward_id='0'
+			uci -q set leikwan.main.gateway_route_scope='auto'
+			uci -q set leikwan.main.gateway_route_policy='auto'
+			uci -q delete leikwan.main.mode
+			uci -q delete leikwan.main.uplink_enabled
+			uci -q delete leikwan.main.uplink_scope
+			uci -q delete leikwan.main.uplink_interfaces
+			uci -q delete leikwan.main.uplink_probe
+			uci -q delete leikwan.main.uplink_interval
+			uci -q delete leikwan.main.uplink_timeout_ms
+			uci -q delete leikwan.main.uplink_fail_threshold
+			uci -q delete leikwan.main.uplink_recover_threshold
+			uci -q delete leikwan.main.uplink_min_improve_pct
+			uci -q delete leikwan.main.uplink_route_table
+			uci -q delete leikwan.main.uplink_fwmark
+			;;
+	esac
+	uci -q set leikwan.main.schema='4'
+	uci -q commit leikwan
+
+	# Without a gateway the firewall zone is inert and is removed, as in 1.2.x.
+	if uci -q get firewall.leikwan >/dev/null 2>&1; then
+		uci -q delete firewall.leikwan
+		uci -q delete firewall.leikwan_lan
+		uci -q commit firewall
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
 fi
 
 # The runtime directory carries the control socket and its per-boot token.

@@ -22,6 +22,9 @@ type Config struct {
 	// physical WAN), "none" (no pinning), or a device / UCI interface name.
 	PanelEgressInterface string
 
+	// Operating mode: forward | gateway | hybrid
+	Mode string
+
 	PollIntervalSecs      int
 	HeartbeatIntervalSecs int
 	HealthIntervalSecs    int
@@ -36,12 +39,34 @@ type Config struct {
 	RunDir     string
 	RuntimeBin string
 
-	// Native outbound relay. The relay itself starts when the Panel grants
-	// native outbound; the operator only narrows the scope/policy ("auto"
-	// follows the line's direction and the plan's grant).
+	// Gateway (LAN-wide transparent egress)
+	GatewayEnabled     bool
 	GatewayForwardID   int
 	GatewayRouteScope  string
 	GatewayRoutePolicy string
+	GatewayTunAddress  string
+	// GatewayTunAddress6 lets the TUN capture IPv6 as well. It is opt-in
+	// (default ""), so a 1.1.x gateway config keeps its IPv4-only TUN.
+	GatewayTunAddress6 string
+	GatewayTunMTU      int
+	GatewayDNSMode     string
+	GatewayDNSServers  string
+	GatewayBypassCN    bool
+	GatewaySingBoxBin  string
+	GatewayRuleSetDir  string
+	// Split carrier: a second native carrier that only the destinations in
+	// GatewaySplitCIDRFile use (e.g. SHIXP members), next to the primary one.
+	GatewaySplitForwardID   int
+	GatewaySplitRoutePolicy string
+	GatewaySplitCIDRFile    string
+	// GatewayCapture is "full" (the whole LAN, DNS protected) or "cidr": only
+	// the destinations in GatewaySplitCIDRFile are captured, by the primary
+	// carrier, with DNS and everything else left alone (servers, PVE hosts).
+	GatewayCapture string
+	// GatewaySplits are the 'config split' sections, in file order (enabled
+	// ones only). The legacy gateway_split_* keys above stay the implicit
+	// first split; gatewaySplitConfigs() returns the effective list.
+	GatewaySplits []SplitConfig
 
 	CNIPList string
 }
@@ -70,6 +95,9 @@ func applyEnvOverrides(cfg *Config) {
 	if value := os.Getenv("LEIKWAN_PANEL_URL"); value != "" {
 		cfg.PanelURL = strings.TrimRight(value, "/")
 	}
+	if value := os.Getenv("LEIKWAN_SINGBOX_BIN"); value != "" {
+		cfg.GatewaySingBoxBin = value
+	}
 }
 
 func defaultConfig() Config {
@@ -78,6 +106,7 @@ func defaultConfig() Config {
 		PanelURL:                "https://v3.leikwanhost.com",
 		FallbackURL:             "https://api-leikwanbridge.nbwly.com",
 		PanelEgressInterface:    egressAuto,
+		Mode:                    "forward",
 		PollIntervalSecs:        30,
 		HeartbeatIntervalSecs:   30,
 		HealthIntervalSecs:      20,
@@ -92,8 +121,94 @@ func defaultConfig() Config {
 		RuntimeBin:              "/usr/libexec/leikwan/ultra-client",
 		GatewayRouteScope:       "auto",
 		GatewayRoutePolicy:      "auto",
+		GatewayTunAddress:       "172.19.0.1/30",
+		GatewayTunAddress6:      "",
+		GatewayTunMTU:           1280,
+		GatewayDNSMode:          "auto",
+		GatewayDNSServers:       "",
+		GatewayBypassCN:         true,
+		GatewaySingBoxBin:       "/usr/bin/sing-box",
+		GatewayRuleSetDir:       "/usr/share/leikwan/rule-set",
+		GatewaySplitRoutePolicy: "auto",
+		GatewaySplitCIDRFile:    "/usr/share/leikwan/split/shixp-v4.txt",
+		GatewayCapture:          "full",
 		CNIPList:                "/etc/leikwan/CN.conf",
 	}
+}
+
+// SplitConfig is one split carrier: the destinations in CIDRFile leave over
+// ForwardID's native relay instead of the primary carrier.
+type SplitConfig struct {
+	Name        string
+	ForwardID   int
+	RoutePolicy string
+	CIDRFile    string
+	// Legacy marks the split built from the gateway_split_* keys of 1.1.x.
+	Legacy bool
+}
+
+// legacySplitName names the split built from the gateway_split_* keys.
+const legacySplitName = "legacy"
+
+// gatewaySplitConfigs is the ordered split list: the legacy gateway_split_*
+// keys first (when a carrier is set), then the 'config split' sections in
+// file order. Order is precedence: the first split whose list contains a
+// destination carries it.
+func (c Config) gatewaySplitConfigs() []SplitConfig {
+	out := make([]SplitConfig, 0, len(c.GatewaySplits)+1)
+	if c.GatewaySplitForwardID > 0 {
+		out = append(out, SplitConfig{
+			Name:        legacySplitName,
+			ForwardID:   c.GatewaySplitForwardID,
+			RoutePolicy: c.GatewaySplitRoutePolicy,
+			CIDRFile:    c.GatewaySplitCIDRFile,
+			Legacy:      true,
+		})
+	}
+	return append(out, c.GatewaySplits...)
+}
+
+// loadSplitSections reads the enabled 'config split' sections in file order.
+// An anonymous section is named split<N> after its position among the split
+// sections, so status output stays stable while the file is unchanged.
+func loadSplitSections(path string) []SplitConfig {
+	out := []SplitConfig{}
+	for index, section := range parseUCISections(path, "split") {
+		values := section.Values
+		get := func(key, fallback string) string {
+			if v, ok := values[key]; ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+			return fallback
+		}
+		if !boolDefault(get("enabled", "1"), true) {
+			continue
+		}
+		name := section.Name
+		if name == "" {
+			name = "split" + itoa(index+1)
+		}
+		out = append(out, SplitConfig{
+			Name:        name,
+			ForwardID:   atoiDefault(get("forward_id", "0"), 0),
+			RoutePolicy: normalizeGatewayChoice(get("route_policy", "auto"), "restricted", "unrestricted"),
+			CIDRFile:    get("cidr_file", ""),
+		})
+	}
+	return out
+}
+
+func (c Config) gatewayActive() bool {
+	return c.GatewayEnabled && (c.Mode == "gateway" || c.Mode == "hybrid")
+}
+
+// forwardActive reports whether ordinary forwards are served. Only an active
+// transparent gateway (mode=gateway with gateway_enabled=1) takes the box over
+// for the native carrier alone; hybrid serves both, and every other
+// configuration - mode unset, mode=forward, or a gateway that is switched off -
+// is the router edition, which always serves its forwards.
+func (c Config) forwardActive() bool {
+	return c.Mode == "hybrid" || !c.gatewayActive()
 }
 
 // loadConfig reads UCI without shelling out to the uci binary, so the daemon
@@ -121,6 +236,7 @@ func loadConfig() Config {
 	cfg.DeviceID = get("device_id", "")
 	cfg.ClientID = atoiDefault(get("client_id", "0"), 0)
 	cfg.PanelEgressInterface = get("panel_egress_interface", cfg.PanelEgressInterface)
+	cfg.Mode = normalizeMode(get("mode", cfg.Mode))
 
 	cfg.PollIntervalSecs = clampInt(atoiDefault(get("poll_interval", ""), cfg.PollIntervalSecs), 5, 3600)
 	cfg.HeartbeatIntervalSecs = clampInt(atoiDefault(get("heartbeat_interval", ""), cfg.HeartbeatIntervalSecs), 5, 3600)
@@ -136,20 +252,49 @@ func loadConfig() Config {
 	cfg.RunDir = get("run_dir", cfg.RunDir)
 	cfg.RuntimeBin = get("runtime_bin", cfg.RuntimeBin)
 
-	// Legacy gateway/uplink keys are ignored on purpose: the transparent
-	// gateway and the multi-WAN manager no longer exist in this edition, and
-	// an operator's leftover options must not resurrect them.
+	cfg.GatewayEnabled = boolDefault(get("gateway_enabled", "0"), false)
 	cfg.GatewayForwardID = atoiDefault(get("gateway_forward_id", "0"), 0)
 	cfg.GatewayRouteScope = normalizeGatewayChoice(get("gateway_route_scope", cfg.GatewayRouteScope), "cn_only", "intl_only", "global")
 	cfg.GatewayRoutePolicy = normalizeGatewayChoice(get("gateway_route_policy", cfg.GatewayRoutePolicy), "restricted", "unrestricted")
+	cfg.GatewayTunAddress = get("gateway_tun_address", cfg.GatewayTunAddress)
+	cfg.GatewayTunAddress6 = normalizeTunAddress6(get("gateway_tun_address6", cfg.GatewayTunAddress6))
+	cfg.GatewayTunMTU = clampInt(atoiDefault(get("gateway_tun_mtu", ""), cfg.GatewayTunMTU), 576, 9000)
+	cfg.GatewayDNSMode = normalizeGatewayDNSMode(get("gateway_dns_mode", cfg.GatewayDNSMode))
+	cfg.GatewayDNSServers = get("gateway_dns_servers", cfg.GatewayDNSServers)
+	cfg.GatewayBypassCN = boolDefault(get("gateway_bypass_cn", "1"), true)
+	cfg.GatewaySingBoxBin = get("gateway_singbox_bin", cfg.GatewaySingBoxBin)
+	cfg.GatewayRuleSetDir = get("gateway_rule_set_dir", cfg.GatewayRuleSetDir)
+	cfg.GatewaySplitForwardID = atoiDefault(get("gateway_split_forward_id", "0"), 0)
+	cfg.GatewaySplitRoutePolicy = normalizeGatewayChoice(get("gateway_split_route_policy", cfg.GatewaySplitRoutePolicy), "restricted", "unrestricted")
+	cfg.GatewaySplitCIDRFile = get("gateway_split_cidr_file", cfg.GatewaySplitCIDRFile)
+	cfg.GatewayCapture = normalizeGatewayCapture(get("gateway_capture", cfg.GatewayCapture))
+	cfg.GatewaySplits = loadSplitSections(uciConfigPath)
 
 	cfg.CNIPList = get("cn_ip_list", cfg.CNIPList)
 	applyEnvOverrides(&cfg)
 	return cfg
 }
 
-// normalizeRoutePolicy maps any spelling to restricted/unrestricted. The
-// native lease contract uses this for both the request and validation.
+func normalizeMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "gateway", "proxy", "transparent", "tun":
+		return "gateway"
+	case "hybrid", "both", "all":
+		return "hybrid"
+	default:
+		return "forward"
+	}
+}
+
+func normalizeRouteScope(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "cn_only", "intl_only", "global":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "global"
+	}
+}
+
 func normalizeRoutePolicy(value string) string {
 	if strings.ToLower(strings.TrimSpace(value)) == "unrestricted" {
 		return "unrestricted"
@@ -215,6 +360,57 @@ func parseUCIFile(path, sectionType string) map[string]string {
 		}
 	}
 	return values
+}
+
+type uciSection struct {
+	Name   string
+	Values map[string]string
+}
+
+// parseUCISections returns every section of one type, in file order, with its
+// name ("" for an anonymous section). Lists are joined like parseUCIFile.
+func parseUCISections(path, sectionType string) []uciSection {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var sections []uciSection
+	current := -1
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := splitUCIFields(line)
+		if len(parts) == 0 {
+			continue
+		}
+		switch parts[0] {
+		case "config":
+			current = -1
+			if len(parts) >= 2 && parts[1] == sectionType {
+				name := ""
+				if len(parts) >= 3 {
+					name = parts[2]
+				}
+				sections = append(sections, uciSection{Name: name, Values: map[string]string{}})
+				current = len(sections) - 1
+			}
+		case "option":
+			if len(parts) >= 3 && current >= 0 {
+				sections[current].Values[parts[1]] = parts[2]
+			}
+		case "list":
+			if len(parts) >= 3 && current >= 0 {
+				if prev, ok := sections[current].Values[parts[1]]; ok && prev != "" {
+					sections[current].Values[parts[1]] = prev + " " + parts[2]
+				} else {
+					sections[current].Values[parts[1]] = parts[2]
+				}
+			}
+		}
+	}
+	return sections
 }
 
 func matchesSection(current, sectionType string) bool {
@@ -316,4 +512,33 @@ func normalizeGatewayChoice(value string, allowed ...string) string {
 		}
 	}
 	return "auto"
+}
+
+// normalizeGatewayDNSMode: "auto" is the protected DoH policy shared with the
+// desktop clients; "custom" sends gateway_dns_servers as real UDP (through
+// the relay when the route allows it). The pre-1.1 values "remote" and
+// "local" both map to auto: "local" meant the router's own, poisonable
+// resolver, which the gateway no longer offers.
+func normalizeGatewayDNSMode(value string) string {
+	if strings.ToLower(strings.TrimSpace(value)) == "custom" {
+		return "custom"
+	}
+	return "auto"
+}
+
+// normalizeTunAddress6 maps the opt-out spellings to "" (no IPv6 capture).
+func normalizeTunAddress6(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "off", "none", "disabled":
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// normalizeGatewayCapture keeps "cidr"; anything else is the full LAN gateway.
+func normalizeGatewayCapture(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "cidr") {
+		return "cidr"
+	}
+	return "full"
 }

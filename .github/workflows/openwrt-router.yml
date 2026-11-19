@@ -176,7 +176,7 @@ jobs:
       - name: Build firmware image
         run: |
           export LEIKWAN_IPK_DIR=$(dirname "$(find ~/leikwan-build/sdk/bin/packages -name 'leikwand*.${{ matrix.ext }}' | head -1)")
-          export LEIKWAND_VERSION=1.2.11
+          export LEIKWAND_VERSION=1.3.0
           # uutils coreutils: the ImageBuilder's own scripts may also probe for
           # GNU wording; make sure the diagnostics survive the run either way.
           ./openwrt/image/build-image.sh ${{ matrix.arch }} ~/leikwan-build/ib || {
@@ -215,7 +215,7 @@ jobs:
       - name: Build smoke firmware (leikwan packages preinstalled)
         run: |
           export LEIKWAN_IPK_DIR="$PWD/ipks"
-          export LEIKWAND_VERSION=1.2.11
+          export LEIKWAND_VERSION=1.3.0
           ./openwrt/image/build-image.sh amd64 ~/leikwan-build/ib
       - name: Boot the image in QEMU and verify the install
         run: |

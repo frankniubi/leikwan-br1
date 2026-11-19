@@ -21,11 +21,18 @@ func readRandom(buf []byte) (int, error) { return rand.Read(buf) }
 func (a *Agent) reloadConfig() {
 	next := loadConfig()
 	a.mu.Lock()
+	previous := a.cfg
 	a.cfg = next
 	a.mu.Unlock()
 	a.panel.egress.setOverride(next.PanelEgressInterface)
-	a.log.Info("ctl", "configuration reloaded")
-	// The gateway option may have changed; the relay loop re-plans and only
+	a.log.Info("ctl", "configuration reloaded (mode=%s gateway=%v)", next.Mode, next.gatewayActive())
+	if previous.forwardActive() != next.forwardActive() || previous.Mode != next.Mode {
+		a.log.Warn("ctl", "operating mode changed %s -> %s (gateway %v -> %v)",
+			previous.Mode, next.Mode, previous.gatewayActive(), next.gatewayActive())
+		// Entering or leaving gateway mode stops or starts ordinary forwards.
+		a.triggerReconcile("mode")
+	}
+	// Any gateway option may have changed; the relay loop re-plans and only
 	// restarts what its new configuration actually differs in.
 	a.triggerGatewayReconcile()
 }
@@ -77,6 +84,7 @@ type DiagnosticReport struct {
 	PanelTag      string            `json:"panel_platform_tag"`
 	Config        map[string]string `json:"effective_config"`
 	RuntimeBinary bool              `json:"runtime_present"`
+	SingBoxBinary bool              `json:"singbox_present"`
 	Checks        []DiagnosticCheck `json:"checks"`
 }
 
@@ -87,6 +95,11 @@ type DiagnosticCheck struct {
 }
 
 func (a *Agent) diagnose() DiagnosticReport {
+	return a.diagnoseWithContext(context.Background())
+}
+
+func (a *Agent) diagnoseWithContext(parent context.Context) DiagnosticReport {
+	cfg := a.config()
 	report := DiagnosticReport{
 		GeneratedAt:   formatRFC3339(time.Now()),
 		Version:       agentVersion,
@@ -94,12 +107,21 @@ func (a *Agent) diagnose() DiagnosticReport {
 		Panel:         a.panel.endpointLabel(),
 		PanelTag:      a.panel.platform(),
 		RuntimeBinary: fileExists(a.cfg.RuntimeBin),
+		SingBoxBinary: fileExists(cfg.GatewaySingBoxBin),
 		Config: map[string]string{
+			"mode":            cfg.Mode,
 			"poll_interval":   itoa(a.cfg.PollIntervalSecs),
 			"heartbeat":       itoa(a.cfg.HeartbeatIntervalSecs),
 			"health_interval": itoa(a.cfg.HealthIntervalSecs),
 			"max_candidates":  itoa(a.cfg.MaxCandidates),
 		},
+	}
+	if cfg.gatewayActive() {
+		report.Config["gateway_enabled"] = boolText(cfg.GatewayEnabled)
+		report.Config["gateway_capture"] = cfg.GatewayCapture
+		report.Config["gateway_scope"] = cfg.GatewayRouteScope
+		report.Config["gateway_policy"] = cfg.GatewayRoutePolicy
+		report.Config["gateway_splits"] = itoa(len(effectiveSplitConfigs(cfg)))
 	}
 	if raw, err := os.ReadFile("/proc/sys/kernel/osrelease"); err == nil {
 		report.Kernel = strings.TrimSpace(string(raw))
@@ -111,7 +133,7 @@ func (a *Agent) diagnose() DiagnosticReport {
 	add("run_directory", dirExists(a.cfg.RunDir), a.cfg.RunDir)
 	add("data_directory", dirExists(a.cfg.DataDir), a.cfg.DataDir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	if err := a.panel.Probe(ctx); err != nil {
 		add("panel_reachable", false, redactSecrets(err.Error()))
@@ -132,7 +154,33 @@ func (a *Agent) diagnose() DiagnosticReport {
 		add("forward_"+itoa(view.ForwardID)+"_lease", view.LeaseError == "" && view.LeaseExpiry != "",
 			firstNonEmpty(view.LeaseError, leaseCheckDetail(view)))
 	}
-	if gateway := a.gatewayView(); gateway.NativeGranted {
+	if cfg.gatewayActive() {
+		gateway := a.gatewayView()
+		add("singbox_binary", report.SingBoxBinary, cfg.GatewaySingBoxBin)
+		add("gateway", gateway.Running, firstNonEmpty(gateway.LastError,
+			fmt.Sprintf("carrier #%d %s scope=%s policy=%s socks 127.0.0.1:%d", gateway.CarrierID, gateway.Direction,
+				gateway.RouteScope, gateway.RoutePolicy, gateway.SocksPort)))
+		add("gateway_native_lease", gateway.LeaseExpiry != "" && gateway.LeaseError == "",
+			firstNonEmpty(gateway.LeaseError, fmt.Sprintf("%d candidates, expires %s", gateway.Candidates, gateway.LeaseExpiry)))
+		add("gateway_relay_bypass", gateway.BypassError == "",
+			firstNonEmpty(gateway.BypassError, fmt.Sprintf("%d direct rules (pref %d)", gateway.BypassRules, gatewayBypassRulePref)))
+		add("gateway_rule_sets", gateway.RuleSets != "remote", firstNonEmpty(gateway.RuleSets, "not rendered yet"))
+		for _, slot := range gateway.Slots {
+			if slot.Role == "primary" {
+				continue
+			}
+			name := "gateway_" + strings.ReplaceAll(slot.Role, "-", "_")
+			switch slot.State {
+			case "off":
+				// An off split is a configuration choice, not a fault.
+				add(name, true, fmt.Sprintf("%s (carrier #%d) off: %s", slot.Name, slot.CarrierID, slot.LastError))
+			default:
+				add(name, slot.State == "running", firstNonEmpty(slot.LeaseError,
+					fmt.Sprintf("%s (carrier #%d) %s, %d cidrs, socks 127.0.0.1:%d, %d candidates, expires %s",
+						slot.Name, slot.CarrierID, slot.State, slot.CIDRs, slot.SocksPort, slot.Candidates, firstNonEmpty(slot.LeaseExpiry, "-"))))
+			}
+		}
+	} else if gateway := a.gatewayView(); gateway.NativeGranted {
 		add("native_relay", gateway.Running, firstNonEmpty(gateway.LastError,
 			fmt.Sprintf("carrier #%d %s scope=%s policy=%s socks 127.0.0.1:%d", gateway.CarrierID, gateway.Direction,
 				gateway.RouteScope, gateway.RoutePolicy, gateway.SocksPort)))
@@ -140,6 +188,13 @@ func (a *Agent) diagnose() DiagnosticReport {
 			firstNonEmpty(gateway.LeaseError, fmt.Sprintf("%d candidates, expires %s", gateway.Candidates, gateway.LeaseExpiry)))
 	}
 	return report
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 // leaseCheckDetail describes a forward's lease for the diagnostics report.

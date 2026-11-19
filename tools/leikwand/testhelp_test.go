@@ -4,7 +4,25 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+// TestMain lets the test binary stand in for sing-box: a test that sets
+// LEIKWAND_FAKE_SINGBOX=1 and points gateway_singbox_bin at os.Args[0] gets a
+// "sing-box run" that idles until it is stopped, so ensureSingBox can be
+// exercised for real without the binary.
+func TestMain(m *testing.M) {
+	if os.Getenv("LEIKWAND_FAKE_SINGBOX") == "1" && len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "run":
+			time.Sleep(2 * time.Minute)
+			os.Exit(0)
+		case "check":
+			os.Exit(0)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func writeTempFile(t *testing.T, name, content string) string {
 	t.Helper()

@@ -246,6 +246,13 @@ func (a *Agent) acquireLease(ctx context.Context, state *runtimeState) {
 		return
 	}
 
+	// In hybrid mode the gateway TUN would otherwise capture this runtime's
+	// relay connections and push them through the native exit.
+	a.bypass.set(forwardBypassOwner(state.forward.ForwardID), leaseBypassCIDRs(response.Leases))
+	if err := a.bypass.sync(); err != nil {
+		a.log.Warn("lease", "forward %d relay bypass rules incomplete: %v", state.forward.ForwardID, err)
+	}
+
 	control := ultraControl{socketPath: state.proc.paths.controlSocket}
 	if err := waitForControlSocket(ctx, state.proc.paths.controlSocket, 15*time.Second); err != nil {
 		state.leaseFailures++
@@ -335,6 +342,15 @@ func leaseIDs(leases []LeaseFrame) []string {
 // response. This is the Panel's out-of-band control channel for a single
 // forward: it can force a stop without waiting for the next config pull.
 func (a *Agent) applyPolicyAction(action UltraPolicyAction) {
+	// A native carrier (the gateway primary, a split carrier or the router
+	// edition's relay) is served by the gateway manager, not by a runtime:
+	// refresh re-leases its relay in place, stop keeps it stopped.
+	a.mu.Lock()
+	gateway := a.gateway
+	a.mu.Unlock()
+	if gateway != nil && gateway.panelAction(action, time.Now()) {
+		return
+	}
 	switch strings.ToLower(strings.TrimSpace(action.Action)) {
 	case "stop", "disable", "revoke":
 		a.mu.Lock()
@@ -375,6 +391,8 @@ func policyGenerationOf(forward ForwardConfig) string {
 	}
 	return strings.ToLower(strings.TrimSpace(forward.UltraAccess.PolicyGeneration))
 }
+
+var errPolicyMissing = errors.New("ultra grant missing")
 
 // leaseRefusalHint adds operator context to the sealed-lease refusals. They
 // are otherwise handled like any other lease error: counted, backed off and
@@ -452,3 +470,5 @@ func (a *Agent) noteUnsealFailures(scope string, forwardID int, response *LeaseR
 	a.log.Warn(scope, "forward %d: %d sealed lease(s) dropped (%s), %d usable: %v",
 		forwardID, len(response.UnsealFailures), codeLeaseUnsealFailed, len(response.Leases), response.UnsealFailures[0])
 }
+
+func forwardBypassOwner(forwardID int) string { return "forward:" + itoa(forwardID) }

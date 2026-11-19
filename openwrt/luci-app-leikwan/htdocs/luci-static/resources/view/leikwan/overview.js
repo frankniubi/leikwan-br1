@@ -136,6 +136,23 @@ function egressText(snapshot) {
 	return text;
 }
 
+// Gateway mode (an opt-in leikwand setting, not editable here) runs one relay
+// slot per carrier: the primary and each split. This view only reports them.
+var SLOT_STATES = {
+	running:       [ 'success', _('运行中 (Running)') ],
+	starting:      [ '',        _('启动中 (Starting)') ],
+	error:         [ 'danger',  _('错误 (Error)') ],
+	off:           [ '',        _('未启用 (Off)') ],
+	panel_stopped: [ 'warning', _('面板已停止 (Stopped by the panel)') ],
+	stopped:       [ '',        _('已停止 (Stopped)') ]
+};
+
+function slotBadge(state) {
+	var style = SLOT_STATES[state] || SLOT_STATES.stopped;
+
+	return E('span', { 'class': 'label %s'.format(style[0]) }, style[1]);
+}
+
 function infoRow(label, value) {
 	return E('tr', { 'class': 'tr' }, [
 		E('td', { 'class': 'td', 'style': 'width: 30%; white-space: nowrap;' }, E('strong', label)),
@@ -336,8 +353,65 @@ return view.extend({
 		];
 	},
 
+	renderGateway: function(gateway) {
+		var slots = gateway.slots || [];
+
+		var rows = slots.map(function(slot) {
+			return E('tr', { 'class': 'tr' }, [
+				E('td', { 'class': 'td' }, [
+					E('strong', slot.role || '-'),
+					E('br'),
+					E('span', { 'class': 'cbi-section-descr' }, slot.name || '')
+				]),
+				E('td', { 'class': 'td' }, slot.carrier_forward_id ? '#%d'.format(slot.carrier_forward_id) : '-'),
+				E('td', { 'class': 'td' }, '127.0.0.1:%d'.format(slot.socks_port || 0)),
+				E('td', { 'class': 'td' }, [
+					slotBadge(slot.state),
+					slot.refresh_pending ? E('div', { 'class': 'cbi-section-descr' }, _('等待续租 (Refresh pending)')) : ''
+				]),
+				E('td', { 'class': 'td' }, [
+					E('div', slot.cidrs ? _('%d 个网段').format(slot.cidrs) : (slot.route_scope || '-')),
+					E('span', { 'class': 'cbi-section-descr' }, slot.route_policy || '')
+				]),
+				E('td', { 'class': 'td' }, slot.lease_expires_at
+					? _('%d 个候选，到期 %s').format(slot.candidates || 0, slot.lease_expires_at)
+					: (slot.lease_error || '-')),
+				E('td', { 'class': 'td' }, slot.last_error || '')
+			]);
+		});
+
+		return [
+			E('h3', _('透明网关 (Transparent gateway)')),
+			E('p', { 'class': 'cbi-section-descr' },
+				_('网关模式由 leikwand 配置文件开启，此处只读。主线路与每条分流线路各有一个本地中继槽位。')),
+			E('table', { 'class': 'table' }, [
+				infoRow(_('状态 (State)'), gateway.running
+					? E('span', { 'class': 'label success' }, _('运行中 (Running)'))
+					: E('span', { 'class': 'label warning' }, _('未运行 (Stopped)'))),
+				infoRow(_('接管方式 (Capture)'), '%s · %s'.format(gateway.capture || '-', gateway.tun_address || '-')),
+				gateway.last_error
+					? infoRow(_('最近错误 (Last error)'), E('span', { 'class': 'label danger' }, gateway.last_error))
+					: ''
+			]),
+			E('table', { 'class': 'table' }, [
+				E('tr', { 'class': 'tr table-titles' }, [
+					E('th', { 'class': 'th' }, _('槽位 (Slot)')),
+					E('th', { 'class': 'th' }, _('承载线路 (Carrier line)')),
+					E('th', { 'class': 'th' }, _('SOCKS 地址 (SOCKS endpoint)')),
+					E('th', { 'class': 'th' }, _('状态 (State)')),
+					E('th', { 'class': 'th' }, _('路由 (Routes)')),
+					E('th', { 'class': 'th' }, _('原生租约 (Native lease)')),
+					E('th', { 'class': 'th' }, _('说明 (Detail)'))
+				])
+			].concat(rows))
+		];
+	},
+
 	renderRelay: function(snapshot) {
 		var gateway = snapshot && snapshot.gateway;
+
+		if (gateway && gateway.mode == 'gateway')
+			return this.renderGateway(gateway);
 
 		if (!gateway || !gateway.native_granted)
 			return [];

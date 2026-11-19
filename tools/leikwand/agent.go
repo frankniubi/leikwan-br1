@@ -89,8 +89,16 @@ type Agent struct {
 	// returning the token until its own result row clears it, so without this
 	// the same request would be re-run on every pull.
 	diagDoneToken string
-	debugUUID     string
-	debugDoneUUID string
+
+	// The upload gate serializes manual/passive network work; debugMu only
+	// protects short state transactions, so pulls can supersede an in-flight
+	// upload without waiting for its HTTP timeout.
+	debugGate   chan struct{}
+	debugMu     sync.Mutex
+	debugState  debugUploadState
+	debugLoaded bool
+	debugErr    error
+	debugEpoch  uint64
 
 	// lastPullCode is the machine-readable code of lastPullErr (e.g.
 	// client_online_limit_reached); pullLimit is set only for that code.
@@ -113,6 +121,8 @@ type Agent struct {
 	// gateway is set by its own loop; it is nil before the loop stores it.
 	gateway       *gatewayManager
 	gatewaySignal chan struct{}
+	// bypass keeps every relay address out of the gateway TUN.
+	bypass *bypassRoutes
 
 	// secretStamp tracks the credential file so an operator (or a restored
 	// backup) can enrol a running agent without restarting it.
@@ -141,6 +151,8 @@ func newAgent(cfg Config, store *Store, secrets SecretState, log *Logger) *Agent
 		reconcile:          make(chan string, 16),
 		forceStatusFlush:   make(chan struct{}, 1),
 		gatewaySignal:      make(chan struct{}, 1),
+		bypass:             newBypassRoutes(),
+		debugGate:          make(chan struct{}, 1),
 		startedAt:          time.Now(),
 		refusedGenerations: map[int]string{},
 	}
@@ -182,6 +194,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// outbound, without a mode switch and without a service restart.
 	start(a.gatewayLoop)
 	start(a.traceLoop)
+	start(a.debugUploadLoop)
 
 	if !a.enrolled() {
 		a.log.Warn("agent", "no agent token yet; open LuCI and complete onboarding")
@@ -380,6 +393,7 @@ func (a *Agent) pullDelay(now time.Time, notModified bool) time.Duration {
 func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) error {
 	// The Panel caps the long poll at 25s; ask for a little less so the
 	// client-side timeout always fires first.
+	debugEpoch := a.debugObservation()
 	response, err := a.panel.Pull(ctx, since, waitSeconds)
 	if errors.Is(err, errNotModified) {
 		a.store.UpdatePull(func(state *PullState) {
@@ -407,16 +421,15 @@ func (a *Agent) pullWith(ctx context.Context, since string, waitSeconds int) err
 	if token := strings.TrimSpace(response.Client.DiagRequestToken); token != "" && token != a.diagDoneToken {
 		a.diagToken = token
 	}
-	if coll := response.Client.DebugCollection; coll != nil && strings.EqualFold(strings.TrimSpace(coll.Status), "active") {
-		if uuid := strings.ToLower(strings.TrimSpace(coll.UUID)); uuid != "" && uuid != a.debugDoneUUID {
-			a.debugUUID = uuid
-		}
-	}
 	a.lastPullAt = time.Now()
 	a.configLoaded = true
 	a.clearPullFailureLocked()
 	a.nativeCap = response.NativeOutbound
 	a.mu.Unlock()
+
+	if err := a.observeDebugCollection(response.Client.DebugCollection, debugEpoch); err != nil {
+		a.log.Warn("diagnostics", "debug upload state unavailable: %v", err)
+	}
 
 	a.store.UpdatePull(func(state *PullState) {
 		state.ConfigRevision = response.ConfigRevision
@@ -529,9 +542,17 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	if !a.enrolled() {
 		return
 	}
+	// Ordinary forwards are served in the router edition (relay mode) and in
+	// hybrid mode. In gateway mode the router carries the LAN over the native
+	// carriers alone, so the client's other forwards get no listener and no
+	// lease here (the 1.1.x gateway behaviour).
+	serving := a.config().forwardActive()
 	a.mu.Lock()
 	desired := make(map[int]ForwardConfig, len(a.forwards))
 	for k, v := range a.forwards {
+		if !serving {
+			break
+		}
 		if generation, stopped := a.panelStopped[k]; stopped {
 			if generation == policyGenerationOf(v) {
 				continue
@@ -571,7 +592,11 @@ func (a *Agent) reconcileNow(ctx context.Context, reason string) {
 	}
 	a.mu.Unlock()
 	for _, state := range stale {
-		a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		if serving {
+			a.log.Info("runtime", "forward %d withdrawn by panel; stopping", state.forward.ForwardID)
+		} else {
+			a.log.Info("runtime", "forward %d is not served in gateway mode; stopping", state.forward.ForwardID)
+		}
 		a.stopRuntime(state.proc, "withdrawn")
 		a.store.DeleteApplied(state.forward.ForwardID)
 	}
@@ -610,8 +635,8 @@ func (a *Agent) reconcileForward(ctx context.Context, forward ForwardConfig, rea
 		a.log.Info("runtime", "forward %d takes port %d over from forward %d, which no longer uses it", forward.ForwardID, forward.ListenPort, holder.forward.ForwardID)
 		a.stopRuntime(holder.proc, "port_handover")
 	}
-	if forward.ListenPort == gatewaySocksPort && a.gatewayRelayRunning() {
-		a.log.Error("runtime", "forward %d port %d is the native gateway's SOCKS port; not starting", forward.ForwardID, forward.ListenPort)
+	if a.gatewayRelayHoldsPort(forward.ListenPort) {
+		a.log.Error("runtime", "forward %d port %d is a native relay's SOCKS port; not starting", forward.ForwardID, forward.ListenPort)
 		a.markForwardError(forward.ForwardID, "port_in_use")
 		return
 	}
@@ -726,16 +751,24 @@ func (a *Agent) desiredClaims(forwardID, port int, transport string) bool {
 }
 
 func (a *Agent) gatewayRelayRunning() bool {
+	return a.gatewayRelayHoldsPort(gatewaySocksPort)
+}
+
+// gatewayRelayHoldsPort reports whether a running native relay (the primary
+// or a split) listens on the loopback port.
+func (a *Agent) gatewayRelayHoldsPort(port int) bool {
 	a.mu.Lock()
 	manager := a.gateway
 	a.mu.Unlock()
 	if manager == nil {
 		return false
 	}
-	manager.mu.Lock()
-	relay := manager.primary.relay
-	manager.mu.Unlock()
-	return relay != nil && relay.alive()
+	for _, held := range manager.runningSlotPorts() {
+		if held == port {
+			return true
+		}
+	}
+	return false
 }
 
 // transportUses maps a forward transport to the socket kinds its runtime binds
@@ -991,6 +1024,7 @@ type StatusSnapshot struct {
 	Platform       string        `json:"platform"`
 	Architecture   string        `json:"architecture"`
 	UptimeSeconds  int64         `json:"uptime_seconds"`
+	Mode           string        `json:"mode"`
 	Enabled        bool          `json:"enabled"`
 	Enrolled       bool          `json:"enrolled"`
 	PanelURL       string        `json:"panel_url"`
@@ -1007,6 +1041,7 @@ type StatusSnapshot struct {
 	Gateway        *GatewayView  `json:"gateway,omitempty"`
 	RuntimeBin     string        `json:"runtime_bin"`
 	RuntimeOK      bool          `json:"runtime_present"`
+	SingBoxOK      bool          `json:"singbox_present"`
 
 	// Runtime drift is reported, never auto-applied: on OpenWrt the runtime is
 	// updated by opkg, so the router must have exactly one update authority.
@@ -1039,6 +1074,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 	lastCode := a.lastPullCode
 	limit := a.pullLimit
 	meta := a.clientMeta
+	cfg := a.cfg
 	a.mu.Unlock()
 
 	pull := a.store.Pull()
@@ -1047,6 +1083,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Platform:       platformName,
 		Architecture:   runtime.GOARCH,
 		UptimeSeconds:  int64(time.Since(a.startedAt).Seconds()),
+		Mode:           cfg.Mode,
 		Enabled:        a.cfg.Enabled,
 		Enrolled:       a.enrolled(),
 		PanelURL:       a.panel.endpointLabel(),
@@ -1060,6 +1097,7 @@ func (a *Agent) snapshot() StatusSnapshot {
 		Forwards:       a.forwardViews(),
 		RuntimeBin:     a.cfg.RuntimeBin,
 		RuntimeOK:      fileExists(a.cfg.RuntimeBin),
+		SingBoxOK:      fileExists(cfg.GatewaySingBoxBin),
 	}
 	if !lastPull.IsZero() {
 		snapshot.LastPullAt = formatRFC3339(lastPull)

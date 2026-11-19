@@ -48,7 +48,7 @@ type ultraStatusSource struct {
 
 // collectUltraStatus builds the heartbeat's ultra_status list from the cached
 // runtime documents: the health loop's per-forward reads and the native relay
-// document collectUsage just read. It always returns a non-nil slice.
+// documents collectUsage just read (primary and split relays). It always returns a non-nil slice.
 func (a *Agent) collectUltraStatus(now time.Time) []UltraStatusReport {
 	a.mu.Lock()
 	sources := make([]ultraStatusSource, 0, len(a.runtimes)+1)
@@ -65,15 +65,17 @@ func (a *Agent) collectUltraStatus(now time.Time) []UltraStatusReport {
 	a.mu.Unlock()
 	if gateway != nil {
 		gateway.mu.Lock()
-		slot := &gateway.primary
-		if slot.relay != nil && slot.status != nil {
-			sources = append(sources, ultraStatusSource{
-				forwardID:     slot.plan.Carrier.ForwardID,
-				status:        slot.status,
-				readAt:        slot.statusAt,
-				leaseFailures: slot.leaseFailures,
-				leaseErr:      slot.leaseErr,
-			})
+		slots := append([]*relaySlot{&gateway.primary}, gateway.splits...)
+		for _, slot := range slots {
+			if slot.relay != nil && slot.status != nil {
+				sources = append(sources, ultraStatusSource{
+					forwardID:     slot.plan.Carrier.ForwardID,
+					status:        slot.status,
+					readAt:        slot.statusAt,
+					leaseFailures: slot.leaseFailures,
+					leaseErr:      slot.leaseErr,
+				})
+			}
 		}
 		gateway.mu.Unlock()
 	}

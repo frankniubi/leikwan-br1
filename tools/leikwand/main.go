@@ -22,6 +22,7 @@ Usage:
 Control commands:
   status                 full status snapshot
   forwards               per-forward view
+  gateway                native relay / gateway state, one entry per slot
   logs [limit=N]         recent events
   diagnose               run an end-to-end diagnostic
   upload_logs            upload redacted logs to the panel
@@ -30,6 +31,9 @@ Control commands:
                          adopt the panel-issued credentials directly
   sign_out               remove credentials and stop all runtimes
   reload                 re-read /etc/config/leikwan
+
+Offline commands:
+  gateway-config         print the sing-box configuration gateway mode would use
 `
 
 func main() {
@@ -47,6 +51,8 @@ func main() {
 		os.Exit(runCtl([]string{"upload_logs"}))
 	case "version", "--version", "-v":
 		fmt.Println(agentVersion)
+	case "gateway-config":
+		os.Exit(printGatewayConfig())
 	case "selftest":
 		os.Exit(selfTest())
 	case "help", "--help", "-h":
@@ -82,8 +88,8 @@ func runAgent() int {
 	}
 	go server.Serve(ctx)
 
-	log.Info("agent", "leikwand %s starting (arch=%s data=%s run=%s)",
-		agentVersion, goArch(), cfg.DataDir, cfg.RunDir)
+	log.Info("agent", "leikwand %s starting (mode=%s arch=%s data=%s run=%s)",
+		agentVersion, cfg.Mode, goArch(), cfg.DataDir, cfg.RunDir)
 	if err := agent.Run(ctx); err != nil {
 		log.Error("agent", "fatal: %v", err)
 		return 1
@@ -140,10 +146,13 @@ func selfTest() int {
 		}
 		fmt.Printf("%-24s %-5s %s\n", name, status, detail)
 	}
-	check("config_parse", true, fmt.Sprintf("panel=%s", cfg.PanelURL))
+	check("config_parse", true, fmt.Sprintf("mode=%s panel=%s", cfg.Mode, cfg.PanelURL))
 	check("runtime_binary", fileExists(cfg.RuntimeBin), cfg.RuntimeBin)
 	check("data_dir", ensurePrivateDir(cfg.DataDir) == nil, cfg.DataDir)
 	check("run_dir", ensurePrivateDir(cfg.RunDir) == nil, cfg.RunDir)
+	if cfg.gatewayActive() {
+		check("singbox_binary", fileExists(cfg.GatewaySingBoxBin), cfg.GatewaySingBoxBin)
+	}
 	check("digest_contract", targetDigest(" example.com:443 ") == targetDigest("example.com:443"),
 		"target digest trims surrounding whitespace")
 	check("clock", time.Since(time.Now().Add(-time.Second)) < 5*time.Second, time.Now().Format(time.RFC3339))

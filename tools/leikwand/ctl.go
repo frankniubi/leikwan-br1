@@ -151,6 +151,10 @@ func (s *ctlServer) dispatch(request CtlRequest) CtlResponse {
 		return CtlResponse{OK: true, Data: agent.snapshot()}
 	case "forwards":
 		return CtlResponse{OK: true, Data: agent.forwardViews()}
+	case "gateway":
+		// Read-only: the native relay / transparent gateway and its slots
+		// (the same object as status.gateway).
+		return CtlResponse{OK: true, Data: agent.gatewayView()}
 	case "logs":
 		limit := atoiDefault(request.Args["limit"], 200)
 		return CtlResponse{OK: true, Data: agent.log.Events(limit)}

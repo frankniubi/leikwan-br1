@@ -9,7 +9,8 @@ test harness change what the panel "decides" while the daemon keeps running.
 State files (all optional):
   forward_count   number of ultra forwards to publish          (default 1)
   lease_mode      "two" | "invalid" | "empty" | "none"         (default two)
-  action_stop     if present, heartbeat returns a stop action for that id
+  action_stop     if present, heartbeat returns a stop action for each id
+                  in it (space separated)
   listen_port     published listen port                        (default 10001)
   target          published forward target                     (default 127.0.0.1:9)
   reject_platform if present, 422 any platform except this value
@@ -28,6 +29,15 @@ State files (all optional):
                   runtime: a new generation makes it re-select
   offline         "1" makes every endpoint answer 503 after a short delay,
                   which is what a router sees while the panel is unreachable
+  native          "1" publishes native outbound (the gateway / relay carrier)
+  native_ids      the native carriers, space separated (default "50"); the
+                  first is the default carrier. Each one authenticates to the
+                  relay as native-user (50) or native-user-<id>, so a relay
+                  log tells which carrier carried a stream
+  native_ttl      native lease lifetime in seconds (default 240, at most 240)
+  action_refresh  carrier ids (space separated): every heartbeat answer asks
+                  for a refresh of each, the way the Panel asks a router to
+                  re-lease a carrier whose line changed
 
 Written state: last_lease_key_header (the header value, public key only),
 last_lease_sealed ("sealed N" or "clear N") after every lease answer,
@@ -199,6 +209,20 @@ NATIVE_TARGET = "127.0.0.1:41000"
 NATIVE_LEASE_PROTOCOL = "leikwan-ultra-native-socks5-v1"
 
 
+def native_ids():
+    ids = []
+    for item in state("native_ids", str(NATIVE_ID)).split():
+        try:
+            ids.append(int(item))
+        except ValueError:
+            pass
+    return ids or [NATIVE_ID]
+
+
+def native_user(forward_id: int) -> str:
+    return "native-user" if forward_id == NATIVE_ID else "native-user-%d" % forward_id
+
+
 def native_direction() -> str:
     return state("native_direction", "SHA -> HKG")
 
@@ -211,19 +235,21 @@ def native_unrestricted() -> bool:
     return state("native_unrestricted", "1") == "1"
 
 
-def native_digest(direction: str, scope: str, policy_name: str, version: int) -> str:
-    parts = ["native-outbound:v%d" % version, str(NATIVE_ID), direction.strip().lower(), "tcp+udp", scope]
+def native_digest(direction: str, scope: str, policy_name: str, version: int, forward_id: int = NATIVE_ID) -> str:
+    parts = ["native-outbound:v%d" % version, str(forward_id), direction.strip().lower(), "tcp+udp", scope]
     if version == 2:
         parts.append(policy_name)
     return sha256_hex("\n".join(parts))
 
 
-def native_forward() -> dict:
-    grant = policy(NATIVE_ID, NATIVE_TARGET)
+def native_forward(forward_id: int = NATIVE_ID) -> dict:
+    port = 41000 + forward_id - NATIVE_ID
+    target = "127.0.0.1:%d" % port
+    grant = policy(forward_id, target)
     grant["transport"] = "tcp+udp"
     return {
-        "forward_id": NATIVE_ID, "service_status": "active", "mode": "single", "client_mode": "single",
-        "backend_mode": "ultra", "transport": "tcp+udp", "listen_port": 41000, "target": NATIVE_TARGET,
+        "forward_id": forward_id, "service_status": "active", "mode": "single", "client_mode": "single",
+        "backend_mode": "ultra", "transport": "tcp+udp", "listen_port": port, "target": target,
         "aggregation_enabled": False, "sidecar_required": False,
         "native_outbound": True, "native_direction": "sha_hkg",
         "ultra_access": grant,
@@ -231,17 +257,18 @@ def native_forward() -> dict:
 
 
 def native_capability() -> dict:
+    ids = native_ids()
     return {
         "enabled": True, "protocol": "socks5", "lease_protocol": NATIVE_LEASE_PROTOCOL, "transport": "tcp+udp",
-        "forward_ids": [NATIVE_ID], "default_forward_id": NATIVE_ID,
+        "forward_ids": ids, "default_forward_id": ids[0],
         "route_scopes": native_scopes(), "default_route_scope": "global",
         "unrestricted_allowed": native_unrestricted(),
         "forwards": [{
-            "forward_id": NATIVE_ID, "direction": native_direction(),
-            "scope_digest": native_digest(native_direction(), "global", "restricted", 1),
+            "forward_id": forward_id, "direction": native_direction(),
+            "scope_digest": native_digest(native_direction(), "global", "restricted", 1, forward_id),
             "transport": "tcp+udp", "route_scopes": native_scopes(), "default_route_scope": "global",
             "unrestricted_allowed": native_unrestricted(),
-        }],
+        } for forward_id in ids],
     }
 
 
@@ -249,7 +276,8 @@ def native_lease_refusal(item: dict):
     """Returns the Panel's error code for a bad native request, else None."""
     if state("native", "0") != "1":
         return "native_outbound_not_allowed"
-    if int(item.get("forward_id", 0)) != NATIVE_ID:
+    forward_id = int(item.get("forward_id", 0))
+    if forward_id not in native_ids():
         return "native_outbound_not_allowed"
     if not str(item.get("session_ticket", "")).strip():
         return "lease_scope_invalid"
@@ -262,15 +290,16 @@ def native_lease_refusal(item: dict):
     if scope not in native_scopes():
         return "policy_scope_invalid"
     digest = str(item.get("target_digest", "")).lower()
-    accepted = {native_digest(native_direction(), scope, route_policy, 2)}
+    accepted = {native_digest(native_direction(), scope, route_policy, 2, forward_id)}
     if route_policy == "restricted":
-        accepted.add(native_digest(native_direction(), scope, route_policy, 1))
+        accepted.add(native_digest(native_direction(), scope, route_policy, 1, forward_id))
     if digest not in accepted:
         return "policy_scope_invalid"
     return None
 
 
 def native_lease_frames(item: dict) -> list:
+    forward_id = int(item.get("forward_id", NATIVE_ID))
     scope = str(item.get("route_scope", "global")).lower()
     route_policy = str(item.get("route_policy", "restricted") or "restricted").lower()
     version = 1 if route_policy == "restricted" else 2
@@ -282,16 +311,16 @@ def native_lease_frames(item: dict) -> list:
         NATIVE_LEASES += 1
         serial = NATIVE_LEASES
     return [{
-        "protocol": NATIVE_LEASE_PROTOCOL, "purpose": "native_outbound", "forward_id": NATIVE_ID,
+        "protocol": NATIVE_LEASE_PROTOCOL, "purpose": "native_outbound", "forward_id": forward_id,
         "lease_id": "native-lease-%d" % serial, "policy_generation": generation(),
         "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + min(ttl, 240))),
         "transport": "tcp+udp", "rate_limit_mbps": 100, "quota_remaining_bytes": 1 << 30,
         "selection_ref": hashlib.sha256(("native-ref-%d" % serial).encode()).hexdigest(),
         "candidate_key_hash": hashlib.sha256(b"native-candidate").hexdigest(),
         "direction": native_direction(), "route_scope": scope, "route_policy": route_policy,
-        "scope_digest": native_digest(native_direction(), scope, route_policy, version),
+        "scope_digest": native_digest(native_direction(), scope, route_policy, version, forward_id),
         "endpoint": {"ip": host, "port": port},
-        "credential": {"user": "native-user", "password": "native-pass"},
+        "credential": {"user": native_user(forward_id), "password": "native-pass"},
         "direct_ip_cidrs": [host + "/32"],
     }]
 
@@ -390,7 +419,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
             native_on = state("native", "0") == "1"
             if native_on:
-                forwards.append(native_forward())
+                forwards.extend(native_forward(forward_id) for forward_id in native_ids())
             self._write_state("pulls", str(PULLS))
             self._json(200, {
                 "native_outbound": native_capability() if native_on else None,
@@ -533,14 +562,14 @@ class Handler(BaseHTTPRequestHandler):
             with open(totals_path, "w") as handle:
                 json.dump(totals, handle)
         actions = []
-        stop_id = state("action_stop")
-        if stop_id:
-            actions.append({
-                "forward_id": int(stop_id),
-                "policy_generation": generation(),
-                "action": "stop",
-                "reason": "integration_test",
-            })
+        for verb, name in (("stop", "action_stop"), ("refresh", "action_refresh")):
+            for item in (state(name) or "").split():
+                actions.append({
+                    "forward_id": int(item),
+                    "policy_generation": generation(),
+                    "action": verb,
+                    "reason": "integration_test",
+                })
         acknowledged = bool(body.get("ultra_usage"))
         self._json(200, {"ok": True, "ultra_usage_acknowledged": acknowledged, "ultra_actions": actions})
 

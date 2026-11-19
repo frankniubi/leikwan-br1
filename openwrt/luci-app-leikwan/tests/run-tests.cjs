@@ -485,10 +485,55 @@ async function suitePanelEgress() {
 	check('LuCI UCI defaults set panel_egress_interface to auto', luciDefaults.includes("panel_egress_interface='auto'"));
 }
 
+// ---------------------------------------------------------------------------
+// Suite 1d: Gateway slots (read-only; gateway mode is not configurable here)
+// ---------------------------------------------------------------------------
+
+async function suiteGatewaySlots() {
+	step('gateway slots');
+	try {
+		const relay = await renderView('overview.js');
+		check('relay edition keeps the native relay section', relay.text.includes('Native outbound relay'));
+		check('relay edition shows no gateway slot table', !relay.text.includes('透明网关'));
+
+		const gateway = JSON.parse(JSON.stringify(STATUS));
+		Object.assign(gateway.data.gateway, {
+			mode: 'gateway', capture: 'cidr', tun_address: '172.19.0.1/30',
+			slots: [
+				{ name: 'primary', role: 'primary', carrier_forward_id: 325, socks_port: 2080, state: 'running',
+				  route_scope: 'global', route_policy: 'unrestricted', candidates: 3,
+				  lease_expires_at: '2026-01-01T00:04:00Z' },
+				{ name: 'legacy', role: 'split', carrier_forward_id: 326, socks_port: 2081, state: 'panel_stopped',
+				  cidr_file: '/usr/share/leikwan/split/shixp-v4.txt', cidrs: 357, candidates: 0,
+				  panel_stopped: true, refresh_pending: true },
+				{ name: 'pudong', role: 'split-2', carrier_forward_id: 330, socks_port: 2082, state: 'off',
+				  candidates: 0, last_error: 'the CIDR list is empty' }
+			]
+		});
+		const result = await renderView('overview.js', Object.assign({}, RPC_RESPONSES, { status: gateway }));
+		check('gateway mode shows the slot table', result.text.includes('透明网关'));
+		check('gateway mode replaces the relay-only section', !result.text.includes('Native outbound relay'));
+		for (const port of [ '2080', '2081', '2082' ])
+			check('gateway slot table shows port ' + port, result.text.includes('127.0.0.1:' + port));
+		check('gateway slot table shows the carriers', result.text.includes('#325') && result.text.includes('#326') && result.text.includes('#330'));
+		check('gateway slot table shows a panel stop', result.text.includes('面板已停止'));
+		check('gateway slot table shows a pending refresh', result.text.includes('等待续租'));
+		check('gateway slot table shows an off split and why', result.text.includes('未启用') && result.text.includes('the CIDR list is empty'));
+		check('gateway slot table shows the split prefix count', result.text.includes('357'));
+	}
+	catch (err) {
+		bad('overview renders the gateway slots', String(err && err.stack || err));
+	}
+
+	const overview = fs.readFileSync(path.join(VIEW_DIR, 'overview.js'), 'utf8');
+	check('gateway slots are read-only (no set_config from the overview)', !overview.includes('set_config'));
+}
+
 (async function main() {
 	await suiteViews();
 	await suiteOnlineLimit();
 	await suitePanelEgress();
+	await suiteGatewaySlots();
 	suiteContracts();
 	suiteRpcdInvocation();
 	suiteMenu();

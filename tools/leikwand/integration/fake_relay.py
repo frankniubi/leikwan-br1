@@ -39,7 +39,10 @@ def read_exactly(conn, count):
 
 
 def read_handshake(conn):
-    """Consume one complete provider handshake and return the auth identity."""
+    """Consume one complete provider handshake.
+
+    Returns the auth identity and the requested destination ("host:port").
+    """
     version = read_exactly(conn, 1)
     if version != b"\x05":
         raise ValueError("unexpected greeting version")
@@ -57,15 +60,15 @@ def read_handshake(conn):
     read_exactly(conn, 3)                     # 05 <command> <checksum>
     address_type = read_exactly(conn, 1)[0]
     if address_type == 1:
-        read_exactly(conn, 4)
+        host = socket.inet_ntop(socket.AF_INET, read_exactly(conn, 4))
     elif address_type == 4:
-        read_exactly(conn, 16)
+        host = "[%s]" % socket.inet_ntop(socket.AF_INET6, read_exactly(conn, 16))
     elif address_type == 3:
-        read_exactly(conn, read_exactly(conn, 1)[0])
+        host = read_exactly(conn, read_exactly(conn, 1)[0]).decode(errors="replace")
     else:
         raise ValueError("unexpected address type")
-    read_exactly(conn, 2)                     # port
-    return user, password
+    port = int.from_bytes(read_exactly(conn, 2), "big")
+    return user, password, "%s:%d" % (host, port)
 
 
 def splice(left, right):
@@ -92,26 +95,28 @@ def splice(left, right):
     second.join()
 
 
-def note_connection(user):
+def note_connection(user, destination):
     """Record the authenticated identity, when the harness asked for it.
 
     Each candidate lease carries its own credential, so the user name is how a
     test tells which relay actually carried a stream — the only honest way to
     prove a failover happened (a counter can lag the event by a poll cycle).
+    One line per stream: "<user> <host:port>"; the destination tells which
+    stream it was (the gateway test tells its split carriers apart by it).
     """
     if not RELAY_LOG:
         return
     try:
         with open(RELAY_LOG, "a") as handle:
-            handle.write(user.decode(errors="replace") + "\n")
+            handle.write("%s %s\n" % (user.decode(errors="replace"), destination))
     except OSError:
         pass
 
 
 def handle(conn):
     try:
-        user, _password = read_handshake(conn)
-        note_connection(user)
+        user, _password, destination = read_handshake(conn)
+        note_connection(user, destination)
         if REJECT_AUTH:
             conn.sendall(b"\x05\x02\x01\x01")   # authentication rejected
             return
