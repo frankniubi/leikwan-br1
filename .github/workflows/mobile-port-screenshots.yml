@@ -17,6 +17,7 @@ permissions:
 jobs:
   ios:
     name: iOS Local Port screenshots
+    if: ${{ !contains(github.event.head_commit.message, '[android-only]') }}
     runs-on: xcode-27
     timeout-minutes: 30
     env:
