@@ -9,6 +9,7 @@ import LeikwanIOSCore
 enum ScreenshotLaunch {
     static let demoKey = "bridge_ci_demo"
     static let sectionKey = "bridge_ci_section"
+    static let localPortsKey = "bridge_ci_local_ports"
 
     /// Opens the tab named by `-bridge_ci_section` (dashboard, proxies, rules, tools).
     @MainActor
@@ -20,7 +21,13 @@ enum ScreenshotLaunch {
 
     @MainActor
     static func signInToDemoIfRequested(_ model: AppModel) async {
-        guard UserDefaults.standard.bool(forKey: demoKey), model.profile == nil else { return }
+        guard UserDefaults.standard.bool(forKey: demoKey) else { return }
+        defer {
+            if UserDefaults.standard.bool(forKey: localPortsKey) {
+                model.showLocalPortsScreenshotDemo()
+            }
+        }
+        guard model.profile == nil else { return }
         var draft = ProfileDraft()
         draft.server = "https://api-leikwanbridge.nbwly.com"
         draft.clientID = String(DemoAccount.clientId)

@@ -274,6 +274,33 @@ final class AppModel: ObservableObject {
         apply(DemoAccount.catalog(selectedForwardId: selectedForwardID))
     }
 
+    #if DEBUG
+    /// Screenshot-only, stopped local demo. No panel client, physical-interface probing or runtimes.
+    func showLocalPortsScreenshotDemo() {
+        guard isDemo else { return }
+        localPortMode = true
+        localPorts.stop(reason: "Demo · stopped · no listeners or panel requests")
+        let now = Date()
+        let forwards: [Any] = DemoAccount.rawForwards().compactMap { value -> [String: Any]? in
+            guard var forward = value as? [String: Any], let target = forward["target"] as? String else { return nil }
+            // Synthetic, unissued grant only makes the real UI's eligibility check pass.
+            // toggleConnection refuses every demo Local Port start; this never authorizes traffic.
+            forward["ultra_access"] = [
+                "protocol": UltraConstants.policyProtocol, "forward_id": forward["forward_id"]!,
+                "session_ticket": "screenshot-demo-not-issued", "policy_generation": String(repeating: "0", count: 64),
+                "issued_at": ISOInstant.format(now.addingTimeInterval(-10)),
+                "renew_after": ISOInstant.format(now.addingTimeInterval(300)),
+                "expires_at": ISOInstant.format(now.addingTimeInterval(600)),
+                "service_state": "active", "transport": "tcp+udp", "rate_limit_mbps": 100,
+                "quota_remaining_bytes": 1_000_000, "target_digest": UltraPolicy.targetDigest(target),
+            ] as [String: Any]
+            return forward
+        }
+        apply(IOSForwardFilter.buildCatalog(rawForwards: forwards, selectedForwardId: selectedForwardID))
+        localPortForwardIDs = Set(catalog?.supported.map(\.forwardId) ?? [])
+    }
+    #endif
+
     /// Removes a saved profile and its token.
     func deleteProfile(_ id: UUID) {
         if profiles.activeId == id { signOut() }
