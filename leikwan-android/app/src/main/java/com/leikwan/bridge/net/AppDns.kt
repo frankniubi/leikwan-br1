@@ -23,6 +23,8 @@ object AppDns {
     @Volatile
     private var strictCached: Dns? = null
 
+    private val bootstrapClients = java.util.concurrent.CopyOnWriteArrayList<OkHttpClient>()
+    fun resetPools() { bootstrapClients.forEach { it.dispatcher.cancelAll(); it.connectionPool.evictAll() } }
     /** Shared DoH-first resolver, built once and reused across OkHttp clients. */
     fun shared(): Dns = cached ?: synchronized(this) {
         cached ?: build(includeSystemFallback = true, bindToPanelNetwork = false).also { cached = it }
@@ -45,7 +47,7 @@ object AppDns {
     internal fun newBootstrapClient(bindToPanelNetwork: Boolean): OkHttpClient {
         val builder = OkHttpClient.Builder().proxy(Proxy.NO_PROXY)
         if (bindToPanelNetwork) builder.socketFactory(PanelNetwork.socketFactory)
-        return builder.build()
+        return builder.build().also { bootstrapClients += it }
     }
 
     private fun build(includeSystemFallback: Boolean, bindToPanelNetwork: Boolean): Dns {

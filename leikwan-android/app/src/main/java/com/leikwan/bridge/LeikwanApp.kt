@@ -16,5 +16,12 @@ class LeikwanApp : Application() {
         }
         // Start tracking the physical network before the first sign-in; never fails startup.
         PanelNetwork.ensureInstalled(this)
+        // Re-establish strict panel/DNS routing before enrollment screens or catalog requests.
+        runCatching {
+            val appPrefs = com.leikwan.bridge.data.Prefs.get(this)
+            if (appPrefs.connectionMode == com.leikwan.bridge.service.AppConnectionMode.PORTS) {
+                com.leikwan.bridge.net.DirectPortNetwork.start(this, appPrefs.portNetworkChoice)
+            }
+        }
     }
 }

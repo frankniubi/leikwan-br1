@@ -379,13 +379,17 @@ class TunnelOrchestrator internal constructor(
     }
 
     suspend fun startForForward(forwardId: Long) =
-        startLock.withLock { startForForward(forwardId, preserveControlLoop = false) }
+        startLock.withLock {
+            check(prefs.connectionMode != AppConnectionMode.PORTS) { "ports_cannot_start_vpn" }
+            startForForward(forwardId, preserveControlLoop = false)
+        }
 
     /**
      * Rebuilds the connection the user last started, after Android killed the app or the device
      * rebooted. Uses the persisted picks only; it never chooses a service or node by itself.
      */
     suspend fun reconnectSaved() {
+        check(prefs.connectionMode != AppConnectionMode.PORTS) { "ports_cannot_start_vpn" }
         if (prefs.nativeOutboundSelected) {
             val forwardId = prefs.nativeOutboundForwardId.takeIf { it > 0L }
                 ?: throw Exception("No saved native outbound to reconnect")
@@ -407,6 +411,7 @@ class TunnelOrchestrator internal constructor(
         bypassChina: Boolean = prefs.nativeOutboundBypassChina,
         routePolicy: String = prefs.nativeOutboundRoutePolicy,
     ) = startLock.withLock {
+        check(prefs.connectionMode != AppConnectionMode.PORTS) { "ports_cannot_start_vpn" }
         startNativeForForward(forwardId, routeScope, bypassChina, routePolicy, preserveControlLoop = false)
     }
 

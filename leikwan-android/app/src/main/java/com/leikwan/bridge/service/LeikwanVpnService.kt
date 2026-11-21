@@ -125,6 +125,12 @@ class LeikwanVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (runCatching { Prefs.get(this).connectionMode == AppConnectionMode.PORTS }.getOrDefault(false)) {
+            // Even an Android always-on/sticky start must not prepare or create a TUN in PORTS.
+            configJson = null
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent?.action == "STOP") {
             // Disconnected from the notification: the tunnel must not come back on its own.
             runCatching { Prefs.get(this).vpnConnectIntent = false }

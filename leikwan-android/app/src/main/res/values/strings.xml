@@ -450,4 +450,23 @@
     <string name="routing_applying">Applying…</string>
     <string name="routing_add_section">Add a rule</string>
     <string name="routing_import_section">Import rules</string>
+    <string name="ports_title">Port forwarding</string>
+    <string name="ports_mode">Connection mode</string>
+    <string name="ports_explanation">No VPN slot or device-wide tunnel. Selected fixed-target Ultra rules expose raw TCP/UDP on 127.0.0.1, not SOCKS. SINGLE/BOND and native SOCKS are not supported here. All control, DNS and remote sockets use the selected physical network. Android lockdown VPN or device policy may prevent bypass; forwarding pauses instead of using a VPN or default route.</string>
+    <string name="ports_network">Physical network (no VPN fallback)</string>
+    <string name="ports_auto">Automatic</string>
+    <string name="ports_wifi">Wi-Fi</string>
+    <string name="ports_cellular">Cellular</string>
+    <string name="ports_ethernet">Ethernet</string>
+    <string name="ports_select_forward">Select fixed-target forwards</string>
+    <string name="ports_unsupported">Unsupported in strict port mode (requires Ultra)</string>
+    <string name="ports_starting">Starting port forwarding…</string>
+    <string name="ports_waiting_network">Port forwarding paused; waiting for the selected network or panel</string>
+    <string name="ports_running">%1$d local forward(s) active</string>
+    <string name="ports_paused">Port forwarding paused: %1$s</string>
+    <string name="ports_stop">Stop</string>
+    <string name="ports_vpn">VPN</string>
+    <string name="ports_forward_name">#%1$d · %2$s</string>
+    <string name="ports_forward_endpoint">127.0.0.1:%1$d → %2$s (%3$s)</string>
+<string name="ports_degraded">Panel temporarily unavailable; valid port forwarding continues until authorization expires</string>
 </resources>

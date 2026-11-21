@@ -19,6 +19,9 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.service.AppConnectionMode
+import com.leikwan.bridge.service.LeikwanPortsService
+import com.leikwan.bridge.net.PortNetworkChoice
 import com.leikwan.bridge.service.ConnectProgress
 import com.leikwan.bridge.routing.AppRoutingConfig
 import com.leikwan.bridge.service.LeikwanVpnService
@@ -62,6 +65,10 @@ enum class VpnStatus { DISCONNECTED, CONNECTING, CONNECTED }
  * and the real tunnel runtime.
  */
 data class ConnectionsUiState(
+    val connectionMode: AppConnectionMode = AppConnectionMode.VPN,
+    val portNetwork: PortNetworkChoice = PortNetworkChoice.AUTO,
+    val portForwardIds: Set<Long> = emptySet(),
+    val portListeners: List<String> = emptyList(),
     val vpnStatus: VpnStatus = VpnStatus.DISCONNECTED,
     val forwards: List<ForwardListItem> = emptyList(),
     /** The user's own nodes, enabled only. */
@@ -91,7 +98,7 @@ data class ConnectionsUiState(
     val nativeUnrestrictedAllowed: Boolean get() = nativeCarrier?.unrestrictedAllowed == true
     val nativeScopes: List<String>
         get() = nativeCarrier?.routeScopes ?: nativeOutbound?.routeScopes.orEmpty()
-    val hasUsablePath: Boolean get() = hasNode || (nativeSelected && nativeVisible && nativeCarrier != null)
+    val hasUsablePath: Boolean get() = (connectionMode == AppConnectionMode.PORTS && portForwardIds.isNotEmpty()) || hasNode || (nativeSelected && nativeVisible && nativeCarrier != null)
 
     /** Native outbound rules leave through the panel's own exit; they never pair with a node. */
     fun isNativeForward(forward: ForwardListItem): Boolean =
@@ -162,6 +169,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     private val _state = MutableStateFlow(
         ConnectionsUiState(
+            connectionMode = prefs.connectionMode,
+            portNetwork = prefs.portNetworkChoice,
+            portForwardIds = prefs.portForwardIds,
             selectedForwardId = prefs.selectedForwardId,
             vpnStatus = if (vpnRunning) VpnStatus.CONNECTED else VpnStatus.DISCONNECTED,
             nativeSelected = prefs.nativeOutboundSelected,
@@ -186,7 +196,49 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         _state.update { it.copy(ruleMode = enabled) }
     }
 
+    fun setConnectionMode(mode: AppConnectionMode) {
+        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED || LeikwanVpnService.isRunning) return
+        LeikwanPortsService.stop(getApplication())
+        prefs.vpnConnectIntent = false
+        try {
+            if (mode == AppConnectionMode.PORTS) com.leikwan.bridge.net.DirectPortNetwork.start(getApplication(), prefs.portNetworkChoice)
+            else com.leikwan.bridge.net.DirectPortNetwork.stop()
+        } catch (error: Exception) {
+            _state.update { it.copy(error = error.message) }
+            return
+        }
+        prefs.connectionMode = mode
+        _state.update { it.copy(connectionMode = mode, error = null) }
+    }
+
+    fun setPortNetwork(choice: PortNetworkChoice) {
+        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED) return
+        try { com.leikwan.bridge.net.DirectPortNetwork.start(getApplication(), choice) }
+        catch (error: Exception) { _state.update { it.copy(error = error.message) }; return }
+        prefs.portNetworkChoice = choice
+        _state.update { it.copy(portNetwork = choice) }
+    }
+
+    fun togglePortForward(id: Long) {
+        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED) return
+        val ids = _state.value.portForwardIds.let { if (id in it) it - id else it + id }
+        prefs.portForwardIds = ids
+        _state.update { it.copy(portForwardIds = ids) }
+    }
+
     init {
+        if (prefs.connectionMode == AppConnectionMode.PORTS) {
+            runCatching { com.leikwan.bridge.net.DirectPortNetwork.start(app, prefs.portNetworkChoice) }
+                .onFailure { error -> _state.update { it.copy(error = error.message) } }
+        }
+        viewModelScope.launch {
+            LeikwanPortsService.state.collect { ports ->
+                if (_state.value.connectionMode == AppConnectionMode.PORTS) _state.update {
+                    it.copy(vpnStatus = when { ports.running -> VpnStatus.CONNECTED; ports.starting -> VpnStatus.CONNECTING; else -> VpnStatus.DISCONNECTED },
+                        error = ports.error, portListeners = ports.listeners)
+                }
+            }
+        }
         viewModelScope.launch {
             deviceLimitState.collect { notice -> _state.update { it.copy(deviceLimit = notice) } }
         }
@@ -196,6 +248,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         viewModelScope.launch {
             // Only settled states follow the service; a connect in progress owns CONNECTING.
             tunnelRunning.distinctUntilChanged().drop(1).collect { running ->
+                if (_state.value.connectionMode == AppConnectionMode.PORTS) return@collect
                 _state.update {
                     when {
                         running && it.vpnStatus == VpnStatus.DISCONNECTED -> it.copy(vpnStatus = VpnStatus.CONNECTED)
@@ -486,6 +539,21 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         deviceLimitRetry?.cancel()
         viewModelScope.launch {
             val s = _state.value
+            if (s.connectionMode == AppConnectionMode.PORTS) {
+                if (s.vpnStatus != VpnStatus.DISCONNECTED || LeikwanPortsService.state.value.error != null) {
+                    LeikwanPortsService.stop(getApplication())
+                    _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED, error = null) }
+                } else if (s.portForwardIds.isEmpty()) {
+                    _state.update { it.copy(error = getApplication<Application>().getString(R.string.ports_select_forward)) }
+                } else {
+                    prefs.vpnConnectIntent = false
+                    try {
+                        LeikwanPortsService.start(getApplication(), s.portForwardIds)
+                        _state.update { it.copy(vpnStatus = VpnStatus.CONNECTING, error = null) }
+                    } catch (error: Exception) { _state.update { it.copy(error = error.message, vpnStatus = VpnStatus.DISCONNECTED) } }
+                }
+                return@launch
+            }
             if (s.vpnStatus != VpnStatus.DISCONNECTED) {
                 _state.update { it.copy(vpnStatus = VpnStatus.DISCONNECTED) }
                 prefs.vpnConnectIntent = false

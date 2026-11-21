@@ -12,6 +12,26 @@ import java.time.Instant
 
 class UltraForwardRunnerTest {
     @Test
+    fun `ports runner is loopback raw forwarding with strict socket broker and scoped DNS`() {
+        val runtimeDir = Files.createTempDirectory("leikwan-ports-test").toFile()
+        val forward = sampleForward()
+        val policy = UltraPolicy.from(forward, Instant.parse("2026-08-27T00:00:00Z"))!!
+        val plan = UltraForwardRunner.buildPlan(forward, policy,
+            RuntimeBinaryPaths(null, null, null, "/runtime/ultra-client"), runtimeDir,
+            directEgress = DirectEgressConfig("/data/user/0/com.leikwan.bridge/files/eg.sock", listOf("192.0.2.53:53", "[2001:db8::53]:53")))
+        try {
+            val config = JsonParser.parseString(plan.configFile.readText()).asJsonObject
+            assertEquals("127.0.0.1", config.get("listen_host").asString)
+            assertEquals(forward.listenPort, config.get("listen_port").asInt)
+            assertEquals(forward.target, config.get("target").asString)
+            assertTrue(config.get("direct_egress_required").asBoolean)
+            assertEquals("/data/user/0/com.leikwan.bridge/files/eg.sock", config.get("egress_socket_broker").asString)
+            assertEquals(2, config.getAsJsonArray("egress_dns_servers").size())
+            assertFalse(config.has("native_socks5"))
+        } finally { UltraForwardRunner.cleanup(plan.runtimeContext); runtimeDir.deleteRecursively() }
+    }
+
+    @Test
     fun `native runner enables bounded automatic candidate selection`() {
         val runtimeDir = Files.createTempDirectory("leikwan-ultra-native-test").toFile()
         val forward = sampleForward()

@@ -128,7 +128,7 @@ class VpnRestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val prefs = runCatching { Prefs.get(context) }.getOrNull() ?: return
-        if (!prefs.vpnConnectIntent || !prefs.isLoggedIn()) return
+        if (prefs.connectionMode == AppConnectionMode.PORTS || !prefs.vpnConnectIntent || !prefs.isLoggedIn()) return
         // Without VPN consent the TUN cannot open; the user has to connect from the app.
         if (VpnService.prepare(context) != null) return
         runCatching {

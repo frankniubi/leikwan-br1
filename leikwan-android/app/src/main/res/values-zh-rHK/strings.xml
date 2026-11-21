@@ -450,4 +450,23 @@
     <string name="routing_applying">正在應用…</string>
     <string name="routing_add_section">添加規則</string>
     <string name="routing_import_section">導入規則</string>
+    <string name="ports_title">連接埠轉發</string>
+    <string name="ports_mode">連線模式</string>
+    <string name="ports_explanation">不佔用 VPN 槽位，不接管全機流量。所選固定目標 Ultra 規則在 127.0.0.1 開放原始 TCP/UDP 連接埠，並非 SOCKS。此模式暫不支援 SINGLE/BOND 或原生 SOCKS。面板、DNS 和核心遠端連線均綁定所選實體網絡。Android 永遠開啟 VPN、鎖定或裝置政策可能禁止繞過，此時暫停轉發，絕不回退 VPN 或預設路由。</string>
+    <string name="ports_network">實體網絡（不回退 VPN）</string>
+    <string name="ports_auto">自動選擇</string>
+    <string name="ports_wifi">Wi-Fi</string>
+    <string name="ports_cellular">流動網絡</string>
+    <string name="ports_ethernet">乙太網絡</string>
+    <string name="ports_select_forward">選擇固定目標轉發規則</string>
+    <string name="ports_unsupported">嚴格連接埠模式不支援此規則（需要 Ultra）</string>
+    <string name="ports_starting">正在啟動連接埠轉發…</string>
+    <string name="ports_waiting_network">連接埠轉發已暫停，等候所選網絡或面板恢復</string>
+    <string name="ports_running">%1$d 個本地轉發運行中</string>
+    <string name="ports_paused">連接埠轉發已暫停：%1$s</string>
+    <string name="ports_stop">停止</string>
+    <string name="ports_vpn">VPN</string>
+    <string name="ports_forward_name">#%1$d · %2$s</string>
+    <string name="ports_forward_endpoint">127.0.0.1:%1$d → %2$s (%3$s)</string>
+<string name="ports_degraded">面板暫時不可用；有效連接埠轉發繼續運行至授權到期</string>
 </resources>

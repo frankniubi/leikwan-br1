@@ -450,4 +450,23 @@
     <string name="routing_applying">正在应用…</string>
     <string name="routing_add_section">添加规则</string>
     <string name="routing_import_section">导入规则</string>
+    <string name="ports_title">端口转发</string>
+    <string name="ports_mode">连接模式</string>
+    <string name="ports_explanation">不占用 VPN 槽位，不接管全机流量。所选固定目标 Ultra 规则在 127.0.0.1 开放原始 TCP/UDP 端口，并非 SOCKS。此模式暂不支持 SINGLE/BOND 或原生 SOCKS。面板、DNS 和核心远端连接均绑定所选物理网络。Android 始终开启 VPN、锁定或设备策略可能禁止绕过，此时暂停转发，绝不回退 VPN 或默认路由。</string>
+    <string name="ports_network">物理网络（不回退 VPN）</string>
+    <string name="ports_auto">自动选择</string>
+    <string name="ports_wifi">Wi-Fi</string>
+    <string name="ports_cellular">移动网络</string>
+    <string name="ports_ethernet">以太网</string>
+    <string name="ports_select_forward">选择固定目标转发规则</string>
+    <string name="ports_unsupported">严格端口模式不支持此规则（需要 Ultra）</string>
+    <string name="ports_starting">正在启动端口转发…</string>
+    <string name="ports_waiting_network">端口转发已暂停，等待所选网络或面板恢复</string>
+    <string name="ports_running">%1$d 个本地转发运行中</string>
+    <string name="ports_paused">端口转发已暂停：%1$s</string>
+    <string name="ports_stop">停止</string>
+    <string name="ports_vpn">VPN</string>
+    <string name="ports_forward_name">#%1$d · %2$s</string>
+    <string name="ports_forward_endpoint">127.0.0.1:%1$d → %2$s (%3$s)</string>
+<string name="ports_degraded">面板暂时不可用；有效端口转发继续运行至授权到期</string>
 </resources>

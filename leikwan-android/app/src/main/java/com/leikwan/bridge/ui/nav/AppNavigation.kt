@@ -231,6 +231,7 @@ fun MainScreen(onLogout: () -> Unit = {}) {
                     navController = navController,
                     onTab = openTab,
                     vpnStatus = connectionState.vpnStatus,
+                    allowCancelConnecting = connectionState.connectionMode == com.leikwan.bridge.service.AppConnectionMode.PORTS,
                     onPower = connectToggle(connectionsViewModel, connectionState, activity),
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
@@ -266,6 +267,7 @@ private fun NavigationDock(
     navController: NavHostController,
     onTab: (Screen) -> Unit,
     vpnStatus: VpnStatus,
+    allowCancelConnecting: Boolean = false,
     onPower: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -297,7 +299,7 @@ private fun NavigationDock(
             }
         }
         Spacer(Modifier.width(10.dp))
-        PowerButton(vpnStatus = vpnStatus, onClick = onPower)
+        PowerButton(vpnStatus = vpnStatus, allowCancelConnecting = allowCancelConnecting, onClick = onPower)
     }
 }
 
@@ -326,7 +328,7 @@ private fun DockItem(screen: Screen, selected: Boolean, onClick: () -> Unit, mod
 }
 
 @Composable
-private fun PowerButton(vpnStatus: VpnStatus, onClick: () -> Unit) {
+private fun PowerButton(vpnStatus: VpnStatus, allowCancelConnecting: Boolean = false, onClick: () -> Unit) {
     val connected = vpnStatus == VpnStatus.CONNECTED
     val container by animateColorAsState(
         if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
@@ -334,7 +336,7 @@ private fun PowerButton(vpnStatus: VpnStatus, onClick: () -> Unit) {
     )
     Surface(
         onClick = onClick,
-        enabled = vpnStatus != VpnStatus.CONNECTING,
+        enabled = allowCancelConnecting || vpnStatus != VpnStatus.CONNECTING,
         modifier = Modifier.size(64.dp).shadow(8.dp, CircleShape),
         shape = CircleShape,
         color = container,

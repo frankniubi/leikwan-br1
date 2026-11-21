@@ -109,6 +109,14 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".service.LeikwanPortsService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started fixed-target TCP/UDP port forwarding on a selected physical network" />
+        </service>
+
         <receiver
             android:name=".service.VpnRestartReceiver"
             android:exported="false">

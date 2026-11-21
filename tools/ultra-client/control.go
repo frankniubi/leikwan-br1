@@ -57,6 +57,8 @@ type ControlServer struct {
 	done        chan struct{}
 	once        sync.Once
 	peerAllowed func(*net.UnixConn) bool
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 func NewControlServer(path string, config Config, store *PolicyStore, status ...*StatusWriter) *ControlServer {
@@ -64,8 +66,10 @@ func NewControlServer(path string, config Config, store *PolicyStore, status ...
 	if len(status) > 0 {
 		statusWriter = status[0]
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ControlServer{
 		path: path, config: config, store: store, status: statusWriter,
+		ctx: ctx, cancel: cancel,
 		sem: make(chan struct{}, 4), close: make(chan struct{}), done: make(chan struct{}),
 		peerAllowed: sameUserPeer,
 	}
@@ -141,6 +145,10 @@ func (server *ControlServer) Serve() error {
 
 func (server *ControlServer) handle(connection *net.UnixConn) {
 	defer connection.Close()
+	// Closing the runtime must stop admitted frames as well as future accepts.
+	// This also unblocks a partial frame/read or reply write immediately.
+	stopClosing := context.AfterFunc(server.ctx, func() { _ = connection.Close() })
+	defer stopClosing()
 	deadline := time.Now().Add(controlDeadlineDuration(server.config))
 	_ = connection.SetDeadline(deadline)
 	if server.peerAllowed == nil || !server.peerAllowed(connection) {
@@ -186,7 +194,7 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		}
 		if externalUoTEnabled(server.config) && stringsContainsUDP(policy.Transport) &&
 			(server.config.AutoSelect || len(leases) == 1) {
-			probeContext, cancel := context.WithDeadline(context.Background(), deadline.Add(-selectionResponseGrace))
+			probeContext, cancel := context.WithDeadline(server.ctx, deadline.Add(-selectionResponseGrace))
 			selected, probeResult, verifiedLeases, err = selectVerifiedExternalUoTCandidates(
 				probeContext, server.config, policy, leases, previousActive, havePreviousActive,
 				server.status.RecordProbeFailure, nil)
@@ -209,12 +217,12 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 			if remaining <= 0 {
 				err = context.DeadlineExceeded
 			} else {
-				selectionContext, cancel := context.WithTimeout(context.Background(), remaining)
+				selectionContext, cancel := context.WithTimeout(server.ctx, remaining)
 				selected, probeResult, err = selectBestLeaseReporting(selectionContext, server.config, policy, leases, server.status.RecordProbeFailure)
 				cancel()
 				if errors.Is(err, errNoHealthyCandidate) && havePreviousActive {
 					log.Printf("active candidate forwarding test started forward_id=%d reason=no_healthy_candidate", policy.ForwardID)
-					fallbackContext, fallbackCancel := context.WithDeadline(context.Background(), deadline)
+					fallbackContext, fallbackCancel := context.WithDeadline(server.ctx, deadline)
 					selected, probeResult, err = retryActiveCandidateForward(
 						fallbackContext, server.config, policy, previousActive, leases, nil)
 					fallbackCancel()
@@ -225,6 +233,9 @@ func (server *ControlServer) handle(connection *net.UnixConn) {
 		}
 	}
 selectionDone:
+	if err == nil && server.ctx.Err() != nil {
+		err = server.ctx.Err()
+	}
 	if err == nil && selectionEpoch != 0 && !selectionCoordinatorFor(policy.ForwardID).isLatest(selectionEpoch) {
 		err = errSelectionSuperseded
 	}
@@ -300,6 +311,7 @@ func controlErrorName(err error) string {
 
 func (server *ControlServer) Close() {
 	server.once.Do(func() {
+		server.cancel()
 		close(server.close)
 		if server.ln != nil {
 			_ = server.ln.Close()

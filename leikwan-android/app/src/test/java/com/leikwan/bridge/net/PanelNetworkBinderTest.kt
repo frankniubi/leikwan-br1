@@ -227,7 +227,9 @@ class PanelNetworkBinderTest {
 
         val unbound = PanelNetwork.applyTo(OkHttpClient.Builder(), null).build()
         assertEquals(Proxy.NO_PROXY, unbound.proxy)
-        assertSame(SocketFactory.getDefault(), unbound.socketFactory)
+        // The dynamic facade still delegates to default outside PORTS, but must fail closed
+        // if a repository predates strict mode and Android binder installation was unavailable.
+        assertSame(PanelNetwork.socketFactory, unbound.socketFactory)
     }
 
     @Test

@@ -173,6 +173,7 @@ class PanelNetworkBinder<N>(
     }
 
     internal fun createSocket(): Socket {
+        if (DirectPortNetwork.required) return DirectPortNetwork.socketFactory.createSocket()
         val network = selectedNetwork()
         if (network != null && nowMs() >= bindBlockedUntilMs) {
             try {
@@ -201,6 +202,8 @@ class PanelNetworkFallbackInterceptor(
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
+        if (DirectPortNetwork.required) return chain.proceed(request)
+        if (DirectPortNetwork.required) return chain.proceed(request)
         val active = binder()?.takeIf { it.isBindingActive() } ?: return chain.proceed(request)
         return try {
             chain.proceed(request)

@@ -58,6 +58,7 @@ class ConnectionsViewModelTest {
     fun tearDown() {
         Dispatchers.resetMain()
         DeviceLimitGate.clear()
+        com.leikwan.bridge.net.DirectPortNetwork.stop()
     }
 
     private fun forward(
@@ -106,6 +107,24 @@ class ConnectionsViewModelTest {
         startConnect = startConnect,
         stopConnect = stopConnect,
     )
+
+    @Test
+    fun `VPN PORTS switching persists separate mode and strict routing before any service start`() {
+        val viewModel = vm()
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.PORTS)
+        viewModel.setPortNetwork(com.leikwan.bridge.net.PortNetworkChoice.WIFI)
+        viewModel.togglePortForward(21L)
+        viewModel.togglePortForward(22L)
+        assertEquals(com.leikwan.bridge.service.AppConnectionMode.PORTS, prefs.connectionMode)
+        assertEquals(com.leikwan.bridge.net.PortNetworkChoice.WIFI, prefs.portNetworkChoice)
+        assertEquals(setOf(21L, 22L), prefs.portForwardIds)
+        assertTrue(com.leikwan.bridge.net.DirectPortNetwork.required)
+        assertFalse(prefs.vpnConnectIntent)
+        viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.VPN)
+        assertEquals(com.leikwan.bridge.service.AppConnectionMode.VPN, prefs.connectionMode)
+        assertFalse(com.leikwan.bridge.net.DirectPortNetwork.required)
+    }
 
     @Test
     fun `route selection progress follows the runtime while connecting`() {
@@ -278,6 +297,7 @@ class ConnectionsViewModelTest {
         assertEquals(VpnStatus.CONNECTED, state.vpnStatus)
 
         DeviceLimitGate.clear()
+        com.leikwan.bridge.net.DirectPortNetwork.stop()
         dispatcher.scheduler.runCurrent()
         assertNull(viewModel.state.value.deviceLimit)
     }

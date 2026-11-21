@@ -26,7 +26,8 @@ object PanelNetwork {
 
     /** Delegates to the installed binder at socket-creation time, so clients built earlier still bind. */
     val socketFactory: SocketFactory = object : SocketFactory() {
-        private fun target(): SocketFactory = installed?.socketFactory ?: SocketFactory.getDefault()
+        private fun target(): SocketFactory = if (DirectPortNetwork.required) DirectPortNetwork.socketFactory
+            else installed?.socketFactory ?: SocketFactory.getDefault()
         override fun createSocket(): Socket = target().createSocket()
         override fun createSocket(host: String, port: Int): Socket = target().createSocket(host, port)
         override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
@@ -74,7 +75,8 @@ object PanelNetwork {
      */
     fun applyTo(builder: OkHttpClient.Builder, binder: PanelNetworkBinder<*>?): OkHttpClient.Builder {
         builder.proxy(Proxy.NO_PROXY)
-        if (binder != null) builder.socketFactory(binder.socketFactory)
+        builder.connectionPool(DirectPortNetwork.connectionPool).dispatcher(DirectPortNetwork.dispatcher)
+        builder.socketFactory(binder?.socketFactory ?: socketFactory)
         return builder
     }
 

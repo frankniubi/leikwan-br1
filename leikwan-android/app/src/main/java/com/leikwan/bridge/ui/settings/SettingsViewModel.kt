@@ -142,6 +142,7 @@ class SettingsViewModel @JvmOverloads constructor(
     }
 
     fun logout() {
+        com.leikwan.bridge.service.LeikwanPortsService.stop(appContext)
         repo.logout()
     }
 

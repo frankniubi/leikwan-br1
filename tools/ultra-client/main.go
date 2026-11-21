@@ -2630,6 +2630,7 @@ func serveUDPOnConn(
 func main() {
 	version := flag.Bool("version", false, "print runtime build version")
 	checkDirectEgress := flag.Bool("check-direct-egress", false, "check strict direct-egress support")
+	testDirectEgress := flag.String("test-direct-egress", "", "run a local direct-egress broker smoke test")
 	configPath := flag.String("config", "", "runtime configuration file")
 	configStdin := flag.Bool("config-stdin", false, "read runtime configuration from stdin")
 	flag.Parse()
@@ -2638,6 +2639,14 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("direct-egress-v1")
+		return
+	}
+	if strings.TrimSpace(*testDirectEgress) != "" {
+		if err := runDirectEgressSmoke(strings.TrimSpace(*testDirectEgress)); err != nil {
+			log.Printf("direct-egress smoke failed: %v", err)
+			os.Exit(1)
+		}
+		fmt.Println("direct-egress-socket-bound")
 		return
 	}
 	if *version {

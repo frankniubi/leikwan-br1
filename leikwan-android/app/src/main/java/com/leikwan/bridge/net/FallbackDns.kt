@@ -15,6 +15,8 @@ import java.net.UnknownHostException
  */
 class FallbackDns(private val resolvers: List<Dns>) : Dns {
     override fun lookup(hostname: String): List<InetAddress> {
+        // Consult at lookup time so repositories created before a mode switch cannot retain DoH/default DNS.
+        if (DirectPortNetwork.required) return DirectPortNetwork.dns.lookup(hostname)
         var lastError: Exception? = null
         for (resolver in resolvers) {
             try {

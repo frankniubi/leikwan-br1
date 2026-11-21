@@ -81,6 +81,9 @@ fun ConnectionsScreen(
         updateState = updateState,
         onUpdate = { AppUpdateController.downloadAndInstall(context) },
         onSetRuleMode = viewModel::setRuleMode,
+        onMode = viewModel::setConnectionMode,
+        onPortNetwork = viewModel::setPortNetwork,
+        onPortForward = viewModel::togglePortForward,
         onOpenServices = onOpenServices,
         onOpenAppRouting = onOpenAppRouting,
         onImportNode = onImportNode,
@@ -94,7 +97,7 @@ internal fun connectToggle(
     activity: MainActivity?,
 ): () -> Unit = {
     val turningOn = state.vpnStatus == VpnStatus.DISCONNECTED
-    if (turningOn && activity != null) {
+    if (turningOn && com.leikwan.bridge.service.PortModePolicy.needsVpnConsent(state.connectionMode) && activity != null) {
         activity.requestVpnPermission {
             viewModel.toggleConnect()
             activity.offerBatteryOptimizationExemption()
@@ -111,6 +114,9 @@ internal fun ConnectionsScreenContent(
     updateState: AppUpdateState = AppUpdateState.Idle,
     onUpdate: () -> Unit = {},
     onSetRuleMode: (Boolean) -> Unit = {},
+    onMode: (com.leikwan.bridge.service.AppConnectionMode) -> Unit = {},
+    onPortNetwork: (com.leikwan.bridge.net.PortNetworkChoice) -> Unit = {},
+    onPortForward: (Long) -> Unit = {},
     onOpenServices: () -> Unit = {},
     onOpenAppRouting: () -> Unit = {},
     onImportNode: () -> Unit = {},
@@ -122,6 +128,7 @@ internal fun ConnectionsScreenContent(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        ConnectionModeCard(state, onMode, onPortNetwork, onPortForward)
         DashboardHeader(state = state, traffic = traffic)
 
         UpdateBanner(state = updateState, onUpdate = onUpdate)
@@ -136,13 +143,13 @@ internal fun ConnectionsScreenContent(
                 Text(err, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
             }
         }
-        if (!state.hasUsablePath && !state.isLoading) {
+        if (state.connectionMode == com.leikwan.bridge.service.AppConnectionMode.VPN && !state.hasUsablePath && !state.isLoading) {
             EmptyNodeCard(onImportNode = onImportNode)
         }
 
         NetworkSpeedCard(traffic = traffic)
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.connectionMode == com.leikwan.bridge.service.AppConnectionMode.VPN) Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutboundModeCard(ruleMode = state.ruleMode, onSetRuleMode = onSetRuleMode)
                 AppRoutingCard(state = state, onClick = onOpenAppRouting)

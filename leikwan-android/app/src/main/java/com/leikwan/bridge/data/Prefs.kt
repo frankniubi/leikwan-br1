@@ -87,6 +87,18 @@ class Prefs internal constructor(private val prefs: SharedPreferences) {
         get() = prefs.getLong("client_id", 0L)
         set(v) = prefs.edit().putLong("client_id", v).apply()
 
+    var connectionMode: com.leikwan.bridge.service.AppConnectionMode
+        get() = runCatching { com.leikwan.bridge.service.AppConnectionMode.valueOf(prefs.getString("connection_mode", "VPN")!!) }.getOrDefault(com.leikwan.bridge.service.AppConnectionMode.VPN)
+        set(v) = prefs.edit().putString("connection_mode", v.name).apply()
+
+    var portNetworkChoice: com.leikwan.bridge.net.PortNetworkChoice
+        get() = runCatching { com.leikwan.bridge.net.PortNetworkChoice.valueOf(prefs.getString("port_network", "AUTO")!!) }.getOrDefault(com.leikwan.bridge.net.PortNetworkChoice.AUTO)
+        set(v) = prefs.edit().putString("port_network", v.name).apply()
+
+    var portForwardIds: Set<Long>
+        get() = prefs.getStringSet("port_forward_ids", emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+        set(v) = prefs.edit().putStringSet("port_forward_ids", v.map { it.toString() }.toSet()).apply()
+
     var selectedForwardId: Long
         get() = prefs.getLong("selected_forward_id", 0L)
         set(v) = prefs.edit().putLong("selected_forward_id", v).apply()

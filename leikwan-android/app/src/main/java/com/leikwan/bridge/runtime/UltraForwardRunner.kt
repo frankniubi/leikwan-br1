@@ -3,6 +3,8 @@ package com.leikwan.bridge.runtime
 import com.google.gson.JsonObject
 import java.io.File
 
+data class DirectEgressConfig(val socketBroker: String, val dnsServers: List<String>)
+
 data class UltraRuntimePlan(
     val runtimeContext: RuntimeContext,
     val configFile: File,
@@ -21,6 +23,7 @@ object UltraForwardRunner {
         autoSelect: Boolean = false,
         listenPortOverride: Int? = null,
         nativeRoutePolicy: String = NATIVE_ROUTE_POLICY_RESTRICTED,
+        directEgress: DirectEgressConfig? = null,
     ): UltraRuntimePlan {
         require(forward.forwardId == policy.forwardId) { "ultra_policy_forward_mismatch" }
         val binary = binaries.ultraBinary?.takeIf { it.isNotBlank() }
@@ -49,6 +52,12 @@ object UltraForwardRunner {
 
         val config = JsonObject().apply {
             addProperty("forward_id", forward.forwardId)
+            directEgress?.let { egress ->
+                require(!nativeSocks5) { "ports_native_socks_unsupported" }
+                addProperty("direct_egress_required", true)
+                addProperty("egress_socket_broker", egress.socketBroker)
+                add("egress_dns_servers", com.google.gson.JsonArray().apply { egress.dnsServers.forEach(::add) })
+            }
             addProperty("listen_host", "127.0.0.1")
             addProperty("listen_port", listenPort)
             addProperty("target", forward.target.trim())
