@@ -31,17 +31,14 @@ jobs:
           echo 'f2242101ee4b7a3bdfd469f53862b8362b715c00578ac111b8bc70a026253d92  out/test.apk' | sha256sum -c -
           curl --fail --location --output out/versions.json https://v3.leikwanhost.com/artifacts/versions.json
           python3 - <<'PY'
-          import json, urllib.request, hashlib
+          import json, subprocess, hashlib
           from pathlib import Path
           manifest = json.loads(Path('out/versions.json').read_text())
           entry = manifest['android_client_apk']
-          url = entry.get('artifact_url') or entry.get('url')
-          if not url.startswith('http'):
-              url = 'https://v3.leikwanhost.com' + url
-          with urllib.request.urlopen(url, timeout=120) as source, open('out/production.apk', 'wb') as dest:
-              data = source.read()
-              assert hashlib.sha256(data).hexdigest() == entry['sha256']
-              dest.write(data)
+          url = 'https://v3.leikwanhost.com/artifacts/files/android/leikwan-android-client.apk'
+          subprocess.run(['curl', '--fail', '--location', '--output', 'out/production.apk', url], check=True)
+          data = Path('out/production.apk').read_bytes()
+          assert hashlib.sha256(data).hexdigest() == entry['sha256']
           print('Production baseline', entry['version'], len(data))
           PY
       - name: Enable KVM
