@@ -35,8 +35,8 @@ jobs:
           from pathlib import Path
           manifest = json.loads(Path('out/versions.json').read_text())
           entry = manifest['android_client_apk']
-          url = 'https://v3.leikwanhost.com/artifacts/files/android/leikwan-android-client.apk'
-          subprocess.run(['curl', '--fail', '--location', '--output', 'out/production.apk', url], check=True)
+          url = 'https://v3.leikwanhost.com/artifacts/leikwan-android-client.apk'
+          subprocess.run(['curl', '--fail', '--location', '--user-agent', 'Mozilla/5.0 LeiKwan-Install-QA', '--output', 'out/production.apk', url], check=True)
           data = Path('out/production.apk').read_bytes()
           assert hashlib.sha256(data).hexdigest() == entry['sha256']
           print('Production baseline', entry['version'], len(data))
