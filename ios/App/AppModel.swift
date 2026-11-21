@@ -8,6 +8,48 @@ import UIKit
 @MainActor
 final class AppModel: ObservableObject {
     let tunnel = TunnelController()
+    let localPorts = LocalPortController()
+    @Published private(set) var localPortMode = false
+    @Published private(set) var changingConnectionMode = false
+    @Published var localPortForwardIDs = Set<Int64>()
+
+    func setLocalPortMode(_ enabled: Bool) async {
+        guard enabled != localPortMode, !changingConnectionMode else { return }
+        changingConnectionMode = true
+        defer { changingConnectionMode = false }
+        guard !enabled || runningScripts.isEmpty else {
+            notice = "Wait for running scripts to finish before entering Local Port mode"
+            return
+        }
+        localPorts.stop()
+        passiveDebugLogUpload?.cancel(); passiveDebugLogUpload = nil
+        cloudQueue?.cancel(); cloudQueue = nil
+        if enabled {
+            guard await tunnel.stopForLocalPorts() else {
+                notice = "Could not stop this app's VPN/On Demand. Local Port was not started."
+                return
+            }
+        }
+        client?.cancelDefaultTransport()
+        localPortMode = enabled
+        if let profile, let token = Keychain.string(profile.tokenAccount) {
+            if enabled {
+                do { client = try await activePanelClient() }
+                catch { client = nil; notice = Self.describe(error) }
+            } else { client = makeClient(profile, token: token) }
+        }
+        if enabled { await refreshCatalog() }
+    }
+
+    func activePanelClient() async throws -> PanelClient? {
+        if localPortMode {
+            guard let panel = panelSession() else { return nil }
+            let scoped = try await localPorts.makeClient(panel)
+            client = scoped
+            return scoped
+        }
+        return client
+    }
 
     /// Saved server profiles and which one is signed in (`profiles.active`).
     @Published private(set) var profiles = PanelProfileList() {
@@ -169,7 +211,12 @@ final class AppModel: ObservableObject {
             startDemo()
             return
         }
-        let candidate = makeClient(draft, token: agentToken)
+        let candidate: PanelClient
+        if localPortMode {
+            candidate = try await localPorts.makeClient(TunnelPanelSession(endpoint: draft.server.storageKey,
+                backupEndpoint: draft.backupServer?.storageKey, clientID: draft.clientId, agentToken: agentToken,
+                installID: Keychain.installID(), deviceName: Self.deviceName, appVersion: appVersion, appBuild: appBuild))
+        } else { candidate = makeClient(draft, token: agentToken) }
         let sameAccount = UserDefaults.standard.string(forKey: Self.accountKeyDefaultsKey) == draft.accountKey
         let result = try await candidate.pullCatalog(
             selectedForwardId: sameAccount ? selectedForwardID : nil,
@@ -206,6 +253,8 @@ final class AppModel: ObservableObject {
     /// Back to the profile list. The token stays saved unless the profile opted out.
     func signOut() {
         passiveDebugLogUpload?.cancel()
+        localPorts.stop()
+        localPortMode = false
         tunnel.disconnect()
         if let current = profile, !current.rememberToken {
             Keychain.set(nil, for: current.tokenAccount)
@@ -260,10 +309,10 @@ final class AppModel: ObservableObject {
             apply(DemoAccount.catalog(selectedForwardId: selectedForwardID))
             return
         }
-        guard let client else { return }
         isRefreshing = true
         defer { isRefreshing = false }
         do {
+            guard let client = try await activePanelClient() else { return }
             let result = try await client.pullCatalog(
                 selectedForwardId: selectedForwardID,
                 heartbeat: HeartbeatRequest(osRelease: Self.osRelease, ultraStatus: Self.currentUltraStatus())
@@ -288,6 +337,8 @@ final class AppModel: ObservableObject {
     private func apply(_ catalog: IOSForwardCatalog) {
         let hadSelection = selectedForwardID != nil
         self.catalog = catalog.excludingForwards(catalog.deletedForwardIds)
+        localPortForwardIDs.subtract(catalog.deletedForwardIds)
+        if localPortMode { localPorts.catalogDidChange(catalog) }
         forgetDeletedForwards(catalog.deletedForwardIds)
         // Missing/paused/unsupported forwards stay chosen; only explicit deletion clears them.
         // Do not silently choose another forward in place of a permanently deleted selection.
@@ -471,6 +522,20 @@ final class AppModel: ObservableObject {
     // MARK: Connect
 
     func toggleConnection() async {
+        guard !changingConnectionMode, !localPorts.isCleaningUp else { return }
+        if localPortMode {
+            if localPorts.isRunning { localPorts.stop(); return }
+            guard !isDemo, let catalog, let panel = panelSession() else {
+                notice = "Local Port requires a real signed-in panel session"
+                return
+            }
+            guard await tunnel.stopForLocalPorts() else {
+                notice = "This app's VPN has not stopped; Local Port is unavailable"
+                return
+            }
+            await localPorts.start(catalog: catalog, selectedIDs: localPortForwardIDs, panel: panel)
+            return
+        }
         if tunnel.isConnected || tunnel.isBusy {
             tunnel.disconnect()
             return
@@ -490,7 +555,7 @@ final class AppModel: ObservableObject {
     /// Re-plans and hands the new plan to a running tunnel (routing edits). Failures show in the
     /// banner: a change that did not reach the tunnel must not look applied.
     func applyToRunningTunnel() async {
-        guard tunnel.isRunning else { return }
+        guard !localPortMode, tunnel.isRunning else { return }
         do {
             let launch = try buildLaunch()
             if let error = await tunnel.reload(launch) {

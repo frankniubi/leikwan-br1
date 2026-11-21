@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -54,6 +55,15 @@ type Config struct {
 	EgressInterface      string `json:"egress_interface"`
 	EgressInterfaceIndex int    `json:"egress_interface_index"`
 	EgressLocalAddress   string `json:"egress_local_address"`
+	// DirectEgressRequired makes every provider, DNS, probe, and telemetry
+	// connection fail closed unless it can use the selected physical network.
+	// It is intentionally opt-in so the existing VPN mode keeps its behavior.
+	DirectEgressRequired bool     `json:"direct_egress_required,omitempty"`
+	EgressDNSServers     []string `json:"egress_dns_servers,omitempty"`
+	// EgressSocketBroker is an optional platform socket-binding broker. Android
+	// uses it to pass each pre-connect fd to Network.bindSocket without relying
+	// on process-wide binding or privileged SO_BINDTODEVICE.
+	EgressSocketBroker string `json:"egress_socket_broker,omitempty"`
 	// NativeSocks5 exposes a local standard SOCKS5 facade while retaining the
 	// existing Ultra relay protocol on the provider leg. Ordinary Ultra
 	// forwards leave this disabled and keep their fixed-target behavior.
@@ -1767,13 +1777,21 @@ func resolveIPv4(host string) (string, error) {
 }
 
 func resolveIPv4Context(ctx context.Context, host string) (string, error) {
+	return resolveIPv4ContextForConfig(ctx, Config{}, host)
+}
+
+func resolveIPv4ContextForConfig(ctx context.Context, config Config, host string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
 			return v4.String(), nil
 		}
 		return "", errors.New("datagram target requires IPv4")
 	}
-	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	resolver, err := providerResolver(config)
+	if err != nil {
+		return "", err
+	}
+	addresses, err := resolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return "", err
 	}
@@ -2122,7 +2140,9 @@ func serveUDP(ctx context.Context, config Config, store *PolicyStore, status *St
 	if testHookLocalUDPListening != nil {
 		testHookLocalUDPListening(local)
 	}
-	targetIP, err := resolveUDPTargetIPv4(ctx, targetHost, resolveIPv4Context)
+	targetIP, err := resolveUDPTargetIPv4(ctx, targetHost, func(resolveCtx context.Context, host string) (string, error) {
+		return resolveIPv4ContextForConfig(resolveCtx, config, host)
+	})
 	if err != nil {
 		local.Close()
 		return err
@@ -2609,9 +2629,17 @@ func serveUDPOnConn(
 
 func main() {
 	version := flag.Bool("version", false, "print runtime build version")
+	checkDirectEgress := flag.Bool("check-direct-egress", false, "check strict direct-egress support")
 	configPath := flag.String("config", "", "runtime configuration file")
 	configStdin := flag.Bool("config-stdin", false, "read runtime configuration from stdin")
 	flag.Parse()
+	if *checkDirectEgress {
+		if runtime.GOOS != "android" {
+			os.Exit(1)
+		}
+		fmt.Println("direct-egress-v1")
+		return
+	}
 	if *version {
 		fmt.Println(runtimeBuildVersion)
 		return
@@ -2766,7 +2794,7 @@ func runRuntimeLoop(rootContext context.Context, config Config, store *PolicySto
 		go func(ctx context.Context) {
 			locationContext, cancelLocation := context.WithTimeout(ctx, locationRequestTimeout+time.Second)
 			defer cancelLocation()
-			location := DetectLocation(locationContext, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
+			location := DetectLocationWithConfig(locationContext, config, config.LocationCachePath, config.LocationLockPath, config.ZoneAliases)
 			if ctx.Err() == nil {
 				status.UpdateLocation(location)
 			}

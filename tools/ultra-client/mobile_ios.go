@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -37,6 +38,15 @@ func StartMobileRuntime(configJSON []byte) (*MobileRuntime, error) {
 	config, err := loadConfig("", true, bytes.NewReader(configJSON))
 	if err != nil {
 		return nil, errors.New("runtime configuration unavailable")
+	}
+	if config.DirectEgressRequired {
+		// Local Port mode is not a LAN proxy and cannot run a native SOCKS facade.
+		if config.NativeSocks5 || config.ListenHost != "127.0.0.1" {
+			return nil, errors.New("local port mode requires a fixed-target loopback listener")
+		}
+		if _, err := configureProviderDialer(&net.Dialer{}, "tcp", config); err != nil {
+			return nil, err
+		}
 	}
 	// The host is this process; there is no parent to watch.
 	config.ParentPID = 0
@@ -97,6 +107,12 @@ func (runtime *MobileRuntime) Running() bool {
 	}
 }
 
+// Cancel requests immediate shutdown without joining. Hosts use it before bounded,
+// off-main-thread cleanup when the ordinary iOS app moves to the background.
+func (runtime *MobileRuntime) Cancel() {
+	runtime.cancel()
+}
+
 // Stop cancels the runtime and waits (bounded) for its listeners to close.
 func (runtime *MobileRuntime) Stop() {
 	runtime.cancel()
@@ -114,6 +130,30 @@ func MobileRuntimeAttestationJSON() string {
 		return "{}"
 	}
 	return string(encoded)
+}
+
+// MobileResolvePhysicalJSON resolves through this configuration's interface-bound DNS,
+// never the process-wide resolver shared with libbox or another runtime.
+func MobileResolvePhysicalJSON(configJSON []byte, host string) (string, error) {
+	var config Config
+	if err := json.Unmarshal(configJSON, &config); err != nil || !config.DirectEgressRequired {
+		return "", errors.New("physical DNS configuration unavailable")
+	}
+	if _, err := configureProviderDialer(&net.Dialer{}, "udp", config); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := lookupProviderIPs(ctx, config, host)
+	if err != nil {
+		return "", err
+	}
+	strings := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		strings = append(strings, address.String())
+	}
+	encoded, err := json.Marshal(strings)
+	return string(encoded), err
 }
 
 func MobileRuntimeVersion() string {

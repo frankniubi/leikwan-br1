@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -78,6 +79,10 @@ func defaultLocationPaths(statusPath string) (string, string) {
 }
 
 func DetectLocation(ctx context.Context, cachePath, lockPath string, aliases map[string][]string) LocationResult {
+	return DetectLocationWithConfig(ctx, Config{}, cachePath, lockPath, aliases)
+}
+
+func DetectLocationWithConfig(ctx context.Context, config Config, cachePath, lockPath string, aliases map[string][]string) LocationResult {
 	now := time.Now().UTC()
 	if cached, ok := readLocationCache(cachePath, now, locationFreshAge); ok {
 		cached.Source = "cache"
@@ -113,6 +118,20 @@ func DetectLocation(ctx context.Context, cachePath, lockPath string, aliases map
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, locationEndpoint, nil)
 	if err == nil {
 		client := &http.Client{Timeout: locationRequestTimeout}
+		if config.DirectEgressRequired {
+			transport := &http.Transport{
+				Proxy: nil,
+				DialContext: func(dialContext context.Context, network, address string) (net.Conn, error) {
+					dialer, dialErr := providerDialer(config, network, locationRequestTimeout)
+					if dialErr != nil {
+						return nil, dialErr
+					}
+					return dialer.DialContext(dialContext, network, address)
+				},
+			}
+			client.Transport = transport
+			defer transport.CloseIdleConnections()
+		}
 		var response *http.Response
 		response, err = client.Do(request)
 		if err == nil {

@@ -101,6 +101,34 @@ final class RuntimeHost {
         return failed
     }
 
+    /// Nonblocking cancellation for ordinary App background entry; all joins happen later.
+    func cancelAllUltra() {
+        lock.lock()
+        let items = running
+        lock.unlock()
+        for item in items {
+            if case let .ultra(runtime) = item.handle { runtime.cancel() }
+        }
+    }
+
+    /// Local Port hosts only Ultra handles. Cancel together and join in parallel so cleanup
+    /// is bounded by one Go stop timeout, not number-of-forwards * timeout.
+    func stopAllUltra(completion: @escaping () -> Void) {
+        lock.lock()
+        let stopping = running
+        running.removeAll()
+        for item in stopping { deliberatelyStopped.insert(item.launch.name) }
+        lock.unlock()
+        let group = DispatchGroup()
+        for item in stopping {
+            guard case let .ultra(runtime) = item.handle else { continue }
+            runtime.cancel()
+            group.enter()
+            DispatchQueue.global(qos: .utility).async { runtime.stop(); group.leave() }
+        }
+        group.notify(queue: .global(qos: .utility), execute: completion)
+    }
+
     func stopAll() {
         lock.lock()
         let stopping = running.reversed()

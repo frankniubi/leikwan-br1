@@ -37,12 +37,25 @@ targets:
     sources:
       - path: App
       - path: Shared
+      # Reuse the same runtime/lease/session protocol without instantiating a VPN provider.
+      - path: PacketTunnel/RuntimeHost.swift
+      - path: PacketTunnel/UltraLeaseManager.swift
+      - path: PacketTunnel/TunnelControlLoop.swift
+      - path: PacketTunnel/UnixControlSocket.swift
+      - path: PacketTunnel/TunnelLog.swift
       # Privacy manifest: declared required-reason APIs + collected data types.
       - path: Privacy/App/PrivacyInfo.xcprivacy
         buildPhase: resources
     dependencies:
       - package: LeikwanIOSCore
       - target: PacketTunnel
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - framework: Frameworks/LeikwanRuntime.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
     info:
       path: App/Info.plist
       properties:
@@ -67,6 +80,7 @@ targets:
         CFBundleLocalizations: [en, es, zh-Hans, zh-Hant, ko]
         ITSAppUsesNonExemptEncryption: false
         BridgeAppGroup: $(BRIDGE_APP_GROUP)
+        BridgeLeaseKeychainGroup: $(AppIdentifierPrefix)$(BRIDGE_BUNDLE_ID).tunnel
     entitlements:
       path: App/Bridge.entitlements
       properties:
@@ -74,8 +88,13 @@ targets:
           - packet-tunnel-provider
         com.apple.security.application-groups:
           - $(BRIDGE_APP_GROUP)
+        # Share the extension's ORIGINAL default group, preserving the pinned lease key.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)$(BRIDGE_BUNDLE_ID)
+          - $(AppIdentifierPrefix)$(BRIDGE_BUNDLE_ID).tunnel
     settings:
       base:
+        OTHER_LDFLAGS: [-lc++]
         PRODUCT_BUNDLE_IDENTIFIER: $(BRIDGE_BUNDLE_ID)
         PRODUCT_NAME: Bridge
         # CI sets these to the App Store profile names for manual signing; unset in Xcode.
@@ -114,6 +133,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         BridgeAppGroup: $(BRIDGE_APP_GROUP)
+        BridgeLeaseKeychainGroup: $(AppIdentifierPrefix)$(BRIDGE_BUNDLE_ID).tunnel
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
@@ -124,6 +144,9 @@ targets:
           - packet-tunnel-provider
         com.apple.security.application-groups:
           - $(BRIDGE_APP_GROUP)
+        # Share the extension's ORIGINAL default group, preserving the pinned lease key.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)$(BRIDGE_BUNDLE_ID).tunnel
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(BRIDGE_BUNDLE_ID).tunnel

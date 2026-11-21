@@ -12,6 +12,7 @@ struct BridgeApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(model.tunnel)
+                .environmentObject(model.localPorts)
                 .environmentObject(navigator)
                 .environmentObject(latency)
                 .tint(Palette.primary)
@@ -28,7 +29,11 @@ struct BridgeApp: App {
             // background the tunnel controller drops to a 5 s cadence (or stops, once
             // iOS suspends the app). iOS 16 two-parameter form.
             model.tunnel.setAppVisible(phase == .active)
+            // Ordinary app listeners cannot be a persistent cross-app background helper.
+            // Inactive (e.g. Control Center) is transient; background explicitly stops.
+            if phase == .background { model.localPorts.setAppVisible(false) }
             if phase == .active {
+                model.localPorts.setAppVisible(true)
                 Task {
                     await model.refreshCatalog()
                 }

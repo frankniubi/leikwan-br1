@@ -15,6 +15,10 @@ struct DashboardView: View {
                     if let alert = alertText {
                         AlertCard(text: alert)
                     }
+                    ConnectionModePicker()
+                    if model.localPortMode {
+                        LocalPortsView()
+                    } else {
                     NetworkSpeedCard()
                     LazyVGrid(columns: columns, spacing: Metrics.gutter) {
                         OutboundModeCard()
@@ -23,6 +27,7 @@ struct DashboardView: View {
                         CurrentRouteCard()
                         RunTimeCard()
                         ConnectionsCard()
+                    }
                     }
                 }
                 .padding(Metrics.pagePadding)

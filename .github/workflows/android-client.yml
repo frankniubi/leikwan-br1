@@ -36,8 +36,7 @@ jobs:
           cache: true
           cache-dependency-path: tools/ultra-client/go.sum
 
-      # The APK bundles the runtime committed under app/src/main; this proves the
-      # current source still builds for both Android ABIs.
+      # Build and package the exact runtime being tested, not the previous release ELF.
       - name: Build Android Ultra runtime (arm64, x86_64)
         id: runtime
         continue-on-error: true
@@ -60,6 +59,19 @@ jobs:
               -ldflags "-s -w -buildid= -X main.runtimeBuildVersion=$version" \
               -o "../../out/ultra-client_android_$abi" .
             sha256sum "../../out/ultra-client_android_$abi"
+          done
+
+      - name: Package rebuilt Ultra runtime slices
+        if: ${{ steps.runtime.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in arm64:arm64-v8a x86_64:x86_64; do
+            source="out/ultra-client_android_${pair%%:*}"
+            abi="${pair#*:}"
+            mkdir -p "leikwan-android/app/src/main/jniLibs/$abi" "leikwan-android/app/src/main/assets/runtime/$abi"
+            cp "$source" "leikwan-android/app/src/main/jniLibs/$abi/libultra-client.so"
+            cp "$source" "leikwan-android/app/src/main/assets/runtime/$abi/ultra-client"
           done
 
       - name: Run Android unit tests
@@ -93,6 +105,22 @@ jobs:
           ./gradlew --no-daemon --stacktrace assembleRelease
           test -s app/build/outputs/apk/release/app-release-unsigned.apk
 
+      - name: Verify APK contains the rebuilt Ultra runtime
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import zipfile
+          for variant, name in [('debug', 'app-debug.apk'), ('release', 'app-release-unsigned.apk')]:
+              path = Path('leikwan-android/app/build/outputs/apk') / variant / name
+              with zipfile.ZipFile(path) as apk:
+                  for source, abi in [('arm64', 'arm64-v8a'), ('x86_64', 'x86_64')]:
+                      expected = Path('out/ultra-client_android_' + source).read_bytes()
+                      assert apk.read('lib/' + abi + '/libultra-client.so') == expected, (variant, abi)
+                      assert apk.read('assets/runtime/' + abi + '/ultra-client') == expected, (variant, abi, 'asset')
+              print(path, 'both ABI runtime slices match this source build')
+          PYTHON
+
       - name: Upload release APK and mapping
         if: ${{ steps.release_apk.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -124,6 +152,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Enable KVM for port-mode runtime instrumentation
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test actual port-mode FD binding on Android
+        id: port_egress
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect
+          script: cd leikwan-android && ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest -Pqatest=true -Pandroid.testInstrumentationRunnerArguments.class=com.leikwan.bridge.net.DirectPortEgressRuntimeTest
+
+      - name: Upload port-mode instrumentation reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-port-egress-reports
+          path: |
+            leikwan-android/app/build/reports/androidTests/
+            leikwan-android/app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Gate summary
         if: ${{ always() }}
         shell: bash
@@ -133,6 +192,7 @@ jobs:
             unit_tests=${{ steps.unit_tests.outcome }}
             apk=${{ steps.apk.outcome }}
             release_apk=${{ steps.release_apk.outcome }}
+            port_egress=${{ steps.port_egress.outcome }}
         run: |
           set -euo pipefail
           failed=0

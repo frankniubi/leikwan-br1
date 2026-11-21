@@ -17,16 +17,19 @@ const (
 	windowsIPv6UnicastIf = 31
 )
 
-func configureProviderDialer(dialer *net.Dialer, network string, config Config) error {
+func configureProviderDialer(dialer *net.Dialer, network string, config Config) (bool, error) {
 	if config.EgressInterfaceIndex <= 0 && strings.TrimSpace(config.EgressInterface) == "" {
-		return nil
+		if config.DirectEgressRequired {
+			return false, errDirectEgressUnavailable
+		}
+		return false, nil
 	}
 	if config.EgressInterfaceIndex <= 0 {
-		return fmt.Errorf("egress interface index unavailable")
+		return false, fmt.Errorf("egress interface index unavailable")
 	}
 	address := net.ParseIP(config.EgressLocalAddress)
 	if address == nil {
-		return fmt.Errorf("egress interface address unavailable")
+		return false, fmt.Errorf("egress interface address unavailable")
 	}
 	isIPv6 := network == "tcp6" || network == "udp6"
 	if isIPv6 {
@@ -72,5 +75,5 @@ func configureProviderDialer(dialer *net.Dialer, network string, config Config) 
 		}
 		return bindErr
 	}
-	return nil
+	return true, nil
 }

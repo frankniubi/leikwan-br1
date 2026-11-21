@@ -28,6 +28,8 @@ public final class URLSessionPanelTransport: PanelHTTPTransport {
         }
     }
 
+    public func invalidate() { session.invalidateAndCancel() }
+
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -69,6 +71,9 @@ public final class PanelClient {
         self.transport = transport
         self.allowFailover = allowFailover
     }
+
+    /// End an old app session's in-flight URLSession requests before changing transport.
+    public func cancelDefaultTransport() { (transport as? URLSessionPanelTransport)?.invalidate() }
 
     /// Endpoint that answered last (or the primary before any request).
     public var activeEndpoint: PanelEndpoint {

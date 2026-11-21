@@ -303,6 +303,7 @@ extension AppModel {
     /// path as its scheduled runs), in the app otherwise.
     @discardableResult
     func runScript(_ script: ResolvedScript, trigger: String) async -> ScriptOutcome {
+        guard !localPortMode else { return .failure("unavailable_in_local_port_mode") }
         guard !runningScripts.contains(script.key) else { return .failure("already_running") }
         runningScripts.insert(script.key)
         defer { runningScripts.remove(script.key) }

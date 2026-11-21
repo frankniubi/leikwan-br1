@@ -28,6 +28,18 @@ func StartUltra(configJSON string) (*UltraRuntime, error) {
 	return &UltraRuntime{runtime: runtime}, nil
 }
 
+// ResolvePhysicalJSON resolves a hostname through the selected physical-interface DNS.
+func ResolvePhysicalJSON(configJSON, host string) (string, error) {
+	return ultracore.MobileResolvePhysicalJSON([]byte(configJSON), host)
+}
+
+// Cancel requests shutdown without blocking the iOS lifecycle callback.
+func (u *UltraRuntime) Cancel() {
+	if u != nil && u.runtime != nil {
+		u.runtime.Cancel()
+	}
+}
+
 // Stop stops the runtime and waits (bounded) for its listeners to close.
 func (u *UltraRuntime) Stop() {
 	if u == nil || u.runtime == nil {

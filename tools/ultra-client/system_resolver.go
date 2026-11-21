@@ -29,7 +29,7 @@ func needsFallbackResolver(goos string, stat func(string) (os.FileInfo, error)) 
 }
 
 func installFallbackResolverIfNeeded(config Config) {
-	if !needsFallbackResolver(runtime.GOOS, os.Stat) {
+	if config.DirectEgressRequired || !needsFallbackResolver(runtime.GOOS, os.Stat) {
 		return
 	}
 	net.DefaultResolver = newFallbackResolver(config, fallbackDNSServers)
@@ -49,7 +49,7 @@ func newFallbackResolver(config Config, servers []string) *net.Resolver {
 			}
 			server := servers[int(next.Add(1)-1)%len(servers)]
 			family := providerNetwork(network, server)
-			dialer, err := providerDialer(config, family, 0)
+			dialer, err := providerDNSDialer(config, family, 0)
 			if err != nil {
 				return nil, err
 			}

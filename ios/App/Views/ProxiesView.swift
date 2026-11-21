@@ -17,6 +17,10 @@ struct ProxiesView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Metrics.gutter) {
+                    ConnectionModePicker()
+                    if model.localPortMode {
+                        LocalPortsView()
+                    } else {
                     if model.isNativeOutboundAvailable {
                         NativeOutboundSection()
                     }
@@ -48,6 +52,7 @@ struct ProxiesView: View {
                                 UnsupportedNodeCard(dto: dto)
                             }
                         }
+                    }
                     }
                 }
                 .padding(Metrics.pagePadding)

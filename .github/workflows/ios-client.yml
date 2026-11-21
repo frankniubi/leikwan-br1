@@ -79,7 +79,7 @@ jobs:
         run: |
           go vet .
           GOOS=darwin go vet -tags ios .
-          go test -count=1 -run 'Config|Normalize|Control|Policy|Lease|Attest' .
+          go test -count=1 -run 'Config|Normalize|Control|Policy|Lease|Attest|Provider|Resolver|Location|Darwin|Direct|SocketBroker' .
 
   frameworks:
     name: Build iOS runtime frameworks

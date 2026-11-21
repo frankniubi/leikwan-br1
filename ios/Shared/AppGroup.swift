@@ -29,6 +29,9 @@ enum AppGroup {
     /// Private directory for runtime control sockets and status files.
     static var runtimeDirectory: URL { ensure(containerURL.appendingPathComponent("r", isDirectory: true)) }
 
+    /// Separate short paths: an old VPN runtime must never share a port-mode control socket.
+    static var localPortRuntimeDirectory: URL { ensure(containerURL.appendingPathComponent("p", isDirectory: true)) }
+
     /// The bundled rule-sets, copied here by the tunnel (`RuleSetInstaller`); sing-box reads
     /// them as `local` rule-sets from this path.
     static var ruleSetDirectory: URL { ensure(containerURL.appendingPathComponent("rule-sets", isDirectory: true)) }

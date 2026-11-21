@@ -104,6 +104,27 @@ final class TunnelController: ObservableObject {
         }
     }
 
+    /// Stop only OUR VPN and disable its On Demand before App-process listeners start.
+    /// Does not install a profile or touch another application's VPN.
+    func stopForLocalPorts() async -> Bool {
+        guard let manager else { return true }
+        do {
+            if manager.isOnDemandEnabled {
+                manager.isOnDemandEnabled = false
+                try await manager.saveToPreferences()
+            }
+            manager.connection.stopVPNTunnel()
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline {
+                switch manager.connection.status {
+                case .invalid, .disconnected: return true
+                default: try await Task.sleep(nanoseconds: 100_000_000)
+                }
+            }
+        } catch { lastError = error.localizedDescription }
+        return false
+    }
+
     /// The tunnel removes its launch snapshot when the panel revokes the device or the plan no
     /// longer allows the exit; On Demand would then only retry a start that cannot work.
     private func disableOnDemandWithoutPlan() async {

@@ -5,7 +5,7 @@ extension AppModel {
     private static let lastUploadedDebugCollectionKey = "last_uploaded_debug_collection_uuid"
 
     func uploadDebugLogsNow(liveLines: [String] = []) async throws -> (referenceCode: String, bytes: Int) {
-        guard let client, let profile else {
+        guard let client = try await activePanelClient(), let profile else {
             throw AppError(L("Sign in before uploading logs"))
         }
         let scope = profile.accountKey + "#" + client.credentials.deviceId

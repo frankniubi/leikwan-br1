@@ -1,11 +1,26 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 )
+
+var errDirectEgressUnavailable = errors.New("direct egress unavailable")
+
+func providerDNSDialer(config Config, network string, timeout time.Duration) (*net.Dialer, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	configured, err := configureProviderDialer(dialer, network, config)
+	if err != nil {
+		return nil, err
+	}
+	if config.DirectEgressRequired && !configured {
+		return nil, errDirectEgressUnavailable
+	}
+	return dialer, nil
+}
 
 func providerNetwork(base, address string) string {
 	host, _, err := net.SplitHostPort(address)
@@ -21,9 +36,16 @@ func providerNetwork(base, address string) string {
 }
 
 func providerDialer(config Config, network string, timeout time.Duration) (*net.Dialer, error) {
-	dialer := &net.Dialer{Timeout: timeout}
-	if err := configureProviderDialer(dialer, network, config); err != nil {
+	dialer, err := providerDNSDialer(config, network, timeout)
+	if err != nil {
 		return nil, err
+	}
+	if config.DirectEgressRequired {
+		resolver, err := providerResolver(config)
+		if err != nil {
+			return nil, err
+		}
+		dialer.Resolver = resolver
 	}
 	return dialer, nil
 }

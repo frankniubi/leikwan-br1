@@ -87,13 +87,19 @@ private struct MainShell: View {
 
 private struct SectionScreen: View {
     let section: AppSection
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        if model.localPortMode && (section == .rules || section == .tools) {
+            Text("Rules, tools, imports and scripts are unavailable in foreground Local Port mode. Switch to VPN mode to use them.")
+                .padding()
+        } else {
         switch section {
         case .dashboard: DashboardView()
         case .proxies: ProxiesView()
         case .rules: NavigationStack { RoutingHubView() }
         case .tools: ToolsView()
+        }
         }
     }
 }
@@ -103,8 +109,20 @@ private struct SectionScreen: View {
 struct StartButton: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var tunnel: TunnelController
+    @EnvironmentObject private var ports: LocalPortController
 
     var body: some View {
+        if model.localPortMode {
+            Button {
+                Task { await model.toggleConnection() }
+            } label: {
+                Label(ports.isRunning ? "Stop ports" : "Start ports", systemImage: ports.isRunning ? "stop.fill" : "play.fill")
+                    .font(.headline).padding(18)
+                    .background(Palette.primaryContainer, in: RoundedRectangle(cornerRadius: 18))
+            }
+            .buttonStyle(.plain)
+            .disabled(ports.isCleaningUp || model.localPortForwardIDs.isEmpty)
+        } else {
         Button {
             Task { await model.toggleConnection() }
         } label: {
@@ -130,6 +148,7 @@ struct StartButton: View {
         .buttonStyle(.plain)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: tunnel.isConnected)
         .accessibilityLabel(tunnel.isConnected ? L("Disconnect") : L("Connect"))
+        }
     }
 }
 

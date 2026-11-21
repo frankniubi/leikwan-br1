@@ -38,6 +38,7 @@ final class UltraLeaseManager {
     private let forwards: [UltraForwardLaunch]
     private let essentialForwardIDs: Set<Int64>
     private let onUnusable: UnusableHandler
+    private let onConfigurationChanged: (() -> Void)?
     private let restartBootstrap: (UltraForwardLaunch, ExternalUotGrant?) throws -> Void
     private let wakeup = LoopWakeup()
     private let deliveryQueue = DispatchQueue(label: "org.forfoxsakesantuary.foxbridgeinternal.tunnel.ultra-lease", attributes: .concurrent)
@@ -49,11 +50,12 @@ final class UltraLeaseManager {
     /// Forward id -> when the panel last asked for it to be leased again.
     private var refreshRequests: [Int64: Date] = [:]
 
-    init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, restartBootstrap: @escaping (UltraForwardLaunch, ExternalUotGrant?) throws -> Void, onUnusable: @escaping UnusableHandler) {
+    init(client: PanelClient, forwards: [UltraForwardLaunch], essentialForwardIDs: Set<Int64>, onConfigurationChanged: (() -> Void)? = nil, restartBootstrap: @escaping (UltraForwardLaunch, ExternalUotGrant?) throws -> Void, onUnusable: @escaping UnusableHandler) {
         self.client = client
         self.forwards = forwards
         self.essentialForwardIDs = essentialForwardIDs
         self.onUnusable = onUnusable
+        self.onConfigurationChanged = onConfigurationChanged
         self.restartBootstrap = restartBootstrap
     }
 
@@ -253,6 +255,7 @@ final class UltraLeaseManager {
         let response = try await client.pullConfigs()
         let catalog = response.catalog(selectedForwardId: forward.forwardID)
         guard let supported = catalog.supportedForward(id: forward.forwardID) else {
+            onConfigurationChanged?()
             throw UltraLeaseError("ultra_policy_unavailable")
         }
         guard let policy = UltraPolicy.from(supported.contract) else {
@@ -263,7 +266,9 @@ final class UltraLeaseManager {
             throw UltraLeaseError("ultra_policy_unavailable")
         }
         // Static bindings are baked into the runtime config; only the app can re-plan them.
-        if policy.targetDigest != forward.targetDigest || policy.transport != forward.transport {
+        if policy.targetDigest != forward.targetDigest || policy.transport != forward.transport ||
+           (onConfigurationChanged != nil && supported.contract.listenPort != forward.listenPort) {
+            onConfigurationChanged?()
             throw UltraLeaseError("ultra_forward_changed_reconnect")
         }
         return policy
@@ -506,11 +511,17 @@ enum UltraLeaseKeychain {
     }
 
     private static func baseQuery() -> [String: Any] {
-        return [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        // App Local Port mode must use the already-pinned extension key, not generate
+        // another scalar for the same install ID. This is the extension's original group.
+        if let group = LeaseKeychainScope.explicitGroup(Bundle.main.object(forInfoDictionaryKey: "BridgeLeaseKeychainGroup")) {
+            query[kSecAttrAccessGroup as String] = group
+        }
+        return query
     }
 
     private static func load() -> LoadResult {
