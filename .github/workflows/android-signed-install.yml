@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [30, 34, 35]
+        api: [36]
     steps:
       - uses: actions/checkout@v4
       - name: Download exact signed test and current production APKs
@@ -74,4 +74,5 @@ jobs:
           path: |
             out/*.txt
             out/*.log
+            out/*.xml
           retention-days: 14
