@@ -22,6 +22,17 @@ final class AppModel: ObservableObject {
             return
         }
         localPorts.stop()
+        // A stop cancels immediately but joins off-main. Do not change mode/client until
+        // the old runtimes have released their listeners (or report a bounded failure).
+        let cleanupDeadline = Date().addingTimeInterval(8)
+        while localPorts.isCleaningUp {
+            guard Date() < cleanupDeadline else {
+                notice = L("Stopping")
+                return
+            }
+            do { try await Task.sleep(nanoseconds: 50_000_000) }
+            catch { return }
+        }
         passiveDebugLogUpload?.cancel(); passiveDebugLogUpload = nil
         cloudQueue?.cancel(); cloudQueue = nil
         if enabled {

@@ -146,6 +146,7 @@ struct StartButton: View {
             .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
+        .disabled(ports.isCleaningUp || model.changingConnectionMode)
         .animation(.spring(response: 0.35, dampingFraction: 0.8), value: tunnel.isConnected)
         .accessibilityLabel(tunnel.isConnected ? L("Disconnect") : L("Connect"))
         }
