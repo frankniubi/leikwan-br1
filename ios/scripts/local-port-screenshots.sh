@@ -76,7 +76,7 @@ else
 fi
 printf 'Capture iPhone %s on %s (%s)\n' "$udid" "$runtime" "$mode"
 bounded 120 xcrun simctl bootstatus "$udid" -b
-bounded 45 xcrun simctl install "$udid" "$app"
+bounded 150 xcrun simctl install "$udid" "$app"
 bounded 10 xcrun simctl ui "$udid" appearance light
 bounded 10 xcrun simctl terminate "$udid" "$bundle_id" || true
 bounded 30 xcrun simctl launch "$udid" "$bundle_id" \
