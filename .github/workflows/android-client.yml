@@ -70,7 +70,7 @@ jobs:
             source="out/ultra-client_android_${pair%%:*}"
             abi="${pair#*:}"
             mkdir -p "leikwan-android/app/src/main/jniLibs/$abi" "leikwan-android/app/src/main/assets/runtime/$abi"
-            cp "$source" "leikwan-android/app/src/main/jniLibs/$abi/libultra-client.so"
+            cp "$source" "leikwan-android/app/src/main/jniLibs/$abi/libultra_client.so"
             cp "$source" "leikwan-android/app/src/main/assets/runtime/$abi/ultra-client"
           done
 
@@ -116,7 +116,7 @@ jobs:
               with zipfile.ZipFile(path) as apk:
                   for source, abi in [('arm64', 'arm64-v8a'), ('x86_64', 'x86_64')]:
                       expected = Path('out/ultra-client_android_' + source).read_bytes()
-                      assert apk.read('lib/' + abi + '/libultra-client.so') == expected, (variant, abi)
+                      assert apk.read('lib/' + abi + '/libultra_client.so') == expected, (variant, abi)
                       assert apk.read('assets/runtime/' + abi + '/ultra-client') == expected, (variant, abi, 'asset')
               print(path, 'both ABI runtime slices match this source build')
           PYTHON
