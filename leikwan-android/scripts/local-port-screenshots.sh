@@ -11,6 +11,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 output="app/build/local-port-screenshots"
 mkdir -p "$output"
+# Prevent the emulator launcher ANR dialog from covering the actual app captures.
+adb shell am force-stop com.google.android.apps.nexuslauncher
 adb shell am instrument -w \
   -e class com.leikwan.bridge.ui.connections.LocalPortScreenshotsTest \
   com.leikwan.bridge.test/androidx.test.runner.AndroidJUnitRunner | tee "$output/instrumentation.txt"

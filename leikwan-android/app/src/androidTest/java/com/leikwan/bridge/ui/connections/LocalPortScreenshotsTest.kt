@@ -1,6 +1,7 @@
 package com.leikwan.bridge.ui.connections
 
 import android.graphics.Bitmap
+import android.os.ParcelFileDescriptor
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -128,9 +129,23 @@ class LocalPortScreenshotsTest {
     private fun capture(name: String) {
         composeRule.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val automation = instrumentation.uiAutomation
+        // CI's Pixel Launcher can ANR independently of the app and obscure the whole window.
+        // Drain and close the command descriptor so force-stop finishes before capture.
+        ParcelFileDescriptor.AutoCloseInputStream(
+            automation.executeShellCommand("am force-stop com.google.android.apps.nexuslauncher"),
+        ).use { it.readBytes() }
+        automation.waitForIdle(500, 5_000)
+        composeRule.waitForIdle()
+        val root = automation.rootInActiveWindow
+        if (root != null) {
+            val overlays = root.findAccessibilityNodeInfosByText("isn't responding") +
+                root.findAccessibilityNodeInfosByText("isn’t responding")
+            assertTrue("System ANR overlay still obscures $name", overlays.isEmpty())
+        }
         val directory = File(instrumentation.targetContext.filesDir, "local-port-screenshots")
         directory.mkdirs()
-        val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot()) {
+        val bitmap = checkNotNull(automation.takeScreenshot()) {
             "Could not capture the emulator window"
         }
         try {
