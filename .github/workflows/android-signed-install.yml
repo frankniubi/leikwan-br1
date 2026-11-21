@@ -13,26 +13,51 @@ permissions:
 
 jobs:
   install:
-    name: Clean install and production upgrade (API ${{ matrix.api }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Install ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        api: [36]
+        include:
+          - label: android15-x86_64-16kb
+            api: 35
+            runner: ubuntu-latest
+            target: google_apis_ps16k
+            arch: x86_64
+            page_size: 16384
+          - label: android16-x86_64-16kb
+            api: 36
+            runner: ubuntu-latest
+            target: google_apis_ps16k
+            arch: x86_64
+            page_size: 16384
+          - label: android16-arm64
+            api: 36
+            runner: macos-15
+            target: google_apis
+            arch: arm64-v8a
+            page_size: 4096
     steps:
       - uses: actions/checkout@v4
-      - name: Download exact signed test and current production APKs
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Download exact signed test and production APKs
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
-          curl --fail --location --retry 2 --output out/test.apk 'https://v3.leikwanhost.com/artifacts/files/tests/LeiKwan-0.2.56-port-test1-f2242101ee4b.apk'
-          echo 'f2242101ee4b7a3bdfd469f53862b8362b715c00578ac111b8bc70a026253d92  out/test.apk' | sha256sum -c -
+          uname -m | tee out/host-architecture.txt
+          curl --fail --location --output out/test.apk 'https://v3.leikwanhost.com/artifacts/files/tests/LeiKwan-0.2.56-port-test1-f2242101ee4b.apk'
           curl --fail --location --output out/versions.json https://v3.leikwanhost.com/artifacts/versions.json
           python3 - <<'PY'
           import json, subprocess, hashlib
           from pathlib import Path
+          test = Path('out/test.apk').read_bytes()
+          assert hashlib.sha256(test).hexdigest() == 'f2242101ee4b7a3bdfd469f53862b8362b715c00578ac111b8bc70a026253d92'
           manifest = json.loads(Path('out/versions.json').read_text())
           entry = manifest['android_client_apk']
           url = 'https://v3.leikwanhost.com/artifacts/leikwan-android-client.apk'
@@ -42,22 +67,29 @@ jobs:
           print('Production baseline', entry['version'], len(data))
           PY
       - name: Enable KVM
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Verify ARM host
+        if: matrix.arch == 'arm64-v8a'
+        run: test "$(uname -m)" = arm64
       - name: Reproduce actual package manager acceptance without app login
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
-          target: google_apis
-          arch: x86_64
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect
           script: |
             adb shell getprop ro.build.version.release | tee out/android-version.txt
+            adb shell getprop ro.product.cpu.abi | tee out/guest-architecture.txt
             adb shell getconf PAGE_SIZE | tee out/page-size.txt
+            test "$(tr -d '\r\n' < out/page-size.txt)" = '${{ matrix.page_size }}'
+            test "$(tr -d '\r\n' < out/guest-architecture.txt)" = '${{ matrix.arch }}'
             adb logcat -c
             adb install --no-streaming out/test.apk >out/clean-install.txt 2>&1; cat out/clean-install.txt
             adb shell dumpsys package com.leikwan.bridge >out/test-package.txt
@@ -65,12 +97,15 @@ jobs:
             adb install --no-streaming out/production.apk >out/production-install.txt 2>&1; cat out/production-install.txt
             adb install --no-streaming -r out/test.apk >out/upgrade-install.txt 2>&1; cat out/upgrade-install.txt
             adb shell dumpsys package com.leikwan.bridge >out/upgraded-package.txt
+            adb shell monkey -p com.leikwan.bridge -c android.intent.category.LAUNCHER 1 >out/launch.txt 2>&1
+            adb shell uiautomator dump /sdcard/install-screen.xml
+            adb pull /sdcard/install-screen.xml out/install-screen.xml
             adb logcat -d >out/package-manager.log
             grep -q '^Success' out/clean-install.txt && grep -q '^Success' out/production-install.txt && grep -q '^Success' out/upgrade-install.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: signed-install-api-${{ matrix.api }}
+          name: signed-install-${{ matrix.label }}
           path: |
             out/*.txt
             out/*.log
