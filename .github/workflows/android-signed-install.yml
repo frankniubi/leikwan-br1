@@ -1,0 +1,80 @@
+name: Signed Android APK install reproduction
+
+on:
+  push:
+    branches:
+      - "ci/apk-install-*"
+    paths:
+      - ".github/workflows/android-signed-install.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Clean install and production upgrade (API ${{ matrix.api }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [30, 34, 35]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact signed test and current production APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          curl --fail --location --retry 2 --output out/test.apk 'https://v3.leikwanhost.com/artifacts/files/tests/LeiKwan-0.2.56-port-test1-f2242101ee4b.apk'
+          echo 'f2242101ee4b7a3bdfd469f53862b8362b715c00578ac111b8bc70a026253d92  out/test.apk' | sha256sum -c -
+          curl --fail --location --output out/versions.json https://v3.leikwanhost.com/artifacts/versions.json
+          python3 - <<'PY'
+          import json, urllib.request, hashlib
+          from pathlib import Path
+          manifest = json.loads(Path('out/versions.json').read_text())
+          entry = manifest['android_client_apk']
+          url = entry.get('artifact_url') or entry.get('url')
+          if not url.startswith('http'):
+              url = 'https://v3.leikwanhost.com' + url
+          with urllib.request.urlopen(url, timeout=120) as source, open('out/production.apk', 'wb') as dest:
+              data = source.read()
+              assert hashlib.sha256(data).hexdigest() == entry['sha256']
+              dest.write(data)
+          print('Production baseline', entry['version'], len(data))
+          PY
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Reproduce actual package manager acceptance without app login
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect
+          script: |
+            adb shell getprop ro.build.version.release | tee out/android-version.txt
+            adb shell getconf PAGE_SIZE | tee out/page-size.txt
+            adb logcat -c
+            adb install --no-streaming out/test.apk >out/clean-install.txt 2>&1; cat out/clean-install.txt
+            adb shell dumpsys package com.leikwan.bridge >out/test-package.txt
+            adb uninstall com.leikwan.bridge >out/emulator-only-uninstall.txt 2>&1
+            adb install --no-streaming out/production.apk >out/production-install.txt 2>&1; cat out/production-install.txt
+            adb install --no-streaming -r out/test.apk >out/upgrade-install.txt 2>&1; cat out/upgrade-install.txt
+            adb shell dumpsys package com.leikwan.bridge >out/upgraded-package.txt
+            adb logcat -d >out/package-manager.log
+            grep -q '^Success' out/clean-install.txt && grep -q '^Success' out/production-install.txt && grep -q '^Success' out/upgrade-install.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signed-install-api-${{ matrix.api }}
+          path: |
+            out/*.txt
+            out/*.log
+          retention-days: 14
