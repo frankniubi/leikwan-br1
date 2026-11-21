@@ -45,10 +45,14 @@ public struct LocalPortRunGate {
 }
 
 public enum LocalPortSupport {
-    public static func unavailableReason(_ forward: IOSSupportedForward) -> String? {
+    public static func allSupported(in catalog: IOSForwardCatalog, now: Date = Date()) -> [IOSSupportedForward] {
+        catalog.supported.filter { !catalog.deletedForwardIds.contains($0.forwardId) && unavailableReason($0, now: now) == nil }
+    }
+
+    public static func unavailableReason(_ forward: IOSSupportedForward, now: Date = Date()) -> String? {
         if forward.kind != .ultra { return "Local Port supports fixed-target Ultra forwards only; use VPN mode for Bond" }
         if forward.isNativeOutboundRule { return "Native outbound requires VPN mode; it is not a fixed-target port" }
-        guard let policy = UltraPolicy.from(forward.contract) else { return "Forward authorization is unavailable; refresh the catalog" }
+        guard let policy = UltraPolicy.from(forward.contract, now: now) else { return "Forward authorization is unavailable; refresh the catalog" }
         if policy.transport == "udp" { return "UDP-only forwards are not available in this Local Port version; use VPN mode" }
         return nil
     }

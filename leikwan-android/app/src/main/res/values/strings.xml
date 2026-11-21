@@ -469,4 +469,14 @@
     <string name="ports_forward_name">#%1$d · %2$s</string>
     <string name="ports_forward_endpoint">127.0.0.1:%1$d → %2$s (%3$s)</string>
 <string name="ports_degraded">Panel temporarily unavailable; valid port forwarding continues until authorization expires</string>
+    <string name="ports_only">Ports only</string>
+    <string name="ports_all_summary">All %1$d configured ports</string>
+    <string name="ports_local_port">127.0.0.1:%1$d</string>
+    <string name="ports_active">Active</string>
+    <string name="ports_ready">Ready</string>
+    <string name="ports_skipped_summary">%1$d unsupported</string>
+    <string name="ports_advanced">Advanced</string>
+    <string name="ports_advanced_note">Configured Ultra ports only, on localhost. No VPN slot. Network unavailable or Android blocks bypass: pause, never fall back to VPN. SINGLE/BOND and native SOCKS are skipped.</string>
+    <string name="ports_skipped_reason">%1$s: requires an active fixed-target Ultra rule</string>
+    <string name="ports_no_supported">No supported ports</string>
 </resources>

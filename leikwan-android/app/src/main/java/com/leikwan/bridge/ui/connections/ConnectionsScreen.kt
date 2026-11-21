@@ -83,7 +83,6 @@ fun ConnectionsScreen(
         onSetRuleMode = viewModel::setRuleMode,
         onMode = viewModel::setConnectionMode,
         onPortNetwork = viewModel::setPortNetwork,
-        onPortForward = viewModel::togglePortForward,
         onOpenServices = onOpenServices,
         onOpenAppRouting = onOpenAppRouting,
         onImportNode = onImportNode,
@@ -96,7 +95,7 @@ internal fun connectToggle(
     state: ConnectionsUiState,
     activity: MainActivity?,
 ): () -> Unit = {
-    val turningOn = state.vpnStatus == VpnStatus.DISCONNECTED
+    val turningOn = !state.modeSwitching && state.vpnStatus == VpnStatus.DISCONNECTED
     if (turningOn && com.leikwan.bridge.service.PortModePolicy.needsVpnConsent(state.connectionMode) && activity != null) {
         activity.requestVpnPermission {
             viewModel.toggleConnect()
@@ -116,7 +115,6 @@ internal fun ConnectionsScreenContent(
     onSetRuleMode: (Boolean) -> Unit = {},
     onMode: (com.leikwan.bridge.service.AppConnectionMode) -> Unit = {},
     onPortNetwork: (com.leikwan.bridge.net.PortNetworkChoice) -> Unit = {},
-    onPortForward: (Long) -> Unit = {},
     onOpenServices: () -> Unit = {},
     onOpenAppRouting: () -> Unit = {},
     onImportNode: () -> Unit = {},
@@ -128,7 +126,7 @@ internal fun ConnectionsScreenContent(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ConnectionModeCard(state, onMode, onPortNetwork, onPortForward)
+        ConnectionModeCard(state, onMode, onPortNetwork)
         DashboardHeader(state = state, traffic = traffic)
 
         UpdateBanner(state = updateState, onUpdate = onUpdate)

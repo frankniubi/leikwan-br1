@@ -109,21 +109,58 @@ class ConnectionsViewModelTest {
     )
 
     @Test
-    fun `VPN PORTS switching persists separate mode and strict routing before any service start`() {
-        val viewModel = vm()
+    fun `VPN PORTS switching persists mode and all configured supported forwards`() {
+        val viewModel = vm(catalog = catalog(
+            forward(21).copy(mode = ForwardMode.ULTRA, backendMode = "ultra"),
+            forward(22).copy(mode = ForwardMode.ULTRA, backendMode = "ultra"), forward(23)))
         dispatcher.scheduler.advanceUntilIdle()
         viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.PORTS)
+        assertTrue(viewModel.state.value.modeSwitching)
+        dispatcher.scheduler.advanceUntilIdle()
         viewModel.setPortNetwork(com.leikwan.bridge.net.PortNetworkChoice.WIFI)
-        viewModel.togglePortForward(21L)
-        viewModel.togglePortForward(22L)
         assertEquals(com.leikwan.bridge.service.AppConnectionMode.PORTS, prefs.connectionMode)
         assertEquals(com.leikwan.bridge.net.PortNetworkChoice.WIFI, prefs.portNetworkChoice)
         assertEquals(setOf(21L, 22L), prefs.portForwardIds)
+        assertEquals(1, viewModel.state.value.unsupportedPortCount)
         assertTrue(com.leikwan.bridge.net.DirectPortNetwork.required)
         assertFalse(prefs.vpnConnectIntent)
         viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.VPN)
+        dispatcher.scheduler.advanceUntilIdle()
         assertEquals(com.leikwan.bridge.service.AppConnectionMode.VPN, prefs.connectionMode)
         assertFalse(com.leikwan.bridge.net.DirectPortNetwork.required)
+    }
+
+    @Test
+    fun `switching connected VPN stops own runtime once and waits before changing mode`() {
+        var stops = 0
+        val viewModel = ConnectionsViewModel(app, prefs,
+            catalogFetcher = { catalog() }, nodeFlows = { flowOf(emptyList()) },
+            stopConnect = { stops++ }, vpnRunning = true)
+        dispatcher.scheduler.advanceUntilIdle()
+        viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.PORTS)
+        viewModel.setConnectionMode(com.leikwan.bridge.service.AppConnectionMode.VPN)
+        assertTrue(viewModel.state.value.modeSwitching)
+        assertEquals(com.leikwan.bridge.service.AppConnectionMode.VPN, prefs.connectionMode)
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(1, stops)
+        assertFalse(viewModel.state.value.modeSwitching)
+        assertEquals(VpnStatus.DISCONNECTED, viewModel.state.value.vpnStatus)
+        assertEquals(com.leikwan.bridge.service.AppConnectionMode.PORTS, prefs.connectionMode)
+        assertFalse(prefs.vpnConnectIntent)
+    }
+
+    @Test
+    fun `catalog additions and deletions automatically converge the complete supported set`() {
+        var current = catalog(forward(21).copy(mode = ForwardMode.ULTRA, backendMode = "ultra"))
+        val viewModel = ConnectionsViewModel(app, prefs, catalogFetcher = { current }, nodeFlows = { flowOf(emptyList()) })
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(setOf(21L), viewModel.state.value.portForwardIds)
+        current = catalog(forward(22).copy(mode = ForwardMode.ULTRA, backendMode = "ultra"), forward(23))
+        viewModel.refreshForwards()
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(setOf(22L), viewModel.state.value.portForwardIds)
+        assertEquals(setOf(22L), prefs.portForwardIds)
+        assertEquals(1, viewModel.state.value.unsupportedPortCount)
     }
 
     @Test

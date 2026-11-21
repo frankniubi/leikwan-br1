@@ -6,6 +6,16 @@ import com.leikwan.bridge.runtime.ForwardMode
 enum class AppConnectionMode { VPN, PORTS }
 
 object PortModePolicy {
+    /** Every configured fixed-target Ultra rule, never arbitrary ports or native SOCKS. */
+    fun supported(forwards: List<com.leikwan.bridge.runtime.ForwardListItem>, nativeIds: Set<Long> = emptySet()): List<com.leikwan.bridge.runtime.ForwardListItem> =
+        forwards.filter { it.mode == ForwardMode.ULTRA && it.backendMode.equals("ultra", true)
+            && !it.nativeOutbound && it.forwardId !in nativeIds && it.listenPort in 1..65535
+            && it.target.isNotBlank() && it.serviceStatus.equals("active", true) }
+
+    fun defaultForwardIds(catalog: com.leikwan.bridge.runtime.ForwardCatalog): Set<Long> =
+        supported(catalog.visibleForwards, catalog.nativeOutbound?.forwards.orEmpty().map { it.forwardId }.toSet())
+            .map { it.forwardId }.toSet()
+
     fun retainAuthorizedRuntime(sameNetwork: Boolean, expiresAt: java.time.Instant?, now: java.time.Instant): Boolean =
         sameNetwork && expiresAt?.isAfter(now) == true
 

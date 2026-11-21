@@ -469,4 +469,14 @@
     <string name="ports_forward_name">#%1$d · %2$s</string>
     <string name="ports_forward_endpoint">127.0.0.1:%1$d → %2$s (%3$s)</string>
 <string name="ports_degraded">面板暂时不可用；有效端口转发继续运行至授权到期</string>
+    <string name="ports_only">仅端口</string>
+    <string name="ports_all_summary">已启用全部 %1$d 个端口</string>
+    <string name="ports_local_port">127.0.0.1:%1$d</string>
+    <string name="ports_active">运行中</string>
+    <string name="ports_ready">待连接</string>
+    <string name="ports_skipped_summary">%1$d 项不支持</string>
+    <string name="ports_advanced">高级设置</string>
+    <string name="ports_advanced_note">仅开放已配置的本地 Ultra 端口，不占 VPN。网络不可用或系统禁止绕过时暂停，不回退 VPN。跳过 SINGLE/BOND 和原生 SOCKS。</string>
+    <string name="ports_skipped_reason">%1$s：需要有效的固定目标 Ultra 规则</string>
+    <string name="ports_no_supported">暂无支持的端口</string>
 </resources>

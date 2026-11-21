@@ -11,11 +11,11 @@ final class AppModel: ObservableObject {
     let localPorts = LocalPortController()
     @Published private(set) var localPortMode = false
     @Published private(set) var changingConnectionMode = false
-    @Published var localPortForwardIDs = Set<Int64>()
-
     func setLocalPortMode(_ enabled: Bool) async {
         guard enabled != localPortMode, !changingConnectionMode else { return }
         changingConnectionMode = true
+        // Do not wait for a catalog/network request to finish before switching the UI.
+        // The next Start performs a fresh scoped pull and authorization as before.
         defer { changingConnectionMode = false }
         guard !enabled || runningScripts.isEmpty else {
             notice = "Wait for running scripts to finish before entering Local Port mode"
@@ -33,12 +33,11 @@ final class AppModel: ObservableObject {
         client?.cancelDefaultTransport()
         localPortMode = enabled
         if let profile, let token = Keychain.string(profile.tokenAccount) {
-            if enabled {
-                do { client = try await activePanelClient() }
-                catch { client = nil; notice = Self.describe(error) }
-            } else { client = makeClient(profile, token: token) }
+            client = enabled ? nil : makeClient(profile, token: token)
         }
-        if enabled { await refreshCatalog() }
+        // Switching deliberately stops the old connection; starting the new mode remains
+        // explicit, so a background transition cannot accidentally start another service.
+        notice = L("Not connected")
     }
 
     func activePanelClient() async throws -> PanelClient? {
@@ -297,7 +296,6 @@ final class AppModel: ObservableObject {
             return forward
         }
         apply(IOSForwardFilter.buildCatalog(rawForwards: forwards, selectedForwardId: selectedForwardID))
-        localPortForwardIDs = Set(catalog?.supported.map(\.forwardId) ?? [])
     }
     #endif
 
@@ -364,8 +362,7 @@ final class AppModel: ObservableObject {
     private func apply(_ catalog: IOSForwardCatalog) {
         let hadSelection = selectedForwardID != nil
         self.catalog = catalog.excludingForwards(catalog.deletedForwardIds)
-        localPortForwardIDs.subtract(catalog.deletedForwardIds)
-        if localPortMode { localPorts.catalogDidChange(catalog) }
+        if localPortMode { localPorts.catalogDidChange(catalog.excludingForwards(catalog.deletedForwardIds)) }
         forgetDeletedForwards(catalog.deletedForwardIds)
         // Missing/paused/unsupported forwards stay chosen; only explicit deletion clears them.
         // Do not silently choose another forward in place of a permanently deleted selection.
@@ -552,7 +549,7 @@ final class AppModel: ObservableObject {
         guard !changingConnectionMode, !localPorts.isCleaningUp else { return }
         if localPortMode {
             if localPorts.isRunning { localPorts.stop(); return }
-            guard !isDemo, let catalog, let panel = panelSession() else {
+            guard !isDemo, let panel = panelSession() else {
                 notice = "Local Port requires a real signed-in panel session"
                 return
             }
@@ -560,7 +557,7 @@ final class AppModel: ObservableObject {
                 notice = "This app's VPN has not stopped; Local Port is unavailable"
                 return
             }
-            await localPorts.start(catalog: catalog, selectedIDs: localPortForwardIDs, panel: panel)
+            await localPorts.start(panel: panel) { [weak self] catalog in self?.apply(catalog) }
             return
         }
         if tunnel.isConnected || tunnel.isBusy {

@@ -20,6 +20,7 @@ import com.leikwan.bridge.ui.MainActivity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -48,6 +49,8 @@ class LeikwanPortsService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
+        stopped.value = false
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.ports_title), NotificationManager.IMPORTANCE_LOW))
     }
@@ -56,9 +59,8 @@ class LeikwanPortsService : Service() {
         // Foreground promotion must precede asynchronous panel/network/runtime work, including failure.
         showNotification(getString(R.string.ports_starting))
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
-        if (loop != null) return START_NOT_STICKY
-        selectedIds = intent?.getLongArrayExtra(EXTRA_IDS)?.filter { it > 0L }?.toSet().orEmpty()
-        if (selectedIds.isEmpty() || LeikwanVpnService.isRunning) {
+        if (loop != null) { loop?.requestPollSoon(); return START_NOT_STICKY }
+        if (intent?.action != ACTION_START || LeikwanVpnService.isRunning || prefs.connectionMode != AppConnectionMode.PORTS) {
             fail("ports_stop_vpn_and_select_forward"); shutdown(); return START_NOT_STICKY
         }
         stateMutable.value = PortsServiceState(starting = true)
@@ -110,7 +112,19 @@ class LeikwanPortsService : Service() {
             if (stopping) throw CancellationException("ports_stopped")
             DirectPortNetwork.requireAvailable()
             val generation = DirectPortNetwork.generation
-            repository.pullCatalog(selectedIds.first())
+            val catalog = repository.pullCatalog(selectedIds.firstOrNull() ?: 0L)
+            selectedIds = PortModePolicy.defaultForwardIds(catalog)
+            prefs.portForwardIds = selectedIds
+            plans.keys.toList().filter { it !in selectedIds }.forEach { id ->
+                processes.stopForward(id); plans.remove(id); policies.remove(id); sentAt.remove(id)
+            }
+            val skipped = catalog.visibleForwards.size - selectedIds.size
+            if (selectedIds.isEmpty()) {
+                stopRuntimes()
+                stateMutable.value = PortsServiceState(starting = true, skipped = skipped)
+                showNotification(getString(R.string.ports_no_supported))
+                return
+            }
             val forwards = selectedIds.map { id -> repository.getCachedContract(id)
                 ?: run { stopRuntimes(); throw IllegalStateException("ports_forward_removed_$id") } }
             try { PortModePolicy.validate(forwards) }
@@ -181,7 +195,7 @@ class LeikwanPortsService : Service() {
             if (DirectPortNetwork.generation != generation) throw IOException("ports_network_changed")
             if (!repository.heartbeat()) throw IOException("ports_panel_heartbeat_failed")
             listenerLabels = forwards.map { "127.0.0.1:${it.listenPort} → ${it.target} (${it.transport})" }
-            stateMutable.value = PortsServiceState(running = true, listeners = listenerLabels)
+            stateMutable.value = PortsServiceState(running = true, listeners = listenerLabels, activeIds = plans.keys.toSet(), skipped = skipped)
             showNotification(getString(R.string.ports_running, forwards.size))
         } catch (cancelled: CancellationException) { stopRuntimes(); throw cancelled }
         catch (terminal: PanelControlException) { throw terminal }
@@ -203,7 +217,7 @@ class LeikwanPortsService : Service() {
                 processes.stopForward(id); plans.remove(id); policies.remove(id); sentAt.remove(id)
             }
             if (plans.isNotEmpty()) {
-                stateMutable.value = PortsServiceState(running = true, listeners = listenerLabels, error = error.message)
+                stateMutable.value = PortsServiceState(running = true, listeners = listenerLabels, activeIds = plans.keys.toSet(), error = error.message)
                 showNotification(getString(R.string.ports_degraded))
             } else fail(error.message ?: "ports_paused")
             throw error
@@ -245,6 +259,7 @@ class LeikwanPortsService : Service() {
         stateMutable.value = stateMutable.value.copy(starting = false, running = false, listeners = emptyList())
         scope.launch {
             mutex.withLock { stopRuntimes() }
+            if (instance === this@LeikwanPortsService) { instance = null; stopped.value = true }
             scope.cancel()
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -255,15 +270,31 @@ class LeikwanPortsService : Service() {
 
     companion object {
         private const val CHANNEL = "leikwan_ports"
-        private const val EXTRA_IDS = "forward_ids"
+        private const val ACTION_START = "com.leikwan.bridge.PORTS_START"
+        @Volatile private var instance: LeikwanPortsService? = null
+        private val stopped = MutableStateFlow(true)
         private const val ACTION_STOP = "com.leikwan.bridge.PORTS_STOP"
         private val stateMutable = MutableStateFlow(PortsServiceState())
         val state = stateMutable.asStateFlow()
-        fun start(context: Context, ids: Set<Long>) {
-            ContextCompat.startForegroundService(context, Intent(context, LeikwanPortsService::class.java).putExtra(EXTRA_IDS, ids.toLongArray()))
+        fun start(context: Context) {
+            stopped.value = false
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, LeikwanPortsService::class.java).setAction(ACTION_START))
+            } catch (error: Exception) { stopped.value = true; throw error }
         }
-        fun stop(context: Context) { context.stopService(Intent(context, LeikwanPortsService::class.java)); stateMutable.value = PortsServiceState() }
+        fun stop(context: Context) {
+            instance?.shutdown()
+            context.stopService(Intent(context, LeikwanPortsService::class.java))
+            // A queued start may be cancelled before onCreate: no instance means no runtimes to drain.
+            if (instance == null) stopped.value = true
+            if (stopped.value) stateMutable.value = PortsServiceState()
+        }
+        suspend fun stopAndAwait(context: Context) {
+            stop(context)
+            withTimeout(25_000) { stopped.first { it } }
+            stateMutable.value = PortsServiceState()
+        }
     }
 }
 
-data class PortsServiceState(val starting: Boolean = false, val running: Boolean = false, val error: String? = null, val listeners: List<String> = emptyList())
+data class PortsServiceState(val starting: Boolean = false, val running: Boolean = false, val error: String? = null, val listeners: List<String> = emptyList(), val activeIds: Set<Long> = emptySet(), val skipped: Int = 0)

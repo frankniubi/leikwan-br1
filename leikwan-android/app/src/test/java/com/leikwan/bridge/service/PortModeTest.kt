@@ -48,6 +48,21 @@ class PortModeTest {
     @Test fun `raw fixed-target rules need no user proxy node`() {
         PortModePolicy.validate(listOf(forward(), forward(2L, 2081)))
     }
+    @Test fun `default all means configured active fixed-target Ultra ports only`() {
+        val ordinary = forward().toListItem()
+        val native = forward(2L, 2081).copy(nativeOutbound = true).toListItem()
+        val capabilityOnlyNative = forward(3L, 2082).toListItem()
+        val all = listOf(ordinary, native, capabilityOnlyNative,
+            forward(4L, 2083, ForwardMode.SINGLE).toListItem(),
+            forward(5L, 2084, ForwardMode.BOND).toListItem(),
+            forward(6L, 2085).copy(serviceStatus = "suspended").toListItem(),
+            forward(7L, 0).toListItem())
+        assertEquals(listOf(1L), PortModePolicy.supported(all, setOf(3L)).map { it.forwardId })
+        assertEquals(setOf(1L), PortModePolicy.defaultForwardIds(ForwardCatalog(listOf(ordinary, native), null)))
+        val changed = ForwardCatalog(listOf(forward(8L, 2086).toListItem()), null)
+        assertEquals(setOf(8L), PortModePolicy.defaultForwardIds(changed))
+        assertEquals(emptySet<Long>(), PortModePolicy.defaultForwardIds(ForwardCatalog(emptyList(), null)))
+    }
     @Test fun `single bond and native SOCKS are explicitly unsupported`() {
         for (mode in listOf(ForwardMode.SINGLE, ForwardMode.BOND)) {
             try { PortModePolicy.validate(listOf(forward(mode = mode))); fail("unsupported core accepted") }

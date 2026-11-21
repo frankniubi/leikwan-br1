@@ -2,6 +2,83 @@ import XCTest
 @testable import LeikwanIOSCore
 
 final class LocalPortTests: XCTestCase {
+    private func iosSource(_ path: String) throws -> String {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    func testAllSupportedDefaultsIncludeEveryConfiguredTCPPortAndTrackCatalogChanges() {
+        func forward(_ id: Int64, transport: String = "tcp", expiresIn: TimeInterval = 600, native: Bool = false) -> ForwardContract {
+            var access = Fixtures.ultraAccess(forwardId: id, expiresIn: expiresIn)
+            access["transport"] = transport
+            var result = Fixtures.ultraForward(access: access)
+            result.forwardId = id
+            result.listenPort = 32000 + Int(id)
+            result.transport = transport
+            result.nativeOutbound = native
+            return result
+        }
+        let tcp = forward(1)
+        let both = forward(2, transport: "tcp+udp")
+        let udp = forward(3, transport: "udp")
+        let expired = forward(4, expiresIn: -1)
+        let native = forward(5, native: true)
+        var suspended = forward(6)
+        suspended.serviceStatus = "suspended"
+        let bond = ForwardContractParser.parse(Fixtures.bondForwardJSON())!
+        let initial = IOSForwardFilter.buildCatalog(contracts: [tcp, both, udp, expired, native, suspended, bond], selectedForwardId: nil)
+        XCTAssertEqual(LocalPortSupport.allSupported(in: initial, now: Fixtures.now).map(\.forwardId), [1, 2])
+        let added = forward(7)
+        var refreshed = IOSForwardFilter.buildCatalog(contracts: [tcp, both, added, udp], selectedForwardId: nil)
+        refreshed.deletedForwardIds = [1]
+        XCTAssertEqual(LocalPortSupport.allSupported(in: refreshed, now: Fixtures.now).map(\.forwardId), [2, 7])
+        XCTAssertEqual(LocalPortSupport.allSupported(in: refreshed, now: Fixtures.now).map { $0.contract.listenPort }, [32002, 32007])
+    }
+
+    func testSimplePortUIHasNoSelectionBarrierAndKeepsForegroundWarning() throws {
+        let view = try iosSource("App/Views/LocalPortsView.swift")
+        let button = try iosSource("App/Views/RootView.swift")
+        XCTAssertFalse(view.contains("Toggle("))
+        XCTAssertFalse(view.contains("localPortForwardIDs"))
+        XCTAssertFalse(button.contains("localPortForwardIDs"))
+        XCTAssertTrue(view.contains("L(\"Ports only\")"))
+        XCTAssertTrue(view.contains("L(\"All forwards\")"))
+        XCTAssertTrue(view.contains("L(\"Foreground only; pauses in background\")"))
+        XCTAssertTrue(view.contains("DisclosureGroup(L(\"Advanced settings\"))"))
+        XCTAssertTrue(view.contains("\"127.0.0.1:\" + String(forward.contract.listenPort)"))
+        for language in ["zh-Hans", "zh-Hant"] {
+            let strings = try iosSource("App/Localization/\(language).lproj/Localizable.strings")
+            XCTAssertTrue(strings.contains("\"Ports only\" ="))
+            XCTAssertTrue(strings.contains("\"Foreground only; pauses in background\" ="))
+        }
+    }
+
+    func testEverySupportedConfiguredPortIsUsedAndCatalogChangesStopOldSet() throws {
+        let controller = try iosSource("App/Services/LocalPortController.swift")
+        XCTAssertFalse(controller.contains("selectedIDs"))
+        XCTAssertTrue(controller.contains("LocalPortSupport.allSupported(in: freshCatalog)"))
+        XCTAssertTrue(controller.contains("onCatalog(freshCatalog)"))
+        XCTAssertTrue(controller.contains("supportedIDs == Set(forwards.map(\\.forwardID))"))
+        XCTAssertTrue(controller.contains("stop(reason: L(\"Forwards changed. Start again.\"))"))
+        // Safety remains in the existing planner/runtime; all configured forwards is not all ports.
+        XCTAssertTrue(controller.contains("listenPort: plan.localListenPort"))
+        XCTAssertTrue(controller.contains("try scope.applying(to: plan.configJSON)"))
+    }
+
+    func testModeSwitchStopsOwnConnectionWithoutAutomaticallyStartingNewMode() throws {
+        let model = try iosSource("App/AppModel.swift")
+        let start = try XCTUnwrap(model.range(of: "    func setLocalPortMode("))
+        let end = try XCTUnwrap(model.range(of: "    func activePanelClient()"))
+        let change = String(model[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(change.contains("localPorts.stop()"))
+        XCTAssertTrue(change.contains("await tunnel.stopForLocalPorts()"))
+        XCTAssertTrue(change.contains("notice = L(\"Not connected\")"))
+        XCTAssertFalse(change.contains("await refreshCatalog()"))
+        XCTAssertFalse(change.contains("tunnel.connect("))
+        XCTAssertFalse(change.contains("localPorts.start("))
+    }
+
     func testLocalPortConfigKeepsRealForwardPortAndStrictScopeAcrossRotation() throws {
         let forward = Fixtures.ultraForward()
         let policy = try XCTUnwrap(UltraPolicy.from(forward, now: Fixtures.now))

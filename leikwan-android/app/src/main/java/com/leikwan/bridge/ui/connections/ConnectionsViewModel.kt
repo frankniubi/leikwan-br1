@@ -19,6 +19,7 @@ import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_RESTRICTED
 import com.leikwan.bridge.runtime.NATIVE_ROUTE_POLICY_UNRESTRICTED
 import com.leikwan.bridge.runtime.isNativeRoutePolicyValue
 import com.leikwan.bridge.runtime.normalizeNativeRoutePolicy
+import com.leikwan.bridge.service.PortModePolicy
 import com.leikwan.bridge.service.AppConnectionMode
 import com.leikwan.bridge.service.LeikwanPortsService
 import com.leikwan.bridge.net.PortNetworkChoice
@@ -34,7 +35,9 @@ import com.leikwan.bridge.session.DeviceLimitReachedException
 import com.leikwan.bridge.session.PanelControlException
 import com.leikwan.bridge.ui.shared.thirdPartyVpnHintOrNull
 import com.leikwan.bridge.ui.shared.withThirdPartyVpnHint
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,6 +68,8 @@ enum class VpnStatus { DISCONNECTED, CONNECTING, CONNECTED }
  * and the real tunnel runtime.
  */
 data class ConnectionsUiState(
+    val modeSwitching: Boolean = false,
+    val activePortIds: Set<Long> = emptySet(),
     val connectionMode: AppConnectionMode = AppConnectionMode.VPN,
     val portNetwork: PortNetworkChoice = PortNetworkChoice.AUTO,
     val portForwardIds: Set<Long> = emptySet(),
@@ -106,6 +111,9 @@ data class ConnectionsUiState(
 
     /** Forwards that ride one of the user's nodes; native outbound rules are listed on their own. */
     val serviceForwards: List<ForwardListItem> get() = forwards.filterNot(::isNativeForward)
+    val portForwards: List<ForwardListItem> get() = PortModePolicy.supported(forwards,
+        nativeOutbound?.forwards.orEmpty().map { it.forwardId }.toSet())
+    val unsupportedPortCount: Int get() = forwards.size - portForwards.size
 
     val selectedForwardServiceName: String
         get() = forwards.firstOrNull { it.forwardId == selectedForwardId }?.serviceName.orEmpty()
@@ -156,6 +164,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
 
     /** Pending retry after a device-limit refusal; the running VPN's control loop covers itself. */
     private var deviceLimitRetry: Job? = null
+    private var connectJob: Job? = null
 
     /**
      * forwardId -> node the user picked (here, on the panel, or persisted for the selected
@@ -197,33 +206,40 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     }
 
     fun setConnectionMode(mode: AppConnectionMode) {
-        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED || LeikwanVpnService.isRunning) return
-        LeikwanPortsService.stop(getApplication())
-        prefs.vpnConnectIntent = false
-        try {
-            if (mode == AppConnectionMode.PORTS) com.leikwan.bridge.net.DirectPortNetwork.start(getApplication(), prefs.portNetworkChoice)
-            else com.leikwan.bridge.net.DirectPortNetwork.stop()
-        } catch (error: Exception) {
-            _state.update { it.copy(error = error.message) }
-            return
+        val current = _state.value
+        if (current.modeSwitching || current.connectionMode == mode) return
+        deviceLimitRetry?.cancel()
+        _state.update { it.copy(modeSwitching = true, error = null) }
+        viewModelScope.launch {
+            try {
+                // Stop only our old mode. Do not change Android's external VPN or its permission.
+                prefs.vpnConnectIntent = false
+                withTimeout(25_000) { connectJob?.cancelAndJoin() }
+                if (current.connectionMode == AppConnectionMode.PORTS) LeikwanPortsService.stopAndAwait(getApplication())
+                else {
+                    stopConnect()
+                    withTimeout(25_000) {
+                        while (LeikwanVpnService.isRunning || LeikwanVpnService.recovering) delay(50)
+                    }
+                }
+                if (mode == AppConnectionMode.PORTS) com.leikwan.bridge.net.DirectPortNetwork.start(getApplication(), prefs.portNetworkChoice)
+                else com.leikwan.bridge.net.DirectPortNetwork.stop()
+                prefs.connectionMode = mode
+                // Consent-dependent VPN reconnect is deliberately user-triggered, once stopped.
+                _state.update { it.copy(connectionMode = mode, vpnStatus = VpnStatus.DISCONNECTED,
+                    portListeners = emptyList(), activePortIds = emptySet(), error = null) }
+            } catch (error: Exception) {
+                _state.update { it.copy(error = error.message) }
+            } finally { _state.update { it.copy(modeSwitching = false) } }
         }
-        prefs.connectionMode = mode
-        _state.update { it.copy(connectionMode = mode, error = null) }
     }
 
     fun setPortNetwork(choice: PortNetworkChoice) {
-        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED) return
+        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED || _state.value.modeSwitching) return
         try { com.leikwan.bridge.net.DirectPortNetwork.start(getApplication(), choice) }
         catch (error: Exception) { _state.update { it.copy(error = error.message) }; return }
         prefs.portNetworkChoice = choice
         _state.update { it.copy(portNetwork = choice) }
-    }
-
-    fun togglePortForward(id: Long) {
-        if (_state.value.vpnStatus != VpnStatus.DISCONNECTED) return
-        val ids = _state.value.portForwardIds.let { if (id in it) it - id else it + id }
-        prefs.portForwardIds = ids
-        _state.update { it.copy(portForwardIds = ids) }
     }
 
     init {
@@ -233,9 +249,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
         }
         viewModelScope.launch {
             LeikwanPortsService.state.collect { ports ->
-                if (_state.value.connectionMode == AppConnectionMode.PORTS) _state.update {
+                if (_state.value.connectionMode == AppConnectionMode.PORTS && !_state.value.modeSwitching) _state.update {
                     it.copy(vpnStatus = when { ports.running -> VpnStatus.CONNECTED; ports.starting -> VpnStatus.CONNECTING; else -> VpnStatus.DISCONNECTED },
-                        error = ports.error, portListeners = ports.listeners)
+                        error = ports.error, portListeners = ports.listeners, activePortIds = ports.activeIds)
                 }
             }
         }
@@ -317,7 +333,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     fun refreshForwards() {
         viewModelScope.launch {
             val currentState = _state.value
-            val wasNativeActive = currentState.nativeSelected
+            val wasNativeActive = currentState.connectionMode == AppConnectionMode.VPN && currentState.nativeSelected
                 && currentState.vpnStatus != VpnStatus.DISCONNECTED
             val activeNativeForwardId = currentState.nativeForwardId
             val activeNativeDirection = currentState.nativeCarrier?.direction.orEmpty()
@@ -328,6 +344,8 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 val requested = _state.value.selectedForwardId
                 val catalog = catalogFetcher(requested)
                 val forwards = catalog.visibleForwards
+                val allPortIds = PortModePolicy.defaultForwardIds(catalog)
+                prefs.portForwardIds = allPortIds
                 val desired = catalog.selectedForwardId
                     ?: requested.takeIf { fid -> forwards.any { it.forwardId == fid } }
                 // A picked service the panel no longer lists is reported, not swapped for another.
@@ -380,6 +398,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 _state.update { current ->
                     val next = current.copy(
                         forwards = forwards,
+                        portForwardIds = allPortIds,
                         selectedForwardId = displayedSelected,
                         nodeByForward = seedNodeByForward(forwards, current.nodes, current.nodeByForward),
                         nativeOutbound = capability,
@@ -389,7 +408,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                         nativeBypassChina = prefs.nativeOutboundBypassChina,
                         nativeRoutePolicy = nativePolicy,
                         isLoading = false,
-                        error = if (pickedGone && displayedSelected == 0L) {
+                        error = if (current.connectionMode == AppConnectionMode.VPN && pickedGone && displayedSelected == 0L) {
                             s(R.string.connections_error_service_unavailable)
                         } else {
                             current.error
@@ -536,8 +555,9 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
     }
 
     fun toggleConnect() {
+        if (_state.value.modeSwitching) return
         deviceLimitRetry?.cancel()
-        viewModelScope.launch {
+        connectJob = viewModelScope.launch {
             val s = _state.value
             if (s.connectionMode == AppConnectionMode.PORTS) {
                 if (s.vpnStatus != VpnStatus.DISCONNECTED || LeikwanPortsService.state.value.error != null) {
@@ -548,7 +568,7 @@ class ConnectionsViewModel @JvmOverloads internal constructor(
                 } else {
                     prefs.vpnConnectIntent = false
                     try {
-                        LeikwanPortsService.start(getApplication(), s.portForwardIds)
+                        LeikwanPortsService.start(getApplication())
                         _state.update { it.copy(vpnStatus = VpnStatus.CONNECTING, error = null) }
                     } catch (error: Exception) { _state.update { it.copy(error = error.message, vpnStatus = VpnStatus.DISCONNECTED) } }
                 }

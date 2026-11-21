@@ -81,7 +81,7 @@ bounded 10 xcrun simctl ui "$udid" appearance light
 bounded 10 xcrun simctl terminate "$udid" "$bundle_id" || true
 bounded 30 xcrun simctl launch "$udid" "$bundle_id" \
   -privacy_disclosure_v1 YES -bridge_ci_demo YES -bridge_ci_local_ports YES \
-  -bridge_ci_section dashboard -AppleLanguages '(en)' -AppleLocale en_US
+  -bridge_ci_section dashboard -AppleLanguages '(zh-Hans)' -AppleLocale zh_CN
 sleep 5
 bounded 30 xcrun simctl io "$udid" screenshot "$out/local-ports-iphone-demo-stopped.png"
 # Do not run `simctl spawn log show` here: collecting unified logs can stall after capture.

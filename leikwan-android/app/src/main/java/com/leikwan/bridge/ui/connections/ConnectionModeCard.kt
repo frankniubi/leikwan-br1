@@ -2,7 +2,8 @@ package com.leikwan.bridge.ui.connections
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -12,50 +13,56 @@ import com.leikwan.bridge.service.AppConnectionMode
 
 @Composable
 internal fun ConnectionModeCard(state: ConnectionsUiState, onMode: (AppConnectionMode) -> Unit,
-    onNetwork: (PortNetworkChoice) -> Unit, onForward: (Long) -> Unit) {
-    val idle = state.vpnStatus == VpnStatus.DISCONNECTED
+    onNetwork: (PortNetworkChoice) -> Unit) {
+    var advanced by rememberSaveable { mutableStateOf(false) }
+    val idle = state.vpnStatus == VpnStatus.DISCONNECTED && !state.modeSwitching
     Surface(shape = MaterialTheme.shapes.large, tonalElevation = 1.dp) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.ports_mode), style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = state.connectionMode == AppConnectionMode.VPN, enabled = idle,
+                FilterChip(selected = state.connectionMode == AppConnectionMode.VPN, enabled = !state.modeSwitching,
                     onClick = { onMode(AppConnectionMode.VPN) }, label = { Text(stringResource(R.string.ports_vpn)) })
-                FilterChip(selected = state.connectionMode == AppConnectionMode.PORTS, enabled = idle,
-                    onClick = { onMode(AppConnectionMode.PORTS) }, label = { Text(stringResource(R.string.ports_title)) })
+                FilterChip(selected = state.connectionMode == AppConnectionMode.PORTS, enabled = !state.modeSwitching,
+                    onClick = { onMode(AppConnectionMode.PORTS) }, label = { Text(stringResource(R.string.ports_only)) })
+                if (state.modeSwitching) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             }
             if (state.connectionMode == AppConnectionMode.PORTS) {
-                Text(stringResource(R.string.ports_explanation), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.ports_network), style = MaterialTheme.typography.labelLarge)
-                // Two rows fit narrow phones without hiding a transport choice.
-                PortNetworkChoice.entries.chunked(2).forEach { choices ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        choices.forEach { choice ->
-                            val label = when (choice) {
-                                PortNetworkChoice.AUTO -> R.string.ports_auto
-                                PortNetworkChoice.WIFI -> R.string.ports_wifi
-                                PortNetworkChoice.CELLULAR -> R.string.ports_cellular
-                                PortNetworkChoice.ETHERNET -> R.string.ports_ethernet
-                            }
-                            FilterChip(selected = state.portNetwork == choice, enabled = idle,
-                                onClick = { onNetwork(choice) }, label = { Text(stringResource(label)) })
+                Text(stringResource(R.string.ports_all_summary, state.portForwards.size), style = MaterialTheme.typography.labelLarge)
+                state.portForwards.forEach { forward ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.ports_local_port, forward.listenPort), style = MaterialTheme.typography.bodyMedium)
+                            Text(forward.routeLabel(), style = MaterialTheme.typography.bodySmall)
                         }
+                        Text(stringResource(if (forward.forwardId in state.activePortIds) R.string.ports_active else R.string.ports_ready),
+                            style = MaterialTheme.typography.labelMedium)
                     }
                 }
-                Text(stringResource(R.string.ports_select_forward), style = MaterialTheme.typography.labelLarge)
-                state.serviceForwards.forEach { forward ->
-                    Row(Modifier.fillMaxWidth()) {
-                        Checkbox(checked = forward.forwardId in state.portForwardIds, enabled = idle,
-                            onCheckedChange = { onForward(forward.forwardId) })
-                        Column(Modifier.weight(1f).padding(top = 8.dp)) {
-                            Text(stringResource(R.string.ports_forward_name, forward.forwardId, forward.serviceName))
-                            Text(stringResource(R.string.ports_forward_endpoint, forward.listenPort, forward.target, forward.transport), style = MaterialTheme.typography.bodySmall)
-                            if (forward.mode != com.leikwan.bridge.runtime.ForwardMode.ULTRA) {
-                                Text(stringResource(R.string.ports_unsupported), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                if (state.unsupportedPortCount > 0) Text(stringResource(R.string.ports_skipped_summary, state.unsupportedPortCount),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = { advanced = !advanced }, contentPadding = PaddingValues(0.dp)) {
+                    Text(stringResource(R.string.ports_advanced))
+                }
+                if (advanced) {
+                    Text(stringResource(R.string.ports_network), style = MaterialTheme.typography.labelLarge)
+                    PortNetworkChoice.entries.chunked(2).forEach { choices ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            choices.forEach { choice ->
+                                val label = when (choice) {
+                                    PortNetworkChoice.AUTO -> R.string.ports_auto
+                                    PortNetworkChoice.WIFI -> R.string.ports_wifi
+                                    PortNetworkChoice.CELLULAR -> R.string.ports_cellular
+                                    PortNetworkChoice.ETHERNET -> R.string.ports_ethernet
+                                }
+                                FilterChip(selected = state.portNetwork == choice, enabled = idle,
+                                    onClick = { onNetwork(choice) }, label = { Text(stringResource(label)) })
                             }
                         }
                     }
+                    Text(stringResource(R.string.ports_advanced_note), style = MaterialTheme.typography.bodySmall)
+                    state.forwards.filter { forward -> state.portForwards.none { it.forwardId == forward.forwardId } }.forEach { forward ->
+                        Text(stringResource(R.string.ports_skipped_reason, forward.serviceName), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
-                state.portListeners.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
         }
     }

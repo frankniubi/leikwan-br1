@@ -9,7 +9,7 @@ import Network
 final class LocalPortController: ObservableObject {
     enum PhysicalNetwork: String, CaseIterable { case wifi, cellular
         var type: NWInterface.InterfaceType { self == .wifi ? .wifi : .cellular }
-        var title: String { self == .wifi ? "Wi-Fi" : "Cellular" }
+        var title: String { self == .wifi ? "Wi-Fi" : L("Cellular") }
     }
     enum State: Equatable { case stopped, starting, listening, paused, unavailable }
     @Published private(set) var state: State = .stopped
@@ -62,7 +62,7 @@ final class LocalPortController: ObservableObject {
         ), transport: transport)
     }
 
-    func start(catalog: IOSForwardCatalog, selectedIDs: Set<Int64>, panel: TunnelPanelSession) async {
+    func start(panel: TunnelPanelSession, onCatalog: @escaping (IOSForwardCatalog) -> Void) async {
         guard !isRunning, !isCleaningUp, visible else { return }
         state = .starting; message = nil; portStates = [:]
         lifecycle.invalidate()
@@ -81,8 +81,11 @@ final class LocalPortController: ObservableObject {
                     throw AppError("A client update is required by the panel before starting Local Port")
                 }
                 guard self.lifecycle.permits(id) else { return }
-                let selected = selectedIDs.sorted().compactMap { pulled.catalog.supportedForward(id: $0) }
-                guard !selected.isEmpty, selected.count == selectedIDs.count else { throw AppError("Select available forwards first") }
+                // All supported configured ports, including rules added since the UI's last pull.
+                let freshCatalog = pulled.catalog.excludingForwards(pulled.catalog.deletedForwardIds)
+                let selected = LocalPortSupport.allSupported(in: freshCatalog)
+                onCatalog(freshCatalog)
+                guard !selected.isEmpty else { throw AppError(L("No supported forwards")) }
                 var runtimes: [RuntimeLaunch] = []
                 var forwards: [UltraForwardLaunch] = []
                 var usedPorts = Set<Int>()
@@ -158,7 +161,12 @@ final class LocalPortController: ObservableObject {
     }
 
     func catalogDidChange(_ catalog: IOSForwardCatalog) {
-        guard isRunning else { return }
+        guard isRunning, !forwards.isEmpty else { return }
+        let supportedIDs = Set(LocalPortSupport.allSupported(in: catalog).map(\.forwardId))
+        guard supportedIDs == Set(forwards.map(\.forwardID)) else {
+            stop(reason: L("Forwards changed. Start again."))
+            return
+        }
         for active in forwards {
             guard let current = catalog.supportedForward(id: active.forwardID),
                   current.kind == .ultra, !current.isNativeOutboundRule,

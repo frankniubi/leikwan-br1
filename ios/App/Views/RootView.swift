@@ -116,12 +116,12 @@ struct StartButton: View {
             Button {
                 Task { await model.toggleConnection() }
             } label: {
-                Label(ports.isRunning ? "Stop ports" : "Start ports", systemImage: ports.isRunning ? "stop.fill" : "play.fill")
+                Label(ports.isRunning ? L("Stop") : L("Start"), systemImage: ports.isRunning ? "stop.fill" : "play.fill")
                     .font(.headline).padding(18)
                     .background(Palette.primaryContainer, in: RoundedRectangle(cornerRadius: 18))
             }
             .buttonStyle(.plain)
-            .disabled(ports.isCleaningUp || model.localPortForwardIDs.isEmpty)
+            .disabled(ports.isCleaningUp || model.changingConnectionMode)
         } else {
         Button {
             Task { await model.toggleConnection() }

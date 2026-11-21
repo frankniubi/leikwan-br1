@@ -373,3 +373,25 @@
 "Rules of the enabled modules, in module order" = "已启用模块的规则，按模块顺序";
 "Global mode: steps 2–7 are skipped and everything uses the proxy." = "当前是全局模式：以上第 2–7 步不生效，全部走代理。";
 "Import" = "导入";
+
+/* Foreground local ports */
+"Connection mode" = "连接模式";
+"Ports only" = "仅端口";
+"All forwards" = "全部转发";
+"Foreground only; pauses in background" = "仅前台运行，切后台暂停";
+"No supported forwards" = "暂无支持的转发";
+"Advanced settings" = "高级设置";
+"Physical network" = "本机网络";
+"Cellular" = "蜂窝";
+"Start" = "启动";
+"Stop" = "停止";
+"Listening" = "运行中";
+"Stopping" = "停止中";
+"Unavailable" = "不可用";
+"Forwards changed. Start again." = "转发已更新，请重新启动";
+"%@ unsupported forward(s)" = "%@ 条转发暂不支持";
+"Configured Ultra TCP/TCP+UDP ports only, on 127.0.0.1. No system VPN or SOCKS proxy. Physical network binding is required; no fallback. iOS VPN/MDM policy may block access. Other app tools and scripts are unavailable in this mode." = "仅开启面板配置的 Ultra TCP/TCP+UDP 转发，监听 127.0.0.1，不创建系统 VPN 或 SOCKS 代理。必须绑定所选本机网络，不回退默认网络；iOS VPN/MDM 策略可能阻止访问。此模式不运行其他工具或脚本。";
+"Local Port supports fixed-target Ultra forwards only; use VPN mode for Bond" = "仅支持固定目标 Ultra；Bond 请使用 VPN 模式";
+"Native outbound requires VPN mode; it is not a fixed-target port" = "原生出口请使用 VPN 模式";
+"Forward authorization is unavailable; refresh the catalog" = "转发授权不可用，请刷新";
+"UDP-only forwards are not available in this Local Port version; use VPN mode" = "纯 UDP 转发请使用 VPN 模式";

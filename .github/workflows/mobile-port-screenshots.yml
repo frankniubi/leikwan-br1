@@ -34,6 +34,9 @@ jobs:
           path: ios/Frameworks
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Test compact port-mode policy
+        working-directory: ios/Core
+        run: swift test --parallel
       - name: Build actual debug app for simulator
         working-directory: ios
         run: |
@@ -71,7 +74,7 @@ jobs:
         working-directory: leikwan-android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug assembleDebugAndroidTest
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
