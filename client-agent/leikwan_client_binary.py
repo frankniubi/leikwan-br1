@@ -59,6 +59,9 @@ def _dispatch(alias: str) -> int:
 
 
 def main() -> int:
+    # Every dispatched helper shells out to host tools (systemctl, ip, nft,
+    # curl); none of them may inherit the bundled-library search path.
+    _client_agent.sanitize_frozen_child_environment()
     alias = pathlib.Path(sys.argv[0]).name
     if len(sys.argv) >= 3 and sys.argv[1] == "--dispatch-as":
         alias = pathlib.Path(sys.argv[2]).name

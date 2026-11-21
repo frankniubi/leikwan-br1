@@ -31,10 +31,11 @@
   "client_agent": {
     "artifact_url": "/artifacts/client-agent.py",
     "path": "client-agent/client_agent.py",
-    "sha256": "47d26c5e85bf52bfb9987a03739e761347d051586847a8b85d0443037821ba0a",
-    "size": 446782,
-    "size_bytes": 446782,
-    "version": "2026.11.18.2"
+    "sha256": "2b8f8cb531cb930ebfc11bf8d4aeb9ac1bee4e9823639ff55456ef6f00339e25",
+    "size": 449797,
+    "size_bytes": 449797,
+    "version": "2026.11.21.1",
+    "source_commit": "67194fd3764d6ae23d7ef96e8248638fbb815e74"
   },
   "client_agent_installer": {
     "artifact_url": "/artifacts/install-client-agent.sh",
@@ -470,10 +471,11 @@
   "sidecar_agent": {
     "artifact_url": "/artifacts/sidecar-agent.py",
     "path": "sidecar-agent/sidecar_agent.py",
-    "sha256": "ea4db1770391cc690e4b3ef5dd3ccbe2a9530e30e8a8814a8ddfae7cafca7d77",
-    "size": 148545,
-    "size_bytes": 148545,
-    "version": "2026.09.17.4"
+    "sha256": "3e0e84503cf345b14fd6e90d74365d5b4a6e8e4cb93e940dfbffe6bb0fd64c89",
+    "size": 151998,
+    "size_bytes": 151998,
+    "version": "2026.11.21.1",
+    "source_commit": "67194fd3764d6ae23d7ef96e8248638fbb815e74"
   },
   "sidecar_agent_linux_amd64": {
     "architecture": "amd64",

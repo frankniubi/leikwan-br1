@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 
-AGENT_VERSION = "2026.09.17.4"
+AGENT_VERSION = "2026.11.21.1"
 UPDATE_RETRY_SECONDS = 300
 UPDATE_STALE_SECONDS = 900
 UPDATE_COMPLETED_HISTORY_LIMIT = 16
@@ -50,6 +50,56 @@ def agent_artifact_path() -> pathlib.Path:
 
 def agent_artifact_sha256() -> str:
     return file_sha256(agent_artifact_path())
+
+
+# Library search variables the PyInstaller bootloader points at the one-file
+# extraction directory (the pre-existing value, if any, is kept in *_ORIG).
+FROZEN_LIBRARY_PATH_VARS = ("LD_LIBRARY_PATH",)
+# Bootloader bookkeeping. A child that sees these and shares our executable
+# path runs as a worker of this process and reuses our extraction directory.
+FROZEN_BOOTLOADER_VARS = (
+    "_PYI_ARCHIVE_FILE",
+    "_PYI_APPLICATION_HOME_DIR",
+    "_PYI_PARENT_PROCESS_LEVEL",
+    "_PYI_LINUX_PROCESS_NAME",
+    "_PYI_SPLASH_IPC",
+)
+
+
+def sanitize_frozen_child_environment(environ=None, frozen: bool | None = None, bundle_dir: str | None = None) -> bool:
+    """Undo the PyInstaller environment so child processes see the host's own.
+
+    The frozen sidecar agent is built on Debian 12 and bundles its
+    libcrypto/libssl. The bootloader prepends the extraction directory to
+    LD_LIBRARY_PATH, which every systemctl/journalctl/curl/ip/nft/wg child
+    inherits; on a newer host (Debian 13) those programs then load the bundled
+    OpenSSL 3.0 and refuse to start (missing OPENSSL_3.x symbol versions).
+    This process is unaffected: the dynamic loader read LD_LIBRARY_PATH once
+    at exec time and keeps using it for later dlopen().
+    Safe to call repeatedly; returns True when the environment was changed.
+    """
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not frozen:
+        return False
+    env = os.environ if environ is None else environ
+    if bundle_dir is None:
+        bundle_dir = str(getattr(sys, "_MEIPASS", "") or env.get("_PYI_APPLICATION_HOME_DIR", "") or "")
+    changed = False
+    for name in FROZEN_LIBRARY_PATH_VARS:
+        original = env.pop(f"{name}_ORIG", None)
+        if original is not None:
+            env[name] = original
+            changed = True
+        elif name in env and (bundle_dir == "" or env[name].split(os.pathsep)[0] == bundle_dir):
+            # No *_ORIG: the bootloader set it to the bundle dir alone. A value
+            # that does not start there is the host's own (already restored).
+            del env[name]
+            changed = True
+    for name in FROZEN_BOOTLOADER_VARS:
+        if env.pop(name, None) is not None:
+            changed = True
+    return changed
 
 
 def sidecar_agent_helper_command(config: dict, alias: str, configured_path: str = "") -> str:
@@ -2959,6 +3009,7 @@ WantedBy=multi-user.target
 
 
 def main() -> int:
+    sanitize_frozen_child_environment()
     parser = argparse.ArgumentParser(description="Leikwan sidecar agent")
     parser.add_argument("--config", default="/etc/leikwan-sidecar/config.json")
     parser.add_argument("command", nargs="?", choices=["run", "check", "version"], default="run")

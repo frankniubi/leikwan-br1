@@ -154,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --quiet pytest cryptography
-          python -m pytest client-agent/tests tests -q -p no:cacheprovider
+          python -m pytest client-agent/tests tests sidecar-agent/tests/test_sidecar_frozen_child_environment.py -q -p no:cacheprovider
 
       - name: Run panel PHP tests
         id: php_tests
@@ -270,3 +270,33 @@ jobs:
           path: artifacts/python-agent/
           if-no-files-found: error
           retention-days: 14
+
+  frozen-host-tools:
+    name: Debian 13 real frozen host tools (${{ matrix.arch }})
+    needs: frozen-agent
+    runs-on: ${{ matrix.runner }}
+    container: debian:13
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - name: Install Debian 13 host tools
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq systemd curl git ca-certificates >/dev/null
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Download exact-run frozen agents
+        uses: actions/download-artifact@v4
+        with:
+          name: frozen-agent-${{ matrix.arch }}
+          path: out/frozen-agents
+      - name: Check actual frozen agents with Debian 13 systemctl, journalctl and curl
+        shell: bash
+        run: bash scripts/test-frozen-agent-host-tools.sh out/frozen-agents

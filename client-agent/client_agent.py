@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-AGENT_VERSION = "2026.11.18.2"
+AGENT_VERSION = "2026.11.21.1"
 # See log_ultra_apply_failure: one line per forward and reason per ten minutes.
 ULTRA_APPLY_FAILURE_LOG_INTERVAL_SECONDS = 600.0
 
@@ -131,6 +131,56 @@ def helper_artifact_path(name: str) -> pathlib.Path:
     if getattr(sys, "frozen", False):
         return agent_artifact_path().parent / name
     return pathlib.Path(__file__).with_name(name)
+
+
+# Library search variables the PyInstaller bootloader points at the one-file
+# extraction directory (the pre-existing value, if any, is kept in *_ORIG).
+FROZEN_LIBRARY_PATH_VARS = ("LD_LIBRARY_PATH",)
+# Bootloader bookkeeping. A child that sees these and shares our executable
+# path runs as a worker of this process and reuses our extraction directory.
+FROZEN_BOOTLOADER_VARS = (
+    "_PYI_ARCHIVE_FILE",
+    "_PYI_APPLICATION_HOME_DIR",
+    "_PYI_PARENT_PROCESS_LEVEL",
+    "_PYI_LINUX_PROCESS_NAME",
+    "_PYI_SPLASH_IPC",
+)
+
+
+def sanitize_frozen_child_environment(environ=None, frozen: bool | None = None, bundle_dir: str | None = None) -> bool:
+    """Undo the PyInstaller environment so child processes see the host's own.
+
+    The frozen agent is built on Debian 12 and bundles its libcrypto/libssl.
+    The bootloader prepends the extraction directory to LD_LIBRARY_PATH, which
+    every systemctl/journalctl/curl/ip/nft child inherits; on a newer host
+    (Debian 13) those programs then load the bundled OpenSSL 3.0 and refuse to
+    start (missing OPENSSL_3.x symbol versions), so ``systemctl is-active``
+    reads as "not active". This process is unaffected: the dynamic loader read
+    LD_LIBRARY_PATH once at exec time and keeps using it for later dlopen().
+    Safe to call repeatedly; returns True when the environment was changed.
+    """
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not frozen:
+        return False
+    env = os.environ if environ is None else environ
+    if bundle_dir is None:
+        bundle_dir = str(getattr(sys, "_MEIPASS", "") or env.get("_PYI_APPLICATION_HOME_DIR", "") or "")
+    changed = False
+    for name in FROZEN_LIBRARY_PATH_VARS:
+        original = env.pop(f"{name}_ORIG", None)
+        if original is not None:
+            env[name] = original
+            changed = True
+        elif name in env and (bundle_dir == "" or env[name].split(os.pathsep)[0] == bundle_dir):
+            # No *_ORIG: the bootloader set it to the bundle dir alone. A value
+            # that does not start there is the host's own (already restored).
+            del env[name]
+            changed = True
+    for name in FROZEN_BOOTLOADER_VARS:
+        if env.pop(name, None) is not None:
+            changed = True
+    return changed
 
 
 def ultra_offline_validity_headers() -> dict[str, str]:
@@ -435,14 +485,24 @@ def debug_log_paths(config: dict, state_dir: pathlib.Path) -> list[pathlib.Path]
     return files[:DEBUG_LOG_MAX_FILES]
 
 
-def debug_journal_bytes() -> bytes:
+# Per-forward runtime units (ultra-forward-<id>, leikwan-client-<id>) log the
+# data plane: relay selection, stream EOFs, HA failover. The agent journal only
+# shows lease delivery, so a "forwards but no reply" report needs these too.
+DEBUG_JOURNAL_UNITS = (
+    ("journalctl-leikwan-client-agent.log", ("leikwan-client-agent.service",)),
+    ("journalctl-forward-runtimes.log", ("ultra-forward-*.service", "leikwan-client-*.service")),
+)
+
+
+def debug_journal_bytes(units: tuple[str, ...] = ("leikwan-client-agent.service",)) -> bytes:
     """Read a bounded service journal when systemd is the configured logger."""
     journalctl = shutil.which("journalctl")
     if not journalctl:
         return b""
+    unit_args = [arg for unit in units for arg in ("-u", unit)]
     try:
         result = subprocess.run(
-            [journalctl, "-u", "leikwan-client-agent.service", "-n", "2000", "--no-pager", "-o", "short-iso"],
+            [journalctl, *unit_args, "-n", "2000", "--no-pager", "-o", "short-iso"],
             capture_output=True,
             check=False,
             timeout=8,
@@ -496,8 +556,12 @@ def _create_debug_snapshot(
                     continue
                 raw_remaining -= len(raw)
                 append(str(path), raw)
-            if remaining > 0 and raw_remaining > 0:
-                append("journalctl-leikwan-client-agent.log", debug_journal_bytes()[:min(remaining, raw_remaining)])
+            for source_name, units in DEBUG_JOURNAL_UNITS:
+                if remaining <= 0 or raw_remaining <= 0:
+                    break
+                raw = debug_journal_bytes(units)[:min(remaining, raw_remaining)]
+                raw_remaining -= len(raw)
+                append(source_name, raw)
             state["snapshot_bytes"] = handle.tell()
             state["snapshot_sha256"] = digest.hexdigest()
             handle.flush()
@@ -9351,6 +9415,7 @@ class ClientAgent:
 
 
 def main() -> int:
+    sanitize_frozen_child_environment()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/etc/leikwan-client-agent/config.json")
     parser.add_argument("command", nargs="?", choices=["run", "check", "upload-logs"], default="run")

@@ -80,6 +80,44 @@ class DebugLogUploadTests(unittest.TestCase):
         agent.device_id = lambda: "linux-current-device"
         return agent
 
+    def test_upload_includes_agent_and_forward_runtime_journals(self):
+        seen_units = []
+        def fake_journal(units=("leikwan-client-agent.service",)):
+            seen_units.append(tuple(units))
+            return ("journal for " + ",".join(units) + chr(10)).encode()
+        calls = []
+        with mock.patch.object(MODULE, "debug_log_paths", return_value=[]), mock.patch.object(
+            MODULE, "debug_journal_bytes", side_effect=fake_journal,
+        ):
+            result = self.upload(lambda payload: calls.append(payload) or {"ok": True})
+        self.assertEqual("complete", result["status"])
+        self.assertIn(("leikwan-client-agent.service",), seen_units)
+        self.assertIn(("ultra-forward-*.service", "leikwan-client-*.service"), seen_units)
+        sources = {item["source"] for item in calls}
+        self.assertIn("journalctl-leikwan-client-agent.log", sources)
+        self.assertIn("journalctl-forward-runtimes.log", sources)
+
+    def test_debug_journal_passes_every_unit_to_journalctl(self):
+        captured = {}
+
+        class Result:
+            returncode = 0
+            stdout = b"ok"
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            return Result()
+
+        original_run, original_which = MODULE.subprocess.run, MODULE.shutil.which
+        MODULE.subprocess.run = fake_run
+        MODULE.shutil.which = lambda name: "/usr/bin/journalctl"
+        try:
+            self.assertEqual(b"ok", load_module().debug_journal_bytes(("ultra-forward-*.service", "leikwan-client-*.service")))
+        finally:
+            MODULE.subprocess.run, MODULE.shutil.which = original_run, original_which
+        args = captured["args"]
+        self.assertEqual(["-u", "ultra-forward-*.service", "-u", "leikwan-client-*.service"], args[1:5])
+
     def test_redaction_removes_credentials_in_text_and_json(self):
         source = (
             'Authorization: Bearer abc\npassword=secret token: xyz\n'
@@ -673,7 +711,7 @@ spec = importlib.util.spec_from_file_location("debug_lock_child", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 root = pathlib.Path(sys.argv[2])
-m.debug_journal_bytes = lambda: b""
+m.debug_journal_bytes = lambda *units: b""
 def post(payload):
     (root / "ready").write_text("ready")
     deadline = time.monotonic() + 15
